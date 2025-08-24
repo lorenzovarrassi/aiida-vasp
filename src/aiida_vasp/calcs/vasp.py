@@ -1,14 +1,14 @@
 """
-This module contains the class that prepares a specific VASP calculation.
-"""
+VASP calculation.
 
-from __future__ import annotations
+-----------------
+The calculation class that prepares a specific VASP calculation.
+"""
 
 # encoding: utf-8
 # pylint: disable=abstract-method
 # explanation: pylint wrongly complains about (aiida) Node not implementing query
 import os
-from typing import TYPE_CHECKING, Any
 
 from aiida import orm
 from aiida.common.exceptions import InputValidationError, ValidationError
@@ -23,10 +23,6 @@ from aiida_vasp.parsers.content_parsers.kpoints import KpointsParser
 from aiida_vasp.parsers.content_parsers.poscar import PoscarParser
 from aiida_vasp.parsers.content_parsers.potcar import MultiPotcarIo
 from aiida_vasp.utils.constraints import serialize_dynamics
-
-if TYPE_CHECKING:
-    from aiida.common import CalcInfo
-    from aiida.common.folders import Folder
 
 
 class VaspCalculation(VaspCalcBase):
@@ -76,7 +72,7 @@ class VaspCalculation(VaspCalcBase):
     _plugin_type_string = 'vasp.vasp'
 
     @classmethod
-    def define(cls, spec: Any) -> None:
+    def define(cls, spec):
         super(VaspCalculation, cls).define(spec)
         # Define the inputs.
         # options is passed automatically.
@@ -216,6 +212,38 @@ class VaspCalculation(VaspCalcBase):
         spec.output(
             'parameters', valid_type=orm.Dict, required=False, help='All input parameters including the default values.'
         )
+        # Additional outputs required by GW and BSE worflows
+        spec.output(
+                'epsilon_diag', 
+                valid_type=orm.ArrayData, 
+                required=False, 
+                help='The output inverse diagonal dielectric function from a GW calculation.'
+        )
+        spec.output(
+                'maximum_number_pw', 
+                valid_type=orm.ArrayData, 
+                required=False, 
+                help='The maximum number of orbitals that the plane-wave basis set allows to calculate.'
+        )
+        spec.output(
+                'opticaltransitions', 
+                valid_type=orm.ArrayData, 
+                required=False, 
+                help='Oscillator strengths and associated transition energies from a BSE calculation.'
+        )
+        spec.output(
+                'ENMAXarray', 
+                valid_type=orm.ArrayData, 
+                required=False, 
+                help='Array collecting ENMAX variables as defined in the POTCARs.'
+        )
+        spec.output(
+                'NGarray', 
+                valid_type=orm.ArrayData, 
+                required=False, 
+                help='Grid dimensions used for the FFT of the charge density.'
+        ) 
+
         # Standalone array quantities
         for name in ['hessian', 'dynmat', 'born_charges', 'dielectrics']:
             spec.output(
@@ -291,7 +319,7 @@ class VaspCalculation(VaspCalcBase):
         )
         spec.exit_code(1005, 'ERROR_OVERFLOW_IN_XML', message='Overflow detected in XML while parsing.')
 
-    def prepare_for_submission(self, folder: Folder) -> CalcInfo:
+    def prepare_for_submission(self, folder):
         """
         Add all objects to the list of objects to be retrieved.
 
@@ -335,7 +363,7 @@ class VaspCalculation(VaspCalcBase):
 
         return calcinfo
 
-    def verify_inputs(self) -> None:
+    def verify_inputs(self):
         super().verify_inputs()
         _parameters = self.inputs.parameters.get_dict()
         _lorbit = _parameters.get('lorbit', 0)
@@ -348,7 +376,7 @@ class VaspCalculation(VaspCalcBase):
             raise InputValidationError(f'Site magnetization requires "LORBIT>=10", value given {_lorbit}')
 
     @property
-    def _parameters(self) -> dict[str, Any]:
+    def _parameters(self):
         """Make sure all parameters are lowercase."""
         all_parameters = self.inputs.parameters.get_dict()
         try:
@@ -356,36 +384,52 @@ class VaspCalculation(VaspCalcBase):
         except KeyError:
             return {}
 
-    def _need_kp(self) -> bool:
+    def _need_kp(self):
         """
         Return wether an input kpoints node is needed or not.
 
-        :return output: True if input kpoints node is needed False otherwise needs 'parameters' input to be set.
+        :return output:
+            True if input kpoints node is needed
+            (py:method::VaspCalculation.use_kpoints),
+            False otherwise
+
+        needs 'parameters' input to be set
+        (py:method::VaspCalculation.use_parameters)
         """
         return not bool('kspacing' in self._parameters or 'kgamma' in self._parameters)
 
-    def _need_chgcar(self) -> bool:
+    def _need_chgcar(self):
         """
         Test wether an charge_densities input is needed or not.
 
-        :return output: True if CHGCAR must be present False otherwise.
+        :return output:
+            True if CHGCAR must be present
+            (py:method::NscfCalculation.use_charge_densities),
+            False otherwise
 
+        needs 'parameters' input to be set
+        (py:method::NscfCalculation.use_parameters)
         """
         ichrg_d = 0 if self._need_wavecar() else 2
         icharg = self._parameters.get('icharg', ichrg_d)
         return bool(icharg in [1, 11])
 
-    def _need_wavecar(self) -> bool:
+    def _need_wavecar(self):
         """
         Test wether a wavefunctions input is needed or not.
 
-        :return output: True if WAVECAR must be present used False otherwise.
+        :return output:
+            True if WAVECAR must be present
+            used (py:method::NscfCalculation.use_wavefunctions),
+            False otherwise
+        needs 'parameters' input to be set
+        (py:method::NscfCalculation.use_parameters)
         """
         istrt_d = 1 if self.inputs.get('wavefunctions') else 0
         istart = self._parameters.get('istart', istrt_d)
         return bool(istart in [1, 2, 3])
 
-    def _structure(self) -> orm.StructureData:
+    def _structure(self):
         """
         Get the input structure as AiiDa StructureData.
 
@@ -396,7 +440,7 @@ class VaspCalculation(VaspCalcBase):
             structure = orm.StructureData(ase=structure.get_ase())
         return structure
 
-    def write_additional(self, folder: Folder, calcinfo: CalcInfo) -> None:
+    def write_additional(self, folder, calcinfo):
         """Write CHGAR and WAVECAR if needed."""
         super().write_additional(folder, calcinfo)
         # a list of object names to be copied
@@ -420,13 +464,7 @@ class VaspCalculation(VaspCalcBase):
                 if 'WAVECAR' not in remote_copy_fnames:
                     raise FileNotFoundError(f'Could not find WAVECAR in {remote_folder.get_remote_path()}')
 
-        # Process the vdw_kernel input
-        if 'vdw_kernel' in self.inputs:
-            calcinfo.local_copy_list.append(
-                (self.inputs.vdw_kernel.uuid, self.inputs.vdw_kernel.filename, 'vdw_kernel.bindat')
-            )
-
-    def write_incar(self, dst: str, validate_tags: bool = True) -> None:
+    def write_incar(self, dst, validate_tags=True):  # pylint: disable=unused-argument
         """
         Write the INCAR.
 
@@ -434,7 +472,6 @@ class VaspCalculation(VaspCalcBase):
         preparation and writes to dst.
 
         :param dst: absolute path of the object to write to
-
         """
         # Check if parameters validation is turned off
         if self.inputs.get('settings'):
@@ -447,7 +484,7 @@ class VaspCalculation(VaspCalcBase):
         except SystemExit as parser_error:
             raise ValidationError('The INCAR content did not pass validation.') from parser_error
 
-    def write_poscar(self, dst: str) -> None:
+    def write_poscar(self, dst):  # pylint: disable=unused-argument
         """
         Write the POSCAR.
 
@@ -473,7 +510,7 @@ class VaspCalculation(VaspCalcBase):
         except SystemExit as parser_error:
             raise ValidationError('The POSCAR content did not pass validation.') from parser_error
 
-    def write_potcar(self, dst: str) -> None:
+    def write_potcar(self, dst):
         """
         Concatenates multiple POTCARs into one in the same order as the elements appear in POSCAR.
 
@@ -483,7 +520,7 @@ class VaspCalculation(VaspCalcBase):
         multi_potcar = MultiPotcarIo.from_structure(structure, self.inputs.potential)
         multi_potcar.write(dst)
 
-    def write_kpoints(self, dst: str) -> None:
+    def write_kpoints(self, dst):  # pylint: disable=unused-argument
         """
         Write the KPOINTS.
 
@@ -498,16 +535,16 @@ class VaspCalculation(VaspCalcBase):
         except SystemExit as parser_error:
             raise ValidationError('The KPOINTS content did not pass validation.') from parser_error
 
-    def write_chgcar(self, dst: str, calcinfo: CalcInfo) -> None:
+    def write_chgcar(self, dst, calcinfo):  # pylint: disable=unused-argument
         charge_density = self.inputs.charge_density
         calcinfo.local_copy_list.append((charge_density.uuid, charge_density.filename, dst))
 
-    def write_wavecar(self, dst: str, calcinfo: CalcInfo) -> None:
+    def write_wavecar(self, dst, calcinfo):  # pylint: disable=unused-argument
         wave_functions = self.inputs.wavefunctions
         calcinfo.local_copy_list.append((wave_functions.uuid, wave_functions.filename, dst))
 
 
-def ordered_unique_list(in_list: list) -> list:
+def ordered_unique_list(in_list):
     """List unique elements in input list, in order of first occurrence."""
     out_list = []
     for i in in_list:
@@ -516,7 +553,7 @@ def ordered_unique_list(in_list: list) -> list:
     return out_list
 
 
-def ordered_unique_symbols(structure: orm.StructureData) -> list[str]:
+def ordered_unique_symbols(structure):
     """
     Return a list of ordered unique symbols in the structure
     """

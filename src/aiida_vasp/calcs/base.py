@@ -4,20 +4,13 @@ Base calculation class.
 Base and meta classes for VASP calculation classes.
 """
 
-from __future__ import annotations
-
 # pylint: disable=abstract-method,invalid-metaclass,ungrouped-imports
 # explanation: pylint wrongly complains about Node not implementing query
 import os
-from typing import TYPE_CHECKING, Any
 
 from aiida import orm
 from aiida.common import CalcInfo, CodeInfo, ValidationError
 from aiida.engine import CalcJob
-
-if TYPE_CHECKING:
-    from aiida.common.folders import Folder
-    from aiida.engine.processes.calcjobs.calcjob import CalcJobProcessSpec
 
 
 class VaspCalcBase(CalcJob):
@@ -32,7 +25,7 @@ class VaspCalcBase(CalcJob):
     _default_parser = 'vasp.vasp'
 
     @classmethod
-    def define(cls, spec: CalcJobProcessSpec) -> None:
+    def define(cls, spec):
         super(VaspCalcBase, cls).define(spec)
         spec.input(
             'restart_folder',
@@ -42,7 +35,7 @@ class VaspCalcBase(CalcJob):
         )
 
     @classmethod
-    def max_retrieve_list(cls) -> list[str]:
+    def max_retrieve_list(cls):
         """Return a list of all possible output objects from a VASP run."""
         retrieve_list = [
             'CHG',
@@ -76,7 +69,7 @@ class VaspCalcBase(CalcJob):
         ]
         return retrieve_list
 
-    def prepare_for_submission(self, folder: Folder) -> CalcInfo:  # pylint: disable=arguments-differ
+    def prepare_for_submission(self, folder):  # pylint: disable=arguments-differ
         """
         Writes the four minimum outputs: INCAR, POSCAR, POTCAR, KPOINTS.
 
@@ -118,12 +111,13 @@ class VaspCalcBase(CalcJob):
 
         return calcinfo
 
-    def remote_copy_restart_folder(self) -> list[tuple[str, str, str]]:
+    def remote_copy_restart_folder(self):
         """Add all objects required for restart to the list of objects to be copied from the previous calculation."""
         restart_folder = self.inputs.restart_folder
         computer = self.node.computer
         included = ['CHGCAR', 'WAVECAR']
         included += self.inputs.settings.base.attributes.get('ADDITIONAL_REMOTE_COPY_LIST', [])
+
         existing_objects = restart_folder.listdir()
         to_copy = []
         for name in included:
@@ -136,7 +130,7 @@ class VaspCalcBase(CalcJob):
         copy_list = [(computer.uuid, os.path.join(restart_folder.get_remote_path(), name), '.') for name in to_copy]
         return copy_list
 
-    def verify_inputs(self) -> bool:
+    def verify_inputs(self):
         """
         Hook to be extended by subclasses with checks for input nodes.
 
@@ -145,25 +139,25 @@ class VaspCalcBase(CalcJob):
         self.check_restart_folder()
         return True
 
-    def check_restart_folder(self) -> None:
+    def check_restart_folder(self):
         restart_folder = self.inputs.get('restart_folder', None)
         if restart_folder:
             if not self.node.computer.pk == restart_folder.computer.pk:
                 raise ValidationError('Calculation can not be restarted on another computer')
 
-    def _is_restart(self) -> bool:
+    def _is_restart(self):
         restart_folder = self.inputs.get('restart_folder', None)
         return bool(restart_folder)
 
-    def store(self, *args: Any, **kwargs: Any) -> None:
+    def store(self, *args, **kwargs):
         """Adds a _prestore subclass hook for operations that should be done just before storing."""
         self._prestore()
         super().store(*args, **kwargs)
 
-    def _prestore(self) -> None:
+    def _prestore(self):
         """Subclass hook for updating attributes etc, just before storing."""
         return
 
-    def write_additional(self, folder: Folder, calcinfo: CalcInfo) -> None:  # pylint: disable=unused-argument,
+    def write_additional(self, folder, calcinfo):  # pylint: disable=unused-argument,
         """Subclass hook to write additional input objects."""
         return

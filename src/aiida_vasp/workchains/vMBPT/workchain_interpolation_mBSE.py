@@ -15,7 +15,7 @@ from aiida_vasp.utils.workchains  import prepare_process_inputs
 from aiida_vasp.utils.aiida_utils import get_data_class
 from aiida.common.extendeddicts   import AttributeDict
 from aiida_vasp.utils.workchains  import site_magnetization_to_magmom
-from workchain_base import SingleGWorkChain
+from .workchain_base import VaspDFTGWWorkChain
 
 import warnings
 
@@ -24,12 +24,12 @@ load_profile()
 
 
 
-class wkc_interpolation_mBSE(WorkChain):
+class VaspmBSEInterpolatedWorkChain(WorkChain):
     _next_workchain = WorkflowFactory('vasp.vasp')
 
     @classmethod
     def define(cls, spec):
-            super(wkc_interpolation_mBSE, cls).define(spec) 
+            super(VaspmBSEInterpolatedWorkChain, cls).define(spec) 
 
             spec.expose_inputs(cls._next_workchain      , exclude=('parameters','settings','options')) 
 
@@ -90,7 +90,7 @@ class wkc_interpolation_mBSE(WorkChain):
 
 
             self.ctx.inputs_DFTgr_NSP = inputs_DFTgr_NSP
-            runningWC_DFTgr_NSP = self.submit(SingleGWorkChain , **self.ctx.inputs_DFTgr_NSP) 
+            runningWC_DFTgr_NSP = self.submit(VaspDFTGWWorkChain , **self.ctx.inputs_DFTgr_NSP) 
             self.report('\n [Ground-State-1] launching DFT-groundState - NonSpinPolarized vasp.vasp workchain <{}> \n\n'.format(runningWC_DFTgr_NSP.pk))
             return ToContext(finishedWC_DFTgr_NSP=append_(runningWC_DFTgr_NSP))            
 
@@ -121,7 +121,7 @@ class wkc_interpolation_mBSE(WorkChain):
                 inputs_DFTgr_SP.options = Dict( dict_entry_options )
    
                 self.ctx.inputs_DFTgr_SP = inputs_DFTgr_SP
-                runningWC_DFTgr_SP = self.submit(SingleGWorkChain , **self.ctx.inputs_DFTgr_SP) 
+                runningWC_DFTgr_SP = self.submit(VaspDFTGWWorkChain , **self.ctx.inputs_DFTgr_SP) 
                 self.report('\n [Ground-State-1] launching DFT-groundState - SpinPolarized vasp.vasp workchain <{}> \n\n'.format(runningWC_DFTgr_SP.pk))
                 return ToContext(finishedWC_DFTgr_SP=append_(runningWC_DFTgr_SP))                
  

@@ -14,14 +14,14 @@ from sklearn.linear_model import LinearRegression
 from aiida_vasp.utils.workchains import site_magnetization_to_magmom
 
 
-from utils_calcfunctions import  input_magnetic_moment_tomagmom
+from .utils_calcfunctions import  input_magnetic_moment_tomagmom
 
 
 
 
 
 
-# The SingleGWorkChain can run
+# The VaspDFTGWWorkChain can run
 # - Single DFT calculations : in this case ns_option.run_G0W0 must be set to False (default).
 # - DFT AND G0W0 calculations on top of the DFT, using the same number of bands and encut ; 
 #   in this case the G0W0 calculation will use the DFT wavefunctions and energies as starting point.
@@ -37,13 +37,13 @@ from utils_calcfunctions import  input_magnetic_moment_tomagmom
 #
 # The main workchain outputs the bands and gaps of the DFT and G0W0 calculations, togetherwith the QuasiParticle corrections.
 # The remoteData of the DFT and G0W0 are also returned.
-class SingleGWorkChain(WorkChain):
+class VaspDFTGWWorkChain(WorkChain):
     _next_workchain_string = 'vasp.vasp'
     _next_workchain = WorkflowFactory(_next_workchain_string)
 
     @classmethod
     def define(cls, spec):
-            super(SingleGWorkChain, cls).define(spec)        
+            super(VaspDFTGWWorkChain, cls).define(spec)        
 
             spec.expose_inputs(cls._next_workchain  , exclude=('kpoints','parameters','settings')) #parameters contains the INCAR, see 
 
@@ -108,7 +108,7 @@ class SingleGWorkChain(WorkChain):
 
     def run_calc(self):
             if self.inputs.ns_option.verbose:
-                str_log = ('\n [SingleGWorkChain pk='+str(self.node.pk)+" <"+self.inputs.ns_option.calculationLabel.value 
+                str_log = ('\n [VaspDFTGWWorkChain pk='+str(self.node.pk)+" <"+self.inputs.ns_option.calculationLabel.value 
                 + "> iteration="+str(self.ctx.control.iteration_counter)+"][run_calc]"
                 + '\n  launching a calc? '+str(self.ctx.WCtoRun) )
                 if self.inputs.ns_option.compute_dipole_transition_mat: str_log = str_log + '\n                     The DFT run is the preparatory step to G0W0 (LOPTICS=T , NELM=1='
@@ -341,7 +341,7 @@ class SingleGWorkChain(WorkChain):
            
 
             if self.inputs.ns_option.verbose:
-                str_log=('\n [SingleGWorkChain pk='+str(self.node.pk)+" <"+self.inputs.ns_option.calculationLabel.value+"> ][monitor_WCprogress at the start of iteration" +str(self.ctx.control.iteration_counter)+"]"
+                str_log=('\n [VaspDFTGWWorkChain pk='+str(self.node.pk)+" <"+self.inputs.ns_option.calculationLabel.value+"> ][monitor_WCprogress at the start of iteration" +str(self.ctx.control.iteration_counter)+"]"
                 +'\n  >> monitor_WCprogress: WCrecord_DFT='+str(self.ctx.WCrecord_DFT))
                 if (len(self.ctx.WCrecord_DFT) >0) : str_log = str_log + '\n                 '+str(' '.join(["called by wkc "+str(node.pk)+" :"+str(node.called) for node in self.ctx.WCrecord_DFT]))
                 str_log = str_log + '\n  >> monitor_WCprogress: WCrecord_G0W0=' +str(self.ctx.WCrecord_G0W0)
@@ -361,17 +361,17 @@ class SingleGWorkChain(WorkChain):
             #[case 4]: num of tries exceed maximum number; exit workchain with error.
             #[case 5]: retry.
             if len(self.ctx.WCrecord_DFT) == 0:   
-                self.report(str_log+'\n  -> SingleGWorkChain started first iteration!'+"\n")
+                self.report(str_log+'\n  -> VaspDFTGWWorkChain started first iteration!'+"\n")
                 return True
             elif (not self.inputs.ns_option.run_G0W0) and (lastDFT_exitCode == 0) : 
-                self.report(str_log+'\n -> SingleGWorkChain cycle exit - DFT calculation at iteration {} finished successfully, G0W0 is not required!'.format(self.ctx.control.iteration_counter-1)+"\n")
+                self.report(str_log+'\n -> VaspDFTGWWorkChain cycle exit - DFT calculation at iteration {} finished successfully, G0W0 is not required!'.format(self.ctx.control.iteration_counter-1)+"\n")
                 self.ctx.control.FINISHED_SUCCESSFULLY      = True
                 return False
             elif lastGW_exitCode == 0:
-                self.report(str_log+'\n >> SingleGWorkChain cycle exit - G0W0 calculations at iteration {} finished successfully!'.format(self.ctx.control.iteration_counter-1)+"\n")
+                self.report(str_log+'\n >> VaspDFTGWWorkChain cycle exit - G0W0 calculations at iteration {} finished successfully!'.format(self.ctx.control.iteration_counter-1)+"\n")
                 self.ctx.control.FINISHED_SUCCESSFULLY      = True
             elif self.ctx.control.iteration_counter > self.inputs.ns_option.maximum_iterations +1:
-                self.report(str_log+'\n -> SingleGWorkChain EXCEEDED maximum number of iterations!'+"\n")
+                self.report(str_log+'\n -> VaspDFTGWWorkChain EXCEEDED maximum number of iterations!'+"\n")
                 self.ctx.control.REACHED_MAXIMUM_TRY_NUMBER = True
                 return False
             else:
@@ -501,7 +501,7 @@ class SingleGWorkChain(WorkChain):
         
         #And then complete the log in the string. 
         if self.inputs.ns_option.verbose: 
-            str_log=('\n [SingleGWorkChain pk='+str(self.node.pk)+" <"+self.inputs.ns_option.calculationLabel.value+"> ][elaborate_results]"
+            str_log=('\n [VaspDFTGWWorkChain pk='+str(self.node.pk)+" <"+self.inputs.ns_option.calculationLabel.value+"> ][elaborate_results]"
             +"\n >> [1] self.ctx.control.FINISHED_SUCCESSFULLY       ="+str(self.ctx.control.FINISHED_SUCCESSFULLY     )
             +"\n >> [1] self.ctx.control.REACHED_MAXIMUM_TRY_NUMBER  ="+str(self.ctx.control.REACHED_MAXIMUM_TRY_NUMBER)
             +"\n >> [2] PAW potentials used = "+str(self.inputs.potential_mapping.get_dict())                          )

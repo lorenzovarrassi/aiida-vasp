@@ -1,6 +1,6 @@
 from .v2 import *
-from .v_MBPT.workchain_base import SingleGWorkChain
-from .v_MBPT.workchain_interpolation_mBSE import wkc_interpolation_mBSE
+from .vMBPT.workchain_base import VaspDFTGWWorkChain
+from .vMBPT.workchain_interpolation_mBSE import VaspmBSEInterpolatedWorkChain
 
 __all__ = (
     'VaspBandsWorkChain',
@@ -10,6 +10,6 @@ __all__ = (
     'VaspNEBWorkChain',
     'VaspRelaxWorkChain',
     'VaspWorkChain',
-    'SingleGWorkChain',
-    'wkc_interpolation_mBSE'
+    'VaspDFTGWWorkChain',
+    'VaspmBSEInterpolatedWorkChain',
 )

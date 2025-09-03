@@ -38,8 +38,7 @@ from .utils_calcfunctions import  input_magnetic_moment_tomagmom
 # The main workchain outputs the bands and gaps of the DFT and G0W0 calculations, togetherwith the QuasiParticle corrections.
 # The remoteData of the DFT and G0W0 are also returned.
 class VaspDFTGWWorkChain(WorkChain):
-    _next_workchain_string = 'vasp.vasp'
-    _next_workchain = WorkflowFactory(_next_workchain_string)
+    _next_workchain = WorkflowFactory( 'vasp.vasp' )
 
     @classmethod
     def define(cls, spec):
@@ -47,21 +46,21 @@ class VaspDFTGWWorkChain(WorkChain):
 
             spec.expose_inputs(cls._next_workchain  , exclude=('kpoints','parameters','settings')) #parameters contains the INCAR, see 
 
-            spec.input('ns_parameters.encut'                  , valid_type=Float      , required=False , help='cutoff energy for the wavefunction in eV. ENCUT variable in VASP.')  #ns stands for namespace
-            spec.input('ns_parameters.nbands'                 , valid_type=Int        , required=False , help='total number of bands included in the DFT and G0W0 runs. NBANDS variable in VASP.'  )   
+            spec.input('ns_parameters.encut'                  , valid_type=Float      , required=False , help='cutoff energy for the wavefunction in eV. encut variable in VASP.')  #ns stands for namespace
+            spec.input('ns_parameters.nbands'                 , valid_type=Int        , required=False , help='total number of bands included in the DFT and G0W0 runs. nbands variable in VASP.'  )   
             #Note magnetic_moment_onsite assumes that the calculation is spin-polarized; Spin-Orbit calculations are currently not supported. 
             #If magnetic_moment_onsite  is not passed, the calculation is instead assumed spin non-polarized.
             spec.input('ns_parameters.magnetic_moment_onsite' , valid_type=Dict       , required=False , help='Starting collinear on-site magnetic moment ; Syntax is {ElName:value}')
 
             spec.input('ns_parameters.nomega'                 , valid_type=Int        , required=False , default=lambda: Int(200) , help='number of frequency points for the chi and sigma calculation in G0W0 runs. Default is 1 (COHSEX).') 
-            spec.input('ns_parameters.nbandsgw'               , valid_type=Int        , required=False , help='number of bands for which QP energies are calculated - NBANDSGW variable in VASP')  
-            spec.input('ns_parameters.encut_chi'              , valid_type=Float      , required=False , help='cutoff energy for the response function in eV - ENCUTGW variable in VASP') 
+            spec.input('ns_parameters.nbandsgw'               , valid_type=Int        , required=False , help='number of bands for which QP energies are calculated - nbandsGW variable in VASP')  
+            spec.input('ns_parameters.encut_chi'              , valid_type=Float      , required=False , help='cutoff energy for the response function in eV - encutGW variable in VASP') 
             spec.input('kpoints'                              , valid_type=DataFactory('core.array.kpoints') , help='K-mesh used for VASP G0W0 and DFT runs; get_kpoints_mesh() must work.' )     
 
-            spec.input('ns_parallelization.kpar'              , valid_type=Int        , required=False , default=lambda: Int(1)      , help='KPAR value to be used in G0W0 calculations')
+            spec.input('ns_parallelization.kpar'              , valid_type=Int        , required=False , default=lambda: Int(1)      , help='kpar value to be used in G0W0 calculations')
             spec.input('ns_parallelization.ncshmem'           , valid_type=Int        , required=False , default=lambda: Int(1)      , help='NSCHMEM value to be used in G0W0 calculations. Default is 1')        
             spec.input('ns_parallelization.npar'              , valid_type=Int        , required=False , default=lambda: Int(1)      , help='NPAR value to be used in G0W0 calculations')
-            spec.input('ns_parallelization.lreal'             , valid_type=Bool       , required=False , default=lambda: Bool(False) , help='LREAL value to be used in all calculations. If True sets to Auto, otherwise False') 
+            spec.input('ns_parallelization.lreal'             , valid_type=Bool       , required=False , default=lambda: Bool(False) , help='lreal value to be used in all calculations. If True sets to Auto, otherwise False') 
             spec.input('ns_parallelization.maxmem'            , valid_type=Int        , required=False , help='MAXMEM value to be supplied to G0W0 calculations')  
 
             spec.input('ns_reference.DFTgr_RemoteData'        , valid_type=RemoteData , required=False , help='the DFT ground state wavefunction (WAVECAR) and CHGCAR will be copied from this RemoteData folder as a starting point' )
@@ -71,7 +70,7 @@ class VaspDFTGWWorkChain(WorkChain):
             spec.input('ns_option.run_G0W0'                        , valid_type=Bool , required=False , default=lambda: Bool(True)  , help='If False, run a single G0W0 calculations; if True, run a DFT and G0W0 ON TOP on it, using same encut and number of bands and the DFT wavefunctions and energies as starting point')
             spec.input('ns_option.compute_dipole_transition_mat'   , valid_type=Bool , required=False , default=lambda: Bool(False) , help='Compute the DFT dipole matrix elements (LOPTICS flag).')
             spec.input('ns_option.select_algo_Exact'               , valid_type=Bool , required=False , default=lambda: Bool(False) , help='The DFT step will be run with ALGO=Exact.' )
-            spec.input('ns_option.select_single_iteration'         , valid_type=Bool , required=False , default=lambda: Bool(False) , help='If activated, the DFT step will run a single self-consistency step (NELM=1).' )
+            spec.input('ns_option.select_single_iteration'         , valid_type=Bool , required=False , default=lambda: Bool(False) , help='If activated, the DFT step will run a single self-consistency step (nelm=1).' )
             spec.input('ns_option.calculationLabel'                , valid_type=Str  , required=False , default=lambda: Str("")     , help='The summary printed at the end will be labeled with this string.')
 
 
@@ -111,7 +110,7 @@ class VaspDFTGWWorkChain(WorkChain):
                 str_log = ('\n [VaspDFTGWWorkChain pk='+str(self.node.pk)+" <"+self.inputs.ns_option.calculationLabel.value 
                 + "> iteration="+str(self.ctx.control.iteration_counter)+"][run_calc]"
                 + '\n  launching a calc? '+str(self.ctx.WCtoRun) )
-                if self.inputs.ns_option.compute_dipole_transition_mat: str_log = str_log + '\n                     The DFT run is the preparatory step to G0W0 (LOPTICS=T , NELM=1='
+                if self.inputs.ns_option.compute_dipole_transition_mat: str_log = str_log + '\n                     The DFT run is the preparatory step to G0W0 (LOPTICS=T , nelm=1='
                 str_log = str_log + ('\n  at this step we have already done:'
                 + '\n  >> WCrecord_DFT='+str(self.ctx.WCrecord_DFT)
                 + '\n  >> WCrecord_G0W0='+str(self.ctx.WCrecord_G0W0)+'\n\n')
@@ -150,80 +149,43 @@ class VaspDFTGWWorkChain(WorkChain):
             ##[Part 1][Step 1.0] Folder are not cancelled automatically because we may want to keep WAVECARs, WAVEDERs, WFULLs for following calculation. Folder can be cancelled later
             self.ctx.inputs_DFT.clean_workdir=Bool(False)
 
-            
             ##[Part 2] Defining kpoints - restart data - settings 
             self.ctx.inputs_DFT.kpoints = self.inputs.kpoints
 
-            #If DFTgr_RemoteData (a RemoteData variable) is set, used the WAVECAR contained there as a starting point for the DFT.
-            #If the calculation is magnetic (magnetic_moment_onsite is set) make sure that also the CHGCAR is copied by adding it to the fileToIncludeFromRestartFolder variable.
-            #The fileToIncludeFromRestartFolder and restart_folder are inputs of the vasp.vasp workchain.
             if ('DFTgr_RemoteData' in self.inputs['ns_reference']):
                 self.ctx.inputs_DFT.restart_folder = self.inputs.ns_reference.DFTgr_RemoteData
 
-            #inside calcs/base.py default is included = ['CHGCAR', 'WAVECAR'] : thus we do not need to redefine
-            #if ('magnetic_moment_onsite' in self.inputs['ns_parameters']):     #if hasattr(self.inputs, 'ns_parameters.magnetic_moment_onsite'):
-            #    self.ctx.inputs_DFT.fileToIncludeFromRestartFolder = List(list=['CHGCAR'])  #,'WAVECAR','WAVEDER'])
-            #else:
-            #    self.ctx.inputs_DFT.fileToIncludeFromRestartFolder = List(list=['WAVECAR'])
 
-            #add_maximum_number_pw : and a output to the calculation node containing the maximum number of plane waves (as defined by the cutoff) among all k-points.
-            #add_ENMAXarray : add a output to the calculation node containing the list of ENMAXs of the POTCAR used.
-            #add_NGarray : add a output to the calculation node containing the dimensions of the FFT grid used.
-            #settings   = AttributeDict({'parser_settings': {}})
-            #dict_entry = {'add_bands': True , 'add_maximum_number_pw': True , 'add_ENMAXarray': True , 'add_NGarray': True , 'add_kpoints' : True}
-            #settings.parser_settings.update(dict_entry)
-            #self.ctx.inputs_DFT.settings = settings
-            #self.ctx.inputs_DFT.settings = AttributeDict({'parser_settings': {'include_node': ['bands','kpoints','structure','maximum_number_pw','NGarray']}})
             self.ctx.inputs_DFT.settings = AttributeDict({'parser_settings': {'include_node': ['bands','kpoints','structure','NGarray','maximum_number_pw']}})
             
             ##[Part 3][Defining INCAR]
-            incar = {'incar': {'EDIFF':1E-7 , 'ALGO':"Normal" , 'ISMEAR':0 , 'SIGMA':0.02 , 'PREC':'Accurate' , 'NELM':200 , 'LMAXMIX':4}}
-            if ('encut'  in self.inputs['ns_parameters']):  incar['incar']['ENCUT']  = self.inputs.ns_parameters.encut
-            if ('nbands' in self.inputs['ns_parameters']):  incar['incar']['NBANDS'] = self.inputs.ns_parameters.nbands
+            incar = {'incar': {'ediff':1E-7 , 'algo':"Normal" , 'ismear':0 , 'sigma':0.02 , 'prec':'Accurate' , 'nelm':200 , 'lmaxmix':4}}
+            if ('encut'  in self.inputs['ns_parameters']):  incar['incar']['encut']  = self.inputs.ns_parameters.encut
+            if ('nbands' in self.inputs['ns_parameters']):  incar['incar']['nbands'] = self.inputs.ns_parameters.nbands
             
-            
-            if ('kpar'  in self.inputs['ns_parallelization']): incar['incar']['KPAR'] = self.inputs.ns_parallelization.kpar.value
-            if ('npar'  in self.inputs['ns_parallelization']): incar['incar']['NPAR'] = self.inputs.ns_parallelization.npar.value
-            if ('lreal' in self.inputs['ns_parallelization']): 
-                if self.inputs.ns_parallelization.lreal == True: incar['incar']['LREAL'] = 'Auto'
-                else:                                            incar['incar']['LREAL'] = '.FALSE.'
+            if ('kpar'  in self.inputs['ns_parallelization']): incar['incar']['kpar'] = self.inputs.ns_parallelization.kpar.value
+            if ('npar'  in self.inputs['ns_parallelization']): incar['incar']['npar'] = self.inputs.ns_parallelization.npar.value
+            if self.inputs.ns_parallelization.lreal == True: incar['incar']['lreal'] = 'Auto'
+            else:                                            incar['incar']['lreal'] = '.FALSE.'
     
             # If 'magnetic_moment_onsite' is set, we consider the calculation spin-polarized.
             if ('magnetic_moment_onsite' in self.inputs['ns_parameters']):          #For some reason hasattr(self.inputs['ns_parameters'], 'magnetic_moment_onsite') does not work, always false.
-                _ , incar['incar']['MAGMOM'] = input_magnetic_moment_tomagmom(self.inputs.structure , self.inputs['ns_parameters']['magnetic_moment_onsite'].get_dict())
-                incar['incar']['ISPIN']  = 2
-                incar['incar']['ICHARG'] = 1
-                incar['incar']['LORBIT'] = 11
-                incar['incar']['AMIX_MAG'] = 0.8
-                incar['incar']['BMIX_MAG'] = 0.00001
-                incar['incar']['AMIX'] = 0.2
-                incar['incar']['BMIX'] = 0.00001
+                _ , incar['incar']['magmom'] = input_magnetic_moment_tomagmom(self.inputs.structure , self.inputs['ns_parameters']['magnetic_moment_onsite'].get_dict())
+                incar['incar']['ispin']  = 2
+                incar['incar']['icharg'] = 1
+                incar['incar']['lorbit'] = 11
+                incar['incar']['amix_mag'] = 0.8
+                incar['incar']['bmix_mag'] = 0.00001
+                incar['incar']['amix'] = 0.2
+                incar['incar']['bmix'] = 0.00001
                 
             if self.inputs.ns_option.compute_dipole_transition_mat or self.inputs.ns_option.run_G0W0 : 
-                incar['incar']['LOPTICS'] = '.TRUE.'  
+                incar['incar']['loptics'] = '.TRUE.'  
             if self.inputs.ns_option.select_algo_Exact == True: incar['incar']['ALGO'] = "Exact"
                 
             if (self.inputs['ns_option']['select_single_iteration'] == True):
-                incar['incar']['NELM'] = 1      
+                incar['incar']['nelm'] = 1      
             self.ctx.inputs_DFT.parameters = DataFactory('dict')(dict=incar) #convert to AiiDA format
-
-
-            ##[Part 3][Correcting INCAR]
-            #try:  #At the first iteration  self.ctx.WCrecord_DFT is empty and thus  self.ctx.WCrecord_DFT[-1] does not possess the attribute is_finished_ok; thus the try-except
-            #      #This try is entered from the second iteration of monitor_WCprogress on.
-            #    if (self.ctx.control.iteration_counter > 0) and (not self.ctx.WCrecord_DFT[-1].is_finished_ok):
-            #        if self.ctx.control.iteration_counter == 2 : 
-            #            self.report("\n\n [ERROR CORRECTION] DFT failed - correcting adding ALGO=Exact")
-            #            incar['incar']['ALGO'] = "Exact"
-            #            ###incar['incar']['NELM'] = 1
-            #            self.ctx.inputs_DFT.fileToIncludeFromRestartFolder = List(list=['WAVECAR','CHGCAR']) 
-            #        if self.ctx.control.iteration_counter == 3 :
-            #            self.report("\n\n [ERROR CORRECTION] DFT failed - correcting adding ALGO=VeryFast ; NELM=200")                    
-            #            incar['incar']['ALGO'] = "VeryFast"
-            #            incar['incar']['NELM'] = 200
-            #            self.ctx.inputs_DFT.fileToIncludeFromRestartFolder = List(list=['WAVECAR','CHGCAR']) 
-            #except: pass
-            
 
 
             # Finalized!
@@ -239,17 +201,17 @@ class VaspDFTGWWorkChain(WorkChain):
                 #Thus we avoid to redo also the DFT, use the DFT of the previous iteration as a starting point and do not redo it. 
                 WC_PreviousIdentical = None
                 for previousWC_idx, previousWC in enumerate(self.ctx.WCrecord_DFT) :
-                    try:    previousWC_loptics = previousWC.inputs.parameters.get_dict()['incar']['LOPTICS']
+                    try:    previousWC_loptics = previousWC.inputs.parameters.get_dict()['incar']['loptics']
                     except: previousWC_loptics = None
-                    try:    presentWC_loptics = incar['incar']['LOPTICS']
+                    try:    presentWC_loptics = incar['incar']['loptics']
                     except: presentWC_loptics = None                     
-                    try: # if previous DFT exists, extract final ENCUT / NBANDS / kpoints / LOPTICS and check if identical; if yes, do not required to relaunch         
-                        previousWC_encut   = previousWC.inputs.parameters.get_dict()['incar']['ENCUT']
+                    try: # if previous DFT exists, extract final encut / nbands / kpoints / loptics and check if identical; if yes, do not required to relaunch         
+                        previousWC_encut   = previousWC.inputs.parameters.get_dict()['incar']['encut']
                         previousWC_kpoints = previousWC.inputs.kpoints.get_kpoints_mesh()            
                         previousWC_nbands  = np.shape(previousWC.outputs.bands.get_bands())[1] # BandsData indexs: [0]=spin components; [1]=represents kpts index, [2]=bands
                         
-                        if (previousWC.is_finished_ok             and previousWC_encut  == incar['incar']['ENCUT']  and 
-                            previousWC_nbands  == incar['NBANDS']  and previousWC_loptics == presentWC_loptics          ):
+                        if (previousWC.is_finished_ok             and previousWC_encut  == incar['incar']['encut']  and 
+                            previousWC_nbands  == incar['nbands']  and previousWC_loptics == presentWC_loptics          ):
                             WC_PreviousIdentical = self.ctx.WCrecord_DFT[previousWC_idx]  
                     except: pass
                 
@@ -272,45 +234,45 @@ class VaspDFTGWWorkChain(WorkChain):
                 self.ctx.inputs_GW.clean_workdir=Bool(False)
                 
                 #[Step 1] Define the INCAR
-                incar = {'incar': {'NELM':1 , 'ALGO':'GW0' , 'ISMEAR':0 , 'SIGMA':0.01 , ##'ISPIN':1 , 
-                                   'NOMEGA':self.inputs.ns_parameters.nomega       , 'KPAR':self.inputs.ns_parallelization.kpar  ,
+                incar = {'incar': {'nelm':1 , 'algo':'GW0' , 'ismear':0 , 'sigma':0.01 , ##'ispin':1 , 
+                                   'nomega':self.inputs.ns_parameters.nomega       , 'kpar':self.inputs.ns_parallelization.kpar  ,
                                    'NMAXFOCKAE':2 , 'PREC':'Accurate'}} #NMAXFOCKAE is set to 2 Following Klimes et al, 2014.
-                if ('encut'  in self.inputs['ns_parameters']):  incar['incar']['ENCUT']  = self.inputs.ns_parameters.encut
-                if ('nbands' in self.inputs['ns_parameters']):  incar['incar']['NBANDS'] = self.inputs.ns_parameters.nbands            
-                else: incar['incar']['NBANDS'] =  np.shape(self.ctx.WCrecord_DFT[-1].outputs.bands.get_bands())[1]   #In altenrnativa : self.ctx.WCrecord_DFT[-1].outputs.get_dict()['run_status']['nbands']
+                if ('encut'  in self.inputs['ns_parameters']):  incar['incar']['encut']  = self.inputs.ns_parameters.encut
+                if ('nbands' in self.inputs['ns_parameters']):  incar['incar']['nbands'] = self.inputs.ns_parameters.nbands            
+                else: incar['incar']['nbands'] =  np.shape(self.ctx.WCrecord_DFT[-1].outputs.bands.get_bands())[1]   #In altenrnativa : self.ctx.WCrecord_DFT[-1].outputs.get_dict()['run_status']['nbands']
 
 
 
                 if ('encut_chi' in self.inputs['ns_parameters']):  
-                    incar['incar']['ENCUTGW']      = self.inputs.ns_parameters.encut_chi                                                            
-                    incar['incar']['ENCUTGWSOFT']  = self.inputs.ns_parameters.encut_chi                                                            
+                    incar['incar']['encutgw']      = self.inputs.ns_parameters.encut_chi                                                            
+                    incar['incar']['encutgwsoft']  = self.inputs.ns_parameters.encut_chi                                                            
                 
-                if ('nbandsgw' in self.inputs['ns_parameters']):   incar['incar']['NBANDSGW'] = self.inputs.ns_parameters.nbandsgw                         #THIS IS TO-TEST           
-                if ('maxmem'  in self.inputs['ns_parallelization']):    incar['incar']['MAXMEM']  = self.inputs.ns_parallelization.maxmem   #THIS IS TO-TEST
-                if ('ncshmem' in self.inputs['ns_parallelization']):   incar['incar']['NCSHMEM'] = self.inputs.ns_parallelization.ncshmem  
-                if self.inputs.ns_parallelization.lreal: incar['incar']['LREAL'] = 'Auto'                                                   
-                else: incar['incar']['LREAL'] = '.FALSE.'                                                                                      
+                if ('nbandsgw' in self.inputs['ns_parameters']):   incar['incar']['nbandsgw'] = self.inputs.ns_parameters.nbandsgw                         #THIS IS TO-TEST           
+                if ('maxmem'  in self.inputs['ns_parallelization']):    incar['incar']['maxmem']  = self.inputs.ns_parallelization.maxmem   #THIS IS TO-TEST
+                if ('ncshmem' in self.inputs['ns_parallelization']):   incar['incar']['nschmem'] = self.inputs.ns_parallelization.ncshmem  
+                if self.inputs.ns_parallelization.lreal: incar['incar']['lreal'] = 'Auto'                                                   
+                else: incar['incar']['lreal'] = '.FALSE.'                                                                                      
 
                 if ('magnetic_moment_onsite' in self.inputs['ns_parameters']):     #if hasattr(self.inputs, 'ns_parameters.magnetic_moment_onsite'):
-                    incar['incar']['ISPIN']  = 2
-                    _ , incar['incar']['MAGMOM'] = input_magnetic_moment_tomagmom(self.inputs.structure , self.inputs['ns_parameters']['magnetic_moment_onsite'].get_dict())
-                    incar['incar']['LORBIT'] = 11
-                    incar['incar']['ISTART'] = 1     
-                    incar['incar']['ICHARG'] = 1     
+                    incar['incar']['ispin']  = 2
+                    _ , incar['incar']['magmom'] = input_magnetic_moment_tomagmom(self.inputs.structure , self.inputs['ns_parameters']['magnetic_moment_onsite'].get_dict())
+                    incar['incar']['lorbit'] = 11
+                    incar['incar']['istart'] = 1     
+                    incar['incar']['icharg'] = 1     
 
 
                     
                 else: 
-                    incar['incar']['ISPIN'] = 1
+                    incar['incar']['ispin'] = 1
 
                 #[Step 1.1] correct the INCAR in following run (if the first has failed)
                 #At the first iteration  self.ctx.WCrecord_DFT is empty and thus  self.ctx.WCrecord_DFT[-1] does not possess the attribute is_finished_ok; thus the try-except
                 try:
                     if (self.ctx.control.iteration_counter > 0) and (not self.ctx.WCrecord_G0W0[-1].is_finished_ok):
-                        incar['incar']['LREAL']   = 'Auto'   #in order to reduce Memory constraint
-                        incar['incar']['NCSHMEM']    = 1     #NCHSMEM  might cause errors - disable it
-                        incar['incar']['NMAXFOCKAE'] = 1
-                        incar['incar']['KPAR']       = 1   
+                        incar['incar']['lreal']   = 'Auto'   #in order to reduce Memory constraint
+                        incar['incar']['ncshmem']    = 1     #NCHSMEM  might cause errors - disable it
+                        incar['incar']['nmaxfockae'] = 1
+                        incar['incar']['kpar']       = 1   
                 except:
                     pass
      
@@ -319,16 +281,13 @@ class VaspDFTGWWorkChain(WorkChain):
                 self.ctx.inputs_GW.kpoints = self.inputs.kpoints
 
                 #[Step 2] Define parser settings: add_maximum_number_pw is not really needed here, we add for completenes.
-                #self.ctx.inputs_GW.settings = Dict( {'parser_settings': {'include_node': ['bands','kpoints','structure']}} )
                 self.ctx.inputs_GW.settings = Dict()
                 self.ctx.inputs_GW.settings['parser_settings'] = {'include_node': ['bands','kpoints','structure']}
                 self.ctx.inputs_GW.settings['ADDITIONAL_REMOTE_COPY_LIST'] = ['WAVEDER'] 
 
                 #[Step 3] G0W0 should use DFT's WAVECAR and WAVEDER as a starting point.
                 # restart_folder and fileToIncludeFromRestartFolder are VaspCalculation's inputs (passed through expose_inputs).
-                # fileToIncludeFromRestartFolder files from restart_folder RemoteData are added to VaspCalculation's remote_copy_list
                 self.ctx.inputs_GW.restart_folder = self.ctx.WCrecord_DFT[-1].outputs.remote_folder
-
 
                 self.ctx.inputs_GW_finalized = prepare_process_inputs(self.ctx.inputs_GW, namespaces=['dynamics','verify'])
             
@@ -414,8 +373,8 @@ class VaspDFTGWWorkChain(WorkChain):
             #Prepare the symmary in the str_log string; this string is not initialized from scratch in this function but took as an argument; the function concatenates (and does not overwrite it) its results.
             #This is useful for spin-polarized calculations: in this case each call of elaborate_single_spin_component will add the results of one of the two spin components.
             try: str_log=str_log+("\n >> [2] input encut , nbands  :"
-                                +str(lastNode_G0W0.inputs.parameters.get_dict()['incar']['ENCUT'])+" , "
-                                +str(lastNode_G0W0.inputs.parameters.get_dict()['incar']['NBANDS'])     )
+                                +str(lastNode_G0W0.inputs.parameters.get_dict()['incar']['encut'])+" , "
+                                +str(lastNode_G0W0.inputs.parameters.get_dict()['incar']['nbands'])     )
             except:pass
             str_log=str_log+("\n >> [2] output maximum num pw at DFT    : "+str(lastNode_DFT.outputs.maximum_number_pw.get_dict()['maximum_number_pw'][0])
                             +"\n >> [2] output nbands (effectively used): "+str(lastNode_G0W0.outputs.misc.get_dict()['run_status']['nbands'])

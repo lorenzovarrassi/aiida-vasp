@@ -710,15 +710,29 @@ class bandsObj_: ##<----------------------------------------------------------->
 
 ## [Interface]
 parser = argparse.ArgumentParser()
-parser.add_argument("-ps"  , "--path_sparse_GW" , type=str)
-parser.add_argument("-pd"  , "--path_dense_DFT" , type=str)
-parser.add_argument("-ngw" , "--nbandsgw_dense" , type=int)
+parser.add_argument("-ps"  , "--path_sparse_GW" , type=str , required=True )
+parser.add_argument("-pd"  , "--path_dense_DFT_reference" , type=str , required=True  )
+parser.add_argument("-pd"  , "--path_dense_DFT_toInterp"  , type=str , required=False , default="./")
+parser.add_argument("-ngw" , "--nbandsgw_dense"           , type=int , required=False , default=-1)
 
 input = {} ; args = parser.parse_args()
-if args.nbandsgw_dense is not None: input["nbandsgw_dense"] = args.nbandsgw_dense
 if args.path_sparse_GW is not None: input["path_sparse_GW"] = args.path_sparse_GW
-if args.path_dense_DFT is not None: input["path_dense_DFT"] = args.path_dense_DFT
-input["path_dense_toInterp"] = "./" 
+if args.path_dense_DFT_reference is not None: input["path_dense_DFT_reference"] = args.path_dense_DFT_reference
+if args.path_dense_DFT_toInterp is not None:  input["path_dense_DFT_toInterp"] = args.path_dense_DFT_toInterp
+else: input["path_dense_DFT_toInterp"] = "./"
+if args.nbandsgw_dense is not None: input["nbandsgw_dense"] = args.nbandsgw_dense
+else: input["nbandsgw_dense"] = -1
+
+
+
+input={}
+input["path_sparse_GW"] = "/home/nlvarrass206900/Documents/DataConfig_AiiDA/DockerFile_aiidalab/AiiDAlab_withPlugins/Folder_TestData/ReferenceData/2.2-GW"
+input["path_dense_DFT_reference"] = "/home/nlvarrass206900/.aiida/scratch/presto-1/a9/00/6cc6-1b94-4811-a85c-fc4c4c4d3218"
+input["path_dense_DFT_toInterp"]  =  "./"
+input["nbandsgw_dense"] =  -1
+
+
+
 
 
 
@@ -728,34 +742,31 @@ bObj_SPARSE_OUTCAR = bandsObj_()
 bObj_SPARSE_OUTCAR.read_file_OUTCAR_spinUnpol( os.path.join(input["path_sparse_GW"]  , 'OUTCAR.3') , setGWDataAsprimary='QPc' )
 
 bObj_DENSE_VASPRUN = bandsObj_() ; 
-bObj_DENSE_VASPRUN.read_file_VASPRUN( os.path.join(input["path_dense_DFT"] ,'vasprun.xml') )
+bObj_DENSE_VASPRUN.read_file_VASPRUN( os.path.join(input["path_dense_DFT_reference"] ,'vasprun.xml') )
+
+
+NBANDS_DENSE_DFT = np.shape( bObj_DENSE_VASPRUN.eigenval[Spin.up] )[1]
+NBANDS_SPARSE_GW = np.shape( bObj_SPARSE_OUTCAR.eigenval_GW[Spin.up] )[1]
+if input["nbandsgw_dense"] <=0 :
+    NBANDSGW_DENSE = min( NBANDS_DENSE_DFT , NBANDS_SPARSE_GW )
+else:
+    NBANDSGW_DENSE = min( input["nbandsgw_dense"] , NBANDS_DENSE_DFT , NBANDS_SPARSE_GW )
 
 
 
 
-bands_DENSE_GWinterp_1 = bandsObj_.interpolation_UsingEdgedBZ(bandsObj_coarsegrid = bObj_SPARSE_OUTCAR,
-                                                                  finegrid_kpts_list  = bObj_DENSE_VASPRUN.kpts_list  ,
-                                                                  finegrid_kpts_mesh  = bObj_DENSE_VASPRUN.kpts_mesh  ,
-                                                                  finegrid_kpts_shift = bObj_DENSE_VASPRUN.kpts_shift ,
-                                                                  finegrid_spglib_structure  = bObj_DENSE_VASPRUN.spglib_structure  ,
-                                                                  finegrid_is_spin_polarized = bObj_DENSE_VASPRUN.is_spin_polarized ,
-                                                                  interp_method='linear')
-# bands_DENSE_GWinterp_2 = bandsObj_.interpolation_nearestCorrectionForNaN(bandsObj_coarsegrid = bObj_SPARSE_OUTCAR,
-#                                                                            finegrid_kpts_list  = bObj_DENSE_VASPRUN.kpts_list  ,
-#                                                                            finegrid_kpts_mesh  = bObj_DENSE_VASPRUN.kpts_mesh  ,
-#                                                                            finegrid_kpts_shift = bObj_DENSE_VASPRUN.kpts_shift ,
-#                                                                            finegrid_spglib_structure  = bObj_DENSE_VASPRUN.spglib_structure  ,
-#                                                                            finegrid_is_spin_polarized = bObj_DENSE_VASPRUN.is_spin_polarized ,
-#                                                                            interp_method='linear')
-#bands_DENSE_GWinterp_diff = bands_DENSE_GWinterp_1[Spin.up] - bands_DENSE_GWinterp_2[Spin.up]
+bands_DENSE_GWinterp = bandsObj_.interpolation_UsingEdgedBZ(  bandsObj_coarsegrid = bObj_SPARSE_OUTCAR,
+                                                              finegrid_kpts_list  = bObj_DENSE_VASPRUN.kpts_list  ,
+                                                              finegrid_kpts_mesh  = bObj_DENSE_VASPRUN.kpts_mesh  ,
+                                                              finegrid_kpts_shift = bObj_DENSE_VASPRUN.kpts_shift ,
+                                                              finegrid_spglib_structure  = bObj_DENSE_VASPRUN.spglib_structure  ,
+                                                              finegrid_is_spin_polarized = bObj_DENSE_VASPRUN.is_spin_polarized ,
+                                                              interp_method='linear'  )
 
 
+bObj_DENSE_WAVECAR_toReceiveInterp = bandsObj_() 
+bObj_DENSE_WAVECAR_toReceiveInterp.read_file_WAVECAR(  os.path.join(input["path_dense_DFT_toInterp"] ,'WAVECAR')  )
 
-
-bObj_DENSE_WAVECAR_corrected = bandsObj_() 
-bObj_DENSE_WAVECAR_corrected.read_file_WAVECAR(  os.path.join(input["path_dense_toInterp"] ,'WAVECAR')  )
-
-NBANDSGW_DENSE = input["nbandsgw_dense"]
-# bObj_DENSE_WAVECAR_corrected.eigenval[Spin.up][:,:NBANDSGW_DENSE,0] = bObj_DENSE_WAVECAR_corrected.eigenval[Spin.up][:,:NBANDSGW_DENSE,0] + bands_DENSE_GWinterp_1[Spin.up][:,:]
-bObj_DENSE_WAVECAR_corrected.eigenval[Spin.up][:,:NBANDSGW_DENSE,0] = bObj_DENSE_WAVECAR_corrected.eigenval[Spin.up][:,:NBANDSGW_DENSE,0] + bands_DENSE_GWinterp_1[Spin.up][:,:NBANDSGW_DENSE]
-bObj_DENSE_WAVECAR_corrected.write_file_WAVECAR( os.path.join(input["path_dense_toInterp"] ,'WAVECAR') )
+bObj_DENSE_WAVECAR_toReceiveInterp.eigenval[Spin.up][:,:NBANDSGW_DENSE,0] = bObj_DENSE_WAVECAR_toReceiveInterp.eigenval[Spin.up][:,:NBANDSGW_DENSE,0] + \
+                                                                            + bands_DENSE_GWinterp[Spin.up][:,:NBANDSGW_DENSE]
+bObj_DENSE_WAVECAR_toReceiveInterp.write_file_WAVECAR( os.path.join(input["path_dense_DFT_toInterp"] ,'WAVECAR') )

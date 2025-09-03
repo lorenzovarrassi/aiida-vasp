@@ -353,7 +353,7 @@ class bandsObj_: ##<----------------------------------------------------------->
                       print("  TOTEST: nelect is reconstructed and not read, check it's correct please.")
                   else:
                       raise ValueError("spin - noncollinear calculation are not supported, sorry.")
-                  print(" {<\PARSING WAVECAR>} <--------------------------->")      
+                  print(" {<END PARSING WAVECAR>} <------------------------>")      
                   
     def write_file_WAVECAR(self, path , verboseFlag=False):
         if not exists( path ):
@@ -711,8 +711,8 @@ class bandsObj_: ##<----------------------------------------------------------->
 ## [Interface]
 parser = argparse.ArgumentParser()
 parser.add_argument("-ps"  , "--path_sparse_GW" , type=str , required=True )
-parser.add_argument("-pd"  , "--path_dense_DFT_reference" , type=str , required=True  )
-parser.add_argument("-pd"  , "--path_dense_DFT_toInterp"  , type=str , required=False , default="./")
+parser.add_argument("-pdr" , "--path_dense_DFT_reference" , type=str , required=True  )
+parser.add_argument("-pdi" , "--path_dense_DFT_toInterp"  , type=str , required=False , default="./")
 parser.add_argument("-ngw" , "--nbandsgw_dense"           , type=int , required=False , default=-1)
 
 input = {} ; args = parser.parse_args()

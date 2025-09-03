@@ -34,6 +34,7 @@ class VasprunParser(BaseFileParser):
             'energies',
             'projectors',
             'dielectrics',
+            'opticaltransitions',
             'born_charges',
             'hessian',
             'dynmat',
@@ -86,6 +87,11 @@ class VasprunParser(BaseFileParser):
         'dielectrics': {
             'inputs': [],
             'name': 'dielectrics',
+            'prerequisites': [],
+        },
+        'opticaltransitions': {
+            'inputs': [],
+            'name': 'opticaltransitions',
             'prerequisites': [],
         },
         'stress': {
@@ -520,6 +526,22 @@ class VasprunParser(BaseFileParser):
             dielectrics['epsilon_ion'] = epsilon_ion
 
         return dielectrics
+
+    @property
+    def opticaltransitions(self) -> dict[str, Any] | None:
+        """Fetch the optical transitions in a BSE calculation."""
+
+        optrans = self._content_parser.get_opticaltransitions()
+        if optrans is None:
+            return None
+        opticaltransitions = {}
+        energy = optrans.get('energy')
+        transitions = optrans.get('osc_strength')
+        if energy is not None:
+            opticaltransitions['energy'] = energy
+        if energy is not None:
+            opticaltransitions['osc_strength'] = transitions
+        return opticaltransitions
 
     @property
     def born_charges(self) -> np.ndarray | None:

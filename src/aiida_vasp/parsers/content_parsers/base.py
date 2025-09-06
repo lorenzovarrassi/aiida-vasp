@@ -69,6 +69,7 @@ class BaseFileParser:
         # at a later stage.
         self._parsed_content = {}
         # The content parser, which will be an instance of one of the parsevasp parser classes.
+
         self._content_parser = None
         # Content data, which is an AiiDA data structure.
         self._content_data = None

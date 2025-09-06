@@ -212,6 +212,11 @@ bext:
   description: Undocumented
   type: null
   values: null
+ncshmem:
+  default: null
+  description:  number of compute cores sharing the memory in MPI in the non-cubic scaling GW routines. 
+  type: null
+  values: null
 bmix:
   default: '1.0'
   description: BMIX sets the cutoff wave vector for Kerker mixing scheme<ref name="kerker:prb:81"/>

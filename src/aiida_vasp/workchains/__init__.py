@@ -1,6 +1,7 @@
 from .v2 import *
 from .vMBPT.workchain_base import VaspDFTGWWorkChain
-from .vMBPT.workchain_interpolation_mBSE import VaspmBSEInterpolatedWorkChain
+from .vMBPT.workchain_initscript_base    import VaspInitScriptWorkChain
+from .vMBPT.workchain_interpolation_mBSE import VaspmBSEInitScriptWorkChain
 
 __all__ = (
     'VaspBandsWorkChain',
@@ -11,5 +12,8 @@ __all__ = (
     'VaspRelaxWorkChain',
     'VaspWorkChain',
     'VaspDFTGWWorkChain',
-    'VaspmBSEInterpolatedWorkChain',
+    'VaspInitScriptWorkChain',
+    'VaspmBSEInitScriptWorkChain',
+    'VaspG0W0BasisExtrWorkChain',
+    'VaspG0W0CompleteWorkChain'
 )

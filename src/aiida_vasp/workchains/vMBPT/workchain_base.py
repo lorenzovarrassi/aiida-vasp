@@ -58,19 +58,17 @@ class VaspDFTGWWorkChain(WorkChain):
             spec.input('kpoints'                              , valid_type=DataFactory('core.array.kpoints') , help='K-mesh used for VASP G0W0 and DFT runs; get_kpoints_mesh() must work.' )     
 
             spec.input('ns_parallelization.kpar'              , valid_type=Int        , required=False , default=lambda: Int(1)      , help='kpar value to be used in G0W0 calculations')
-            spec.input('ns_parallelization.ncshmem'           , valid_type=Int        , required=False , default=lambda: Int(1)      , help='NSCHMEM value to be used in G0W0 calculations. Default is 1')        
             spec.input('ns_parallelization.npar'              , valid_type=Int        , required=False , default=lambda: Int(1)      , help='NPAR value to be used in G0W0 calculations')
             spec.input('ns_parallelization.lreal'             , valid_type=Bool       , required=False , default=lambda: Bool(False) , help='lreal value to be used in all calculations. If True sets to Auto, otherwise False') 
-            spec.input('ns_parallelization.maxmem'            , valid_type=Int        , required=False , help='MAXMEM value to be supplied to G0W0 calculations')  
 
             spec.input('ns_reference.DFTgr_RemoteData'        , valid_type=RemoteData , required=False , help='the DFT ground state wavefunction (WAVECAR) and CHGCAR will be copied from this RemoteData folder as a starting point' )
             
             spec.input('ns_option.maximum_iterations'              , valid_type=Int  , required=False , default=lambda: Int(2)      , help='maximum number of times the workchain will restart a crashed G0W0 runs.')
             spec.input('ns_option.verbose'                         , valid_type=Bool , required=False , default=lambda: Bool(True)  )
             spec.input('ns_option.run_G0W0'                        , valid_type=Bool , required=False , default=lambda: Bool(True)  , help='If False, run a single G0W0 calculations; if True, run a DFT and G0W0 ON TOP on it, using same encut and number of bands and the DFT wavefunctions and energies as starting point')
-            spec.input('ns_option.compute_dipole_transition_mat'   , valid_type=Bool , required=False , default=lambda: Bool(False) , help='Compute the DFT dipole matrix elements (LOPTICS flag).')
-            spec.input('ns_option.select_algo_Exact'               , valid_type=Bool , required=False , default=lambda: Bool(False) , help='The DFT step will be run with ALGO=Exact.' )
-            spec.input('ns_option.select_single_iteration'         , valid_type=Bool , required=False , default=lambda: Bool(False) , help='If activated, the DFT step will run a single self-consistency step (nelm=1).' )
+#            spec.input('ns_option.compute_dipole_transition_mat'   , valid_type=Bool , required=False , default=lambda: Bool(False) , help='Compute the DFT dipole matrix elements (LOPTICS flag).')
+#            spec.input('ns_option.select_algo_Exact'               , valid_type=Bool , required=False , default=lambda: Bool(False) , help='The DFT step will be run with ALGO=Exact.' )
+#            spec.input('ns_option.select_single_iteration'         , valid_type=Bool , required=False , default=lambda: Bool(False) , help='If activated, the DFT step will run a single self-consistency step (nelm=1).' )
             spec.input('ns_option.calculationLabel'                , valid_type=Str  , required=False , default=lambda: Str("")     , help='The summary printed at the end will be labeled with this string.')
 
 
@@ -110,16 +108,16 @@ class VaspDFTGWWorkChain(WorkChain):
                 str_log = ('\n [VaspDFTGWWorkChain pk='+str(self.node.pk)+" <"+self.inputs.ns_option.calculationLabel.value 
                 + "> iteration="+str(self.ctx.control.iteration_counter)+"][run_calc]"
                 + '\n  launching a calc? '+str(self.ctx.WCtoRun) )
-                if self.inputs.ns_option.compute_dipole_transition_mat: str_log = str_log + '\n                     The DFT run is the preparatory step to G0W0 (LOPTICS=T , nelm=1='
+                #DEprecATED  #if self.inputs.ns_option.compute_dipole_transition_mat: str_log = str_log + '\n                     The DFT run is the preparatory step to G0W0 (LOPTICS=T , nelm=1='
                 str_log = str_log + ('\n  at this step we have already done:'
                 + '\n  >> WCrecord_DFT='+str(self.ctx.WCrecord_DFT)
                 + '\n  >> WCrecord_G0W0='+str(self.ctx.WCrecord_G0W0)+'\n\n')
             
 
-            # The DFT calculation nodes are appended to WCrecord_DFT ; the G0W0s ones to WCrecord_G0W0; 
-            # at each iteration of the cycle while_(cls.monitor_WCprogress) a single DFT calculation node is appended 
-            # and eventually (if no error in the DFT are encountered) a single G0W0 one.
-            # The flags WCtoRun['DFT'] and WCtoRun['G0W0'] which determine where to append the node, are set in prepare_calc_DFT and prepare_calc_G0W0
+            # The DFT calculation nodes are appended to WCrecord_DFT ; the G0W0s ones to WCrecord_G0W0;                 #DEprecATED 
+            # at each iteration of the cycle while_(cls.monitor_WCprogress) a single DFT calculation node is appended   #DEprecATED
+            # and eventually (if no error in the DFT are encountered) a single G0W0 one.                                #DEprecATED
+            # The flags WCtoRun['DFT'] and WCtoRun['G0W0'] which determine where to append the node, are set in prepare_calc_DFT and prepare_calc_G0W0  #DEprecATED
             if self.ctx.WCtoRun['DFT']==True and self.ctx.WCtoRun['G0W0']==False  :
                 runningWC_DFT = self.submit(self._next_workchain , **self.ctx.inputs_DFT_finalized) 
                 self.report('launching DFT workchain{}<{}> '.format(self._next_workchain.__name__, runningWC_DFT.pk))
@@ -179,13 +177,14 @@ class VaspDFTGWWorkChain(WorkChain):
                 incar['incar']['amix'] = 0.2
                 incar['incar']['bmix'] = 0.00001
                 
-            if self.inputs.ns_option.compute_dipole_transition_mat or self.inputs.ns_option.run_G0W0 : 
+            #if self.inputs.ns_option.compute_dipole_transition_mat or self.inputs.ns_option.run_G0W0 :
+            if self.inputs.ns_option.run_G0W0 :  
                 incar['incar']['loptics'] = '.TRUE.'  
-            if self.inputs.ns_option.select_algo_Exact == True: incar['incar']['ALGO'] = "Exact"
-                
-            if (self.inputs['ns_option']['select_single_iteration'] == True):
-                incar['incar']['nelm'] = 1      
-            self.ctx.inputs_DFT.parameters = DataFactory('dict')(dict=incar) #convert to AiiDA format
+                incar['incar']['algo']    = "Exact"
+                incar['incar']['nelm']    = 1      
+            #if self.inputs.ns_option.select_algo_Exact == True:               incar['incar']['algo'] = "Exact"
+            #if (self.inputs['ns_option']['select_single_iteration'] == True): incar['incar']['nelm'] = 1      
+            self.ctx.inputs_DFT.parameters = Dict( incar) #convert to AiiDA format
 
 
             # Finalized!
@@ -210,7 +209,7 @@ class VaspDFTGWWorkChain(WorkChain):
                         previousWC_kpoints = previousWC.inputs.kpoints.get_kpoints_mesh()            
                         previousWC_nbands  = np.shape(previousWC.outputs.bands.get_bands())[1] # BandsData indexs: [0]=spin components; [1]=represents kpts index, [2]=bands
                         
-                        if (previousWC.is_finished_ok             and previousWC_encut  == incar['incar']['encut']  and 
+                        if (previousWC.is_finished_ok              and previousWC_encut  == incar['incar']['encut']  and 
                             previousWC_nbands  == incar['nbands']  and previousWC_loptics == presentWC_loptics          ):
                             WC_PreviousIdentical = self.ctx.WCrecord_DFT[previousWC_idx]  
                     except: pass
@@ -236,7 +235,7 @@ class VaspDFTGWWorkChain(WorkChain):
                 #[Step 1] Define the INCAR
                 incar = {'incar': {'nelm':1 , 'algo':'GW0' , 'ismear':0 , 'sigma':0.01 , ##'ispin':1 , 
                                    'nomega':self.inputs.ns_parameters.nomega       , 'kpar':self.inputs.ns_parallelization.kpar  ,
-                                   'NMAXFOCKAE':2 , 'PREC':'Accurate'}} #NMAXFOCKAE is set to 2 Following Klimes et al, 2014.
+                                   'nmaxfockae':2 , 'prec':'Accurate'}} #nmaxfockae is set to 2 Following Klimes et al, 2014.
                 if ('encut'  in self.inputs['ns_parameters']):  incar['incar']['encut']  = self.inputs.ns_parameters.encut
                 if ('nbands' in self.inputs['ns_parameters']):  incar['incar']['nbands'] = self.inputs.ns_parameters.nbands            
                 else: incar['incar']['nbands'] =  np.shape(self.ctx.WCrecord_DFT[-1].outputs.bands.get_bands())[1]   #In altenrnativa : self.ctx.WCrecord_DFT[-1].outputs.get_dict()['run_status']['nbands']
@@ -247,9 +246,7 @@ class VaspDFTGWWorkChain(WorkChain):
                     incar['incar']['encutgw']      = self.inputs.ns_parameters.encut_chi                                                            
                     incar['incar']['encutgwsoft']  = self.inputs.ns_parameters.encut_chi                                                            
                 
-                if ('nbandsgw' in self.inputs['ns_parameters']):   incar['incar']['nbandsgw'] = self.inputs.ns_parameters.nbandsgw                         #THIS IS TO-TEST           
-                if ('maxmem'  in self.inputs['ns_parallelization']):    incar['incar']['maxmem']  = self.inputs.ns_parallelization.maxmem   #THIS IS TO-TEST
-                if ('ncshmem' in self.inputs['ns_parallelization']):   incar['incar']['nschmem'] = self.inputs.ns_parallelization.ncshmem  
+                if ('nbandsgw' in self.inputs['ns_parameters']):       incar['incar']['nbandsgw'] = self.inputs.ns_parameters.nbandsgw               #THIS IS TO-TEST           
                 if self.inputs.ns_parallelization.lreal: incar['incar']['lreal'] = 'Auto'                                                   
                 else: incar['incar']['lreal'] = '.FALSE.'                                                                                      
 
@@ -270,13 +267,12 @@ class VaspDFTGWWorkChain(WorkChain):
                 try:
                     if (self.ctx.control.iteration_counter > 0) and (not self.ctx.WCrecord_G0W0[-1].is_finished_ok):
                         incar['incar']['lreal']   = 'Auto'   #in order to reduce Memory constraint
-                        incar['incar']['ncshmem']    = 1     #NCHSMEM  might cause errors - disable it
                         incar['incar']['nmaxfockae'] = 1
                         incar['incar']['kpar']       = 1   
                 except:
                     pass
      
-                self.ctx.inputs_GW.parameters = DataFactory('dict')(dict=incar) #convert to AiiDA format
+                self.ctx.inputs_GW.parameters = Dict( incar ) #convert to AiiDA format
 
                 self.ctx.inputs_GW.kpoints = self.inputs.kpoints
 
@@ -302,9 +298,9 @@ class VaspDFTGWWorkChain(WorkChain):
             if self.inputs.ns_option.verbose:
                 str_log=('\n [VaspDFTGWWorkChain pk='+str(self.node.pk)+" <"+self.inputs.ns_option.calculationLabel.value+"> ][monitor_WCprogress at the start of iteration" +str(self.ctx.control.iteration_counter)+"]"
                 +'\n  >> monitor_WCprogress: WCrecord_DFT='+str(self.ctx.WCrecord_DFT))
-                if (len(self.ctx.WCrecord_DFT) >0) : str_log = str_log + '\n                 '+str(' '.join(["called by wkc "+str(node.pk)+" :"+str(node.called) for node in self.ctx.WCrecord_DFT]))
+                if (len(self.ctx.WCrecord_DFT) >0) : str_log = str_log + '\n                       '+str(' '.join(["called by wkc "+str(node.pk)+" :"+str(node.called) for node in self.ctx.WCrecord_DFT]))
                 str_log = str_log + '\n  >> monitor_WCprogress: WCrecord_G0W0=' +str(self.ctx.WCrecord_G0W0)
-                if (len(self.ctx.WCrecord_G0W0)>0) : str_log = str_log + '\n                 '+str(' '.join(["called by wkc "+str(node.pk)+" :"+str(node.called) for node in self.ctx.WCrecord_G0W0]))
+                if (len(self.ctx.WCrecord_G0W0)>0) : str_log = str_log + '\n                       '+str(' '.join(["called by wkc "+str(node.pk)+" :"+str(node.called) for node in self.ctx.WCrecord_G0W0]))
                 str_log = str_log + '\n  >> monitor_WCprogress: evaluating start of cycle iteration no:{}'.format(self.ctx.control.iteration_counter)
                
 
@@ -320,17 +316,17 @@ class VaspDFTGWWorkChain(WorkChain):
             #[case 4]: num of tries exceed maximum number; exit workchain with error.
             #[case 5]: retry.
             if len(self.ctx.WCrecord_DFT) == 0:   
-                self.report(str_log+'\n  -> VaspDFTGWWorkChain started first iteration!'+"\n")
+                self.report(str_log+'\n  -> monitor_WCprogress: VaspDFTGWWorkChain started first iteration!'+"\n")
                 return True
             elif (not self.inputs.ns_option.run_G0W0) and (lastDFT_exitCode == 0) : 
-                self.report(str_log+'\n -> VaspDFTGWWorkChain cycle exit - DFT calculation at iteration {} finished successfully, G0W0 is not required!'.format(self.ctx.control.iteration_counter-1)+"\n")
+                self.report(str_log+'\n  -> monitor_WCprogress:VaspDFTGWWorkChain cycle exit - DFT calculation at iteration {} finished successfully, G0W0 is not required!'.format(self.ctx.control.iteration_counter-1)+"\n")
                 self.ctx.control.FINISHED_SUCCESSFULLY      = True
                 return False
             elif lastGW_exitCode == 0:
-                self.report(str_log+'\n >> VaspDFTGWWorkChain cycle exit - G0W0 calculations at iteration {} finished successfully!'.format(self.ctx.control.iteration_counter-1)+"\n")
+                self.report(str_log+'\n  >> monitor_WCprogress: VaspDFTGWWorkChain cycle exit - G0W0 calculations at iteration {} finished successfully!'.format(self.ctx.control.iteration_counter-1)+"\n")
                 self.ctx.control.FINISHED_SUCCESSFULLY      = True
             elif self.ctx.control.iteration_counter > self.inputs.ns_option.maximum_iterations +1:
-                self.report(str_log+'\n -> VaspDFTGWWorkChain EXCEEDED maximum number of iterations!'+"\n")
+                self.report(str_log+'\n  -> monitor_WCprogress: VaspDFTGWWorkChain EXCEEDED maximum number of iterations!'+"\n")
                 self.ctx.control.REACHED_MAXIMUM_TRY_NUMBER = True
                 return False
             else:
@@ -355,18 +351,18 @@ class VaspDFTGWWorkChain(WorkChain):
             bndIdx_HOMOar = [] ; bndIdx_LUMOar = []
         
             occ = bnd_DFT_occ < 0.45    #We consider a band occupied if occupancy is > 0.45
-            c_kptNum = np.shape(occ)[1] #c_kptNum represents the total number of k-points in the Irreducible Brillouin Zone.
+            c_kptNum = np.shape(occ)[0] #c_kptNum represents the total number of k-points in the Irreducible Brillouin Zone.
             for kptIdx in range(c_kptNum): 
                 #bndIdx_HOMOar and bndIdx_LUMOar are arrays (dimension = c_kptNum) containing the band indexes of the highest occupied / lowest unoccupied bands at each k-point.
-                bndIdx_HOMOar.append(np.where(occ[0,kptIdx,1:] != occ[0,kptIdx,:-1] )[0][0]    )
-                bndIdx_LUMOar.append(np.where(occ[0,kptIdx,1:] != occ[0,kptIdx,:-1] )[0][0] +1 )
+                bndIdx_HOMOar.append( np.where(occ[kptIdx,1:] != occ[kptIdx,:-1] )[0][0]    )
+                bndIdx_LUMOar.append( np.where(occ[kptIdx,1:] != occ[kptIdx,:-1] )[0][0] +1 )
             
 
             bnd = AttributeDict()
-            bnd['G0W0_HOMO'] = np.array( [ np.array(bnd_G0W0)[0,:,:][HOIdx]  for HOIdx in zip(range(c_kptNum ), bndIdx_HOMOar) ] )
-            bnd['G0W0_LUMO'] = np.array( [ np.array(bnd_G0W0)[0,:,:][LUIdx]  for LUIdx in zip(range(c_kptNum ), bndIdx_LUMOar) ] )
-            bnd['DFT_HOMO']  = np.array( [ np.array(bnd_DFT)[0,:,:][HOIdx]   for HOIdx in zip(range(c_kptNum ), bndIdx_HOMOar) ] )
-            bnd['DFT_LUMO']  = np.array( [ np.array(bnd_DFT)[0,:,:][LUIdx]   for LUIdx in zip(range(c_kptNum ), bndIdx_LUMOar) ] )
+            bnd['G0W0_HOMO'] = np.array( [ np.array(bnd_G0W0)[:,:][HOIdx]  for HOIdx in zip(range(c_kptNum ), bndIdx_HOMOar) ] )
+            bnd['G0W0_LUMO'] = np.array( [ np.array(bnd_G0W0)[:,:][LUIdx]  for LUIdx in zip(range(c_kptNum ), bndIdx_LUMOar) ] )
+            bnd['DFT_HOMO']  = np.array( [ np.array(bnd_DFT)[:,:][HOIdx]   for HOIdx in zip(range(c_kptNum ), bndIdx_HOMOar) ] )
+            bnd['DFT_LUMO']  = np.array( [ np.array(bnd_DFT)[:,:][LUIdx]   for LUIdx in zip(range(c_kptNum ), bndIdx_LUMOar) ] )
             bnd['QPc_HOMO'] = bnd['G0W0_HOMO'] - bnd['DFT_HOMO']
             bnd['QPc_LUMO'] = bnd['G0W0_LUMO'] - bnd['DFT_LUMO']                
         
@@ -376,7 +372,7 @@ class VaspDFTGWWorkChain(WorkChain):
                                 +str(lastNode_G0W0.inputs.parameters.get_dict()['incar']['encut'])+" , "
                                 +str(lastNode_G0W0.inputs.parameters.get_dict()['incar']['nbands'])     )
             except:pass
-            str_log=str_log+("\n >> [2] output maximum num pw at DFT    : "+str(lastNode_DFT.outputs.maximum_number_pw.get_dict()['maximum_number_pw'][0])
+            str_log=str_log+("\n >> [2] output maximum num pw at DFT    : "+str(lastNode_DFT.outputs.maximum_number_pw.get_array()[0] )
                             +"\n >> [2] output nbands (effectively used): "+str(lastNode_G0W0.outputs.misc.get_dict()['run_status']['nbands'])
                             +"\n >> [2] k-mesh used and shift: " +str(self.inputs.kpoints.get_kpoints_mesh() )
                             +"\n >> [3] HOMO GW eigenvalues : "+str(bnd['G0W0_HOMO'])
@@ -419,35 +415,35 @@ class VaspDFTGWWorkChain(WorkChain):
             #bnd_DFTvo_toTrim and bnd_G0W0_toTrim contain the -1 (not already trimmed).
             bnd_DFTvo_toTrim = np.array( lastNode_DFT.outputs.bands.get_bands(also_occupations=True)   )
             bnd_G0W0_toTrim  = np.array( lastNode_G0W0.outputs.bands.get_bands(also_occupations=True)  )
-            c_bnd_num = len( bnd_G0W0_toTrim[0,0,0,:] )
-            c_kpt_num = len( bnd_G0W0_toTrim[0,0,:,0] )
+            c_bnd_num = np.shape( bnd_G0W0_toTrim[:,:,:] )[2]
+            c_kpt_num = np.shape( bnd_G0W0_toTrim[:,:,:] )[1]
             
             #Let's determine which is the lowest band index containing -1
             try:
-                firstBnd_toTrim = min( [  np.nonzero(np.in1d(bnd_G0W0_toTrim[0,0,i,:],[-1,-1]))[0][0]   for i in range(c_kpt_num)] )
+                firstBnd_toTrim = min( [  np.nonzero(np.in1d(bnd_G0W0_toTrim[0,i,:],[-1,-1]))[0][0]   for i in range(c_kpt_num)] )
             except:
                 firstBnd_toTrim = c_bnd_num
              
             #Let's keep the bands up to that indexes.
             bnd_DFTvo_trimmed  = np.zeros( [c_kpt_num , firstBnd_toTrim])
             bnd_G0W0_trimmed   = np.zeros( [c_kpt_num , firstBnd_toTrim])
-            bnd_DFTvo_trimmed  = bnd_DFTvo_toTrim[0,0,:, 0:firstBnd_toTrim]
-            occ_DFTvo_trimmed  = bnd_DFTvo_toTrim[1,0,:, 0:firstBnd_toTrim]        
-            bnd_G0W0_trimmed   = bnd_G0W0_toTrim[0,0,:, 0:firstBnd_toTrim]
-            occ_G0W0_trimmed   = bnd_G0W0_toTrim[1,0,:, 0:firstBnd_toTrim]
+            bnd_DFTvo_trimmed  = bnd_DFTvo_toTrim[0,:, 0:firstBnd_toTrim]
+            occ_DFTvo_trimmed  = bnd_DFTvo_toTrim[1,:, 0:firstBnd_toTrim]        
+            bnd_G0W0_trimmed   = bnd_G0W0_toTrim[0,:, 0:firstBnd_toTrim]
+            occ_G0W0_trimmed   = bnd_G0W0_toTrim[1,:, 0:firstBnd_toTrim]
             #Now let's save the Numpy arrays to AiiDA variables.
-            BandsData = DataFactory('array.bands')
-            bd_G0W0_trimmed = DataFactory('array.bands')()
+            BandsData = DataFactory('core.array.bands')
+            bd_G0W0_trimmed = DataFactory('core.array.bands')()
             bd_G0W0_trimmed.set_kpoints(lastNode_G0W0.outputs.bands.get_kpoints())
             bd_G0W0_trimmed.set_bands(bnd_G0W0_trimmed , occupations=occ_G0W0_trimmed) 
-            
-            bd_DFT_trimmed  = DataFactory('array.bands')()
+
+            bd_DFT_trimmed  = DataFactory('core.array.bands')()
             bd_DFT_trimmed.set_kpoints(lastNode_DFT.outputs.bands.get_kpoints())
             bd_DFT_trimmed.set_bands(bnd_DFTvo_trimmed , occupations=occ_DFTvo_trimmed)
         
             bd_difference = bd_G0W0_trimmed.get_bands() - bd_DFT_trimmed.get_bands()
             #bd_difference[abs(bd_difference) < 0.005] = 0   #difference on the 3 digit are probably due to rounding, set to 0.
-            bd_QPc_fromTrimmed =  DataFactory('array.bands')()
+            bd_QPc_fromTrimmed =  DataFactory('core.array.bands')()
             bd_QPc_fromTrimmed.set_kpoints(lastNode_DFT.outputs.bands.get_kpoints())
             bd_QPc_fromTrimmed.set_bands(bd_difference , occupations=occ_DFTvo_trimmed) 
 
@@ -473,8 +469,8 @@ class VaspDFTGWWorkChain(WorkChain):
             lastNode_DFT  = self.ctx.WCrecord_DFT[-1]
             self.out('RemoteData_DFT' , self.ctx.WCrecord_DFT[-1].outputs.remote_folder ) 
             self.out('bands_DFT'      , self.ctx.WCrecord_DFT[-1].outputs.bands         )
-#            self.out('NGarray'        , self.ctx.WCrecord_DFT[-1].outputs.NGarray       ) 
-#            self.out('ENMAXarray'     , self.ctx.WCrecord_DFT[-1].outputs.ENMAXarray    )  
+            self.out('NGarray'        , self.ctx.WCrecord_DFT[-1].outputs.NGarray       ) 
+            self.out('ENMAXarray'     , self.ctx.WCrecord_DFT[-1].outputs.ENMAXarray    )  
             self.out('kpoints'        , self.ctx.WCrecord_DFT[-1].outputs.kpoints       )  
         else: lastNode_DFT = None
         
@@ -505,7 +501,7 @@ class VaspDFTGWWorkChain(WorkChain):
                                                                                     np.expand_dims( lastNode_DFT.outputs.bands.get_array("occupations")[1,:,:]  , 0) , 
                                                                                     np.expand_dims( lastNode_G0W0.outputs.bands.get_array("occupations")[1,:,:] , 0) , str_log) 
                 #Let's create an addiation BandsData output variable containing the QuasiParticle Corrections.
-                bd_QPcorr = DataFactory('array.bands')()
+                bd_QPcorr = DataFactory('core.array.bands')()
                 bd_QPcorr.set_kpoints(lastNode_DFT.outputs.bands.get_kpoints())
                 bd_QPcorr.set_bands( np.stack([ bd_QPcorr_spUp.get_array("bands") , bd_QPcorr_spDw.get_array("bands") ]) ,
                                       occupations= np.stack([ bd_QPcorr_spUp.get_array("occupations") , bd_QPcorr_spDw.get_array("occupations") ]) )
@@ -515,9 +511,9 @@ class VaspDFTGWWorkChain(WorkChain):
            
             else:                                                                            
                 bd_QPcorr , bnd , gap , gap_QPc , str_log = elaborate_single_spin_component(lastNode_DFT.outputs.bands.get_array("bands")  ,
-                                                                                    lastNode_G0W0.outputs.bands.get_array("bands") ,
-                                                                                    lastNode_DFT.outputs.bands.get_array("occupations")  , 
-                                                                                    lastNode_G0W0.outputs.bands.get_array("occupations") , str_log)
+                                                                                    lastNode_G0W0.outputs.bands.get_array("bands")         ,
+                                                                                    lastNode_DFT.outputs.bands.get_array("occupations")    , 
+                                                                                    lastNode_G0W0.outputs.bands.get_array("occupations")   , str_log)
                 gap = Dict(dict = {"spinUp":gap})
                 gap_QPc = Dict(dict = {"spinUp":gap_QPc}) 
             

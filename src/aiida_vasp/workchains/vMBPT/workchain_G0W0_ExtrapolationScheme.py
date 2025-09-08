@@ -38,10 +38,10 @@ class VaspG0W0BasisExtrWorkChain(WorkChain):
 
             spec.input('ns_extrapolation.mode'                  , valid_type=Str       , required=False , default=lambda: Str("final") , help='either final , memory-conserving , standard, custom.') 
             spec.input('ns_extrapolation.encut_chi_low'         , valid_type=Bool      , required=False , default=lambda: Bool(False)  , help='if not specified, ENCUTGW defined as 0.63 x ENCUT ; - if true ENCUTGW = 0.50 x ENCUT.' )
-            spec.input('ns_extrapolation.maximum_num_calc'      , valid_type=Int       , required=False , default=lambda: Int(4) , help='maximum number of calculations used for the extrapolation. Default is 4.')
             spec.input('ns_extrapolation.nbands_stride'         , valid_type=Int       , required=False , help='minimum nbands steps used to increase the number of bands in the fit for the final (an other) modes')
             spec.input('ns_extrapolation.cutoff_fractions'      , valid_type=ArrayData , required=False , help='specify the fractions of the cutoff of the first calculation to be used for the extrapolation; it overrides the standard mode')
             spec.input('ns_extrapolation.cutoff_starting_value' , valid_type=Int       , required=False , help='specify to value of cutoff of the first calculation for the extrapolation; it overrides standard value, which is determined from DFTgr'  )   
+            spec.input('ns_extrapolation.r2_threshold'          , valid_type=Float     , required=False , default=lambda: Float(0.85) , help='R2 threshold for the extrapolation; if the R2 of the fit is below this value for at least one of the gaps or QP corrections, an additional G0W0 calculation is performed (up to num_calc_touse_for_extrapolation) and the last three calculations are used for the extrapolation (i.e. a moving window of 3 calculations). Default is 0.85')
             
             spec.input('ns_parameters.magnetic_moment_onsite' , valid_type=Dict       , required=False , help='Starting collinear on-site magnetic moment ; Syntax is {ElName:value}')
             spec.input('ns_parameters.nomega'                 , valid_type=Int        , required=False , default=lambda: Int(96) , help='number of frequency points for the chi and sigma calculation in G0W0 runs. Default is 96.') 
@@ -62,6 +62,7 @@ class VaspG0W0BasisExtrWorkChain(WorkChain):
             spec.output('pairs_nbands_encuts'        , valid_type=XyData    , help='nbands - cutoff (eV) pairs used in the extrapolation')
                         
             spec.output('extrapolated', valid_type=Dict , help='extrapolated gaps and QuasiParticle corrections.') 
+            spec.output('extrapolated_bands', valid_type=Dict , help='extrapolated bands.') 
             spec.output('ns_maximum_num_calcgaps'     , valid_type=Dict , help='Dict with direct - indirect - Gamma gaps used for the extrapolation.')
             spec.output('ns_QPc'      , valid_type=Dict , help='Dict with the QP corrections (of the states associated to the direct - indirect - gamma gaps) used for the extrapolation.')
             spec.output('ns_gaps'     , valid_type=Dict , help='Dict with the (direct - indirect - gamma) gaps used for the extrapolation.')
@@ -79,31 +80,43 @@ class VaspG0W0BasisExtrWorkChain(WorkChain):
                 #the cutoffs - number of bands of these points are chosen in order to satisfy the complete basis constraint.
                 cls.determine_completeBasis_encutNband,
                 
-                #Submit in parallel the G0W0 workflows.
-                cls.prepare_run_wc_DFT_G0W0,
-                cls.elaborate_results,
+                #Submit in parallel the DFT+G0W0 workflows.
+                cls.prepare_run_wc_DFT_G0W0_firstThreeG0W0s,
+
+                #If the extrapolation from the first 3 G0W0s show a R2 value below the threshold (0.85) 
+                #for at least one of the gaps or QP corrections, run additional G0W0 calculations (up to num_calc_touse_for_extrapolation)
+                #and use the last three calculations for the extrapolation (i.e. a moving window of 3 calculations) 
+                #while_(cls.are_r2_under_threshold)(
+                #    cls.prepare_run_wc_DFT_G0W0_additionalG0W0s,
+                #),
+
+                cls.elaborate_extrapolate_results,
                 )
 
   
     def initialize(self):
+        self.report('\n Started Basis-Extrapolation procedure with potentials: '+str(self.inputs.potential_mapping.get_dict())+"\n")
+        
         self.ctx.finishedWC_DFTgr     = []
         self.ctx.finishedWC_DFT_G0W0  = []
-        self.ctx.verbose_DEBUG = False
-        self.report('\n Started Basis-Extrapolation procedure with potentials: '+str(self.inputs.potential_mapping.get_dict())+"\n")
+        
 
-    def prepare_run_wc_DFT_G0W0(self): 
+    def prepare_run_wc_DFT_G0W0_firstThreeG0W0s(self): 
             """
-            The workchain launches 3 or 4 istances of VaspDFTGWWorkChain (each represent a complete G0W0 data point). 
+            The workchain launches 3 (the precise value is defined by self.ctx.num_calc_used_for_extrapolation) istances of VaspDFTGWWorkChain (each represent a complete G0W0 data point). 
             This function prepares the correct input for each call of VaspDFTGWWorkChain.
             """
             #Preparing inputs for each workchain
             self.ctx.inputs_array = []
             self.ctx.runningWC_DFT_G0W0 = {}
 
-            #All inputs, as declared in the define of VaspDFTGWWorkChain, are saved inside the list self.ctx.inputs_array
-            #The idea is that the first entry in inputs_array corresponds to the first call of VaspDFTGWWorkChain AND the FIRST G0W0 data point for the extrapolation.
-            #And so on. How long is this array? len(self.ctx.EncutNbands_completeBasis)
-            for ecutNbIdx in range(  min(3,len(self.ctx.EncutNbands_completeBasis))  ): 
+            #We prepare the inputs for each call of VaspDFTGWWorkChain, which differ only for the encut and nbands values (and the encut_chi value, which is a fraction of encut)
+            #  All inputs, as declared in the define of VaspDFTGWWorkChain, are saved inside the list self.ctx.inputs_array
+            #  The idea is that the first entry in inputs_array corresponds to the first call of VaspDFTGWWorkChain AND the FIRST G0W0 data point for the extrapolation.
+            #We prepare the inputs for all G0W0 data points which could be used, equal to self.ctx.max_num_runnable_G0W0_calcs
+            #  However, only the first self.ctx.num_calc_used_for_extrapolation will be actually launched in this function.
+            #  The other calculations will be launched only if the R2 of the extrapolation is below the threshold for at least one of the gaps.
+            for ecutNbIdx in range( self.ctx.max_num_runnable_G0W0_calcs ): 
                 self.ctx.inputs_array.append( AttributeDict() )
                 self.ctx.inputs_array[ecutNbIdx].update(self.exposed_inputs(VaspDFTGWWorkChain))
                 self.ctx.inputs_array[ecutNbIdx].clean_workdir    = Bool(False)
@@ -137,17 +150,13 @@ class VaspG0W0BasisExtrWorkChain(WorkChain):
                 self.ctx.inputs_array[ecutNbIdx].ns_option.calculationLabel    = Str("extrapolation point "+str(ecutNbIdx) )               
                 self.ctx.inputs_array[ecutNbIdx].ns_option.run_G0W0            = Bool(True) 
 
-    
-    
-    
                 #now let's manage the ENCUTGW terms:
                 #By default they are kp at 0.63*ENCUT - if the encut_chi_low flag is activated, just 0.50
                 self.ctx.inputs_array[ecutNbIdx].ns_parameters.encut_chi = Float( self.ctx.EncutNbands_completeBasis[ecutNbIdx]["encut"] * 0.63 )
                 if self.inputs.ns_extrapolation.encut_chi_low.value == True :
                         self.ctx.inputs_array[ecutNbIdx].ns_parameters.encut_chi = Float( self.ctx.EncutNbands_completeBasis[ecutNbIdx]["encut"] * 0.50 )
 
-
-
+            for ecutNbIdx in range( self.ctx.num_calc_touse_for_extrapolation ): 
                 #Actually launching each workchain. The workchain are launched in parallel
                 #See for details https://aiida.readthedocs.io/projects/aiida-core/en/v2.0.1/topics/workflows/usage.html
                 #for ecutNbIdx in range(len(self.ctx.EncutNbands_completeBasis)): 
@@ -162,6 +171,7 @@ class VaspG0W0BasisExtrWorkChain(WorkChain):
                     +"\n  > self.ctx.EncutNbands_completeBasis[ecutNbIdx][nbands]"+str(self.ctx.EncutNbands_completeBasis[ecutNbIdx]["nbands"])
                     +"\n  > self.ctx.EncutNbands_completeBasis[ecutNbIdx][encut] "+str(self.ctx.EncutNbands_completeBasis[ecutNbIdx]["encut"] ) 
                     +"\n  > workchain node :"+str(self.ctx.runningWC_DFT_G0W0[ecutNbIdx])+"\n\n"  )
+
 
     def determine_completeBasis_encutNband(self): 
         """
@@ -186,10 +196,10 @@ class VaspG0W0BasisExtrWorkChain(WorkChain):
 
 
         #The extrapolation is governed by 4 parameters:
-        # 1.1) encut_atENMAX    - the encut energy used for the first point in the extrapolation
-        #                         conventionally we set it to 1.00*DFTgr_ENMAXmax, where DFTgr_ENMAXmax is the maximum ENMAX between all POTCARs used.
-        # 1.2) maximum_num_calc - the maximum number of calculations used for the extrapolation (typically 4, but could be more with a very low nbands_stride for very large volumes)
-        # 1.3) nbands_stride      - the minimum number of bands step used to increase the number of bands in the fit.
+        # 1.1) encut_atENMAX     - the encut energy used for the first point in the extrapolation
+        #                          conventionally we set it to 1.00*DFTgr_ENMAXmax, where DFTgr_ENMAXmax is the maximum ENMAX between all POTCARs used.
+        # 1.2) num_calc_touse_for_extrapolation - the maximum number of calculations used for the extrapolation (typically 4, but could be more with a very low nbands_stride for very large volumes)
+        # 1.3) nbands_stride     - the minimum number of bands step used to increase the number of bands in the fit.
         # 1.4) cutoff_fractions  - the fractions of DFTgr_ENMAXmax used for the extrapolation; is an additional, older modes which is altarnative to the 3).
         # Let's define them one-by-one.
 
@@ -200,13 +210,24 @@ class VaspG0W0BasisExtrWorkChain(WorkChain):
             self.report("overriding ENMAX extracting from DFT ground state with one defined in self.inputs")
         self.ctx.encut_atENMAX = Float(DFTgr_ENMAXmax)
 
-        #1.2] Let's set the minimum number of bands step (calculations) used for the extrapolation
-        self.ctx.maximum_num_calc = self.inputs.ns_extrapolation.maximum_num_calc.value
+
+        #1.2] Let's handle the case in which the user wants to override the standard value of num_calc_touse_for_extrapolation and has thus passed a custom value
+        self.ctx.r2_threshold = self.inputs.ns_extrapolation.r2_threshold.value
+        self.ctx.num_calc_touse_for_extrapolation = 3
+        self.ctx.max_num_runnable_G0W0_calcs      = 4
+        #The definition of cutoff_fractions overries the standard mode of determination of the encut-nbands pairs.
+        #  num_calc_touse_for_extrapolation should still be = 3, the min is to avoid errors if the user passes just 2 fractions, which means that only 2 G0W0 calculations will be performed.
+        #  max_num_runnable_G0W0_calcs is instead = len(cutoff_fractions).
+        if hasattr(self.inputs.ns_extrapolation, 'cutoff_fractions') :
+            self.ctx.num_calc_touse_for_extrapolation = min( self.ctx.num_calc_touse_for_extrapolation , len(self.inputs.ns_extrapolation.cutoff_fractions.get_array('cutoff_fractions'))  )
+            self.ctx.max_num_runnable_G0W0_calcs      = len(self.inputs.ns_extrapolation.cutoff_fractions.get_array('cutoff_fractions'))
+
 
         #1.3] Let's handle the case in which the user wants to override the standard value of nbands_stride and has thus passed a custom value
         #The standard value is nbands_stride = #MPI-threads        
         if hasattr(self.inputs.ns_extrapolation, 'nbands_stride'): self.ctx.nbands_stride = self.inputs.ns_extrapolation.nbands_stride.value
         else:                                                      self.ctx.nbands_stride = GW_mpithrd_num
+
 
         #1.4] Let's handle the case in which the user wants to use the mode defined by cutoff_fractions.
         if hasattr(self.inputs.ns_extrapolation, 'cutoff_fractions'):
@@ -237,13 +258,13 @@ class VaspG0W0BasisExtrWorkChain(WorkChain):
         # Now we can determine the encut-nbands pairs to be used in the extrapolation.
         # By default we the first calculation is at (DFTgr_ENMAXmax , nbands_atENMAX) and the other calculations are determined by increasing nbands in steps of 0.2*nbands_atENMAX
         # and determining the corresponding encut by the inverted relation encut=encut(nbands) - in order to satisfy the complete basis hypothesis.
-        # The number of calculations is determined by maximum_num_calc.
+        # The number of calculations is determined by num_calc_touse_for_extrapolation.
         # If the user has specified the cutoff_fractions, we use them instead of the previous way to determine the encut-nbands pairs.
         # The results are saved in self.ctx.EncutNbands_completeBasis , which is a list of dict [{'encut': <Aiida-Float> , 'nbands': <Aiida-Int>} , ...] while _logger is a string containing a log of the determinations.
         self.ctx.EncutNbands_completeBasis = List()
         self.ctx.EncutNbands_completeBasis_logger = str("")
         if not hasattr(self.inputs.ns_extrapolation, 'cutoff_fractions'):
-            nbands_array = [nbands_atENMAX + i * self.ctx.nbands_stride for i in range(self.ctx.maximum_num_calc)]
+            nbands_array = [nbands_atENMAX + i * self.ctx.nbands_stride for i in range(self.ctx.max_num_runnable_G0W0_calcs)]
             for nb in nbands_array:
                 [tmp_EB , tmp_EB_logger] = get_closest_EncutNband_multiple(DFTgr_kpts , DFTgr_cell , DFTgr_NGarray , DFTgr_ENMAXmax , params_fit , self.ctx.nbands_stride , nb , Str("nbands") , flag_twoSidesRounding=Bool(True) )
                 self.ctx.EncutNbands_completeBasis.append(tmp_EB)
@@ -297,109 +318,156 @@ class VaspG0W0BasisExtrWorkChain(WorkChain):
 			+"\n  > corrected encut-nbands couples       :"+str(self.ctx.EncutNbands_completeBasis)
 			+'\n[2 - determining (encut,nbands) -> determining corrected (encut,nbands)]--- --- --- --- --- --- --- --- --- --- --- --- --- --- --- ---\n\n')
 
-    def elaborate_results(self):
+
+    def check_extrapolation_r2( runningWC_DFT_G0W0 ):
+        #Initializing stuff
+        list_gaps , list_gaps_QPc = AttributeDict() , AttributeDict() 
+        extrapolated_gap , extrapolated_gap['r2'] , extrapolated_QPc , extrapolated_QPc['r2'] = AttributeDict() , AttributeDict() , AttributeDict() , AttributeDict()
+        list_nbands = []   
+
+
+        if ('magnetic_moment_onsite' in  self.inputs['ns_parameters']):  
+            idx_toIterate     = list( itertools.product( ['spinUp','spinDw'] , ['G0W0_Dir', 'G0W0_Ind','G0W0_Gam']) )
+            idx_toIterate_QPc = list( itertools.product( ['spinUp','spinDw'] , ['HOMO_Dir', 'HOMO_Ind','HOMO_Gam' , 'LUMO_Dir','LUMO_Ind','LUMO_Gam']) )
+            list_gaps['spinUp']     , list_gaps['spinDw']     = AttributeDict() , AttributeDict()           
+            list_gaps_QPc['spinUp'] , list_gaps_QPc['spinDw'] = AttributeDict() , AttributeDict()
+            extrapolated_gap['spinUp']       , extrapolated_gap['spinDw']       = AttributeDict() , AttributeDict()
+            extrapolated_gap['r2']['spinUp'] , extrapolated_gap['r2']['spinDw'] = AttributeDict() , AttributeDict()   
+            extrapolated_QPc['spinUp']       , extrapolated_QPc['spinDw']       = AttributeDict() , AttributeDict()
+            extrapolated_QPc['r2']['spinUp'] , extrapolated_QPc['r2']['spinDw'] = AttributeDict() , AttributeDict()            
+        else: 
+            idx_toIterate     = list( itertools.product( ['spinUp'] , ['G0W0_Dir', 'G0W0_Ind','G0W0_Gam']) )
+            idx_toIterate_QPc = list( itertools.product( ['spinUp'] , ['HOMO_Dir', 'HOMO_Ind','HOMO_Gam','LUMO_Dir', 'LUMO_Ind','LUMO_Gam']) )
+            list_gaps['spinUp'] , list_gaps_QPc['spinUp'] = AttributeDict() , AttributeDict()    
+            extrapolated_gap['spinUp'] , extrapolated_gap['r2']['spinUp'] = AttributeDict() , AttributeDict() 
+            extrapolated_QPc['spinUp'] , extrapolated_QPc['r2']['spinUp'] = AttributeDict() , AttributeDict()   
+        for idx in idx_toIterate:     list_gaps[idx[0]][idx[1]]     = []
+        for idx in idx_toIterate_QPc: list_gaps_QPc[idx[0]][idx[1]] = []  
+
+        #Extracting stuff  
+        for wkc_idx in runningWC_DFT_G0W0:
+            list_nbands.append( runningWC_DFT_G0W0[wkc_idx].inputs.ns_parameters['nbands'].value )
+            for idx in idx_toIterate:     list_gaps[idx[0]][idx[1]].append(     runningWC_DFT_G0W0[wkc_idx].outputs.gaps.get_dict()[idx[0]][idx[1]]     )
+            for idx in idx_toIterate_QPc: list_gaps_QPc[idx[0]][idx[1]].append( runningWC_DFT_G0W0[wkc_idx].outputs.gaps_QPc.get_dict()[idx[0]][idx[1]] )    
+
+        #Interpolating onlt with first three
+        ar_inverseNbands = 1/np.array(list_nbands) 
+        for idx in idx_toIterate:
+            reg = LinearRegression().fit(ar_inverseNbands.reshape(-1, 1), np.array(list_gaps[idx[0]][idx[1]]) )
+            extrapolated_gap[idx[0]][idx[1]]       = reg.intercept_ 
+            extrapolated_gap['r2'][idx[0]][idx[1]] = reg.score(ar_inverseNbands.reshape(-1, 1),  np.array(list_gaps[idx[0]][idx[1]]) )
+        for idx in idx_toIterate_QPc: 
+            reg = LinearRegression().fit(ar_inverseNbands.reshape(-1, 1), np.array(list_gaps_QPc[idx[0]][idx[1]]) )
+            extrapolated_QPc[idx[0]][idx[1]]       =  reg.intercept_  
+            extrapolated_QPc['r2'][idx[0]][idx[1]] =  reg.score(ar_inverseNbands.reshape(-1, 1),  np.array(list_gaps_QPc[idx[0]][idx[1]]) )
+
+
+
+    @staticmethod
+    def _extract_gaps_from_outputs_into_dicts(runningWC_DFT_G0W0 , spinComp):
+        """Collect Indirect/Direct/Gamma gaps and QP corrections for all calculations."""
+
+        gap_keys = ("G0W0_Dir", "G0W0_Ind", "G0W0_Gam")
+        qpc_keys = ("HOMO_Dir", "HOMO_Ind", "HOMO_Gam", "LUMO_Dir", "LUMO_Ind", "LUMO_Gam")
+
+        ns_gaps     = {gap_k: [runningWC_DFT_G0W0[WC_idx].outputs.gaps.get_dict()[spinComp][gap_k]     for WC_idx in runningWC_DFT_G0W0] for gap_k in gap_keys}
+        ns_gaps_QPc = {qpc_k: [runningWC_DFT_G0W0[WC_idx].outputs.gaps_QPc.get_dict()[spinComp][qpc_k] for WC_idx in runningWC_DFT_G0W0] for qpc_k in qpc_keys}
+        return ns_gaps, ns_gaps_QPc
+
+    @staticmethod
+    def _extrapolate_gaps_from_dicts(ar_nbandsInput, ns_gap, ns_QPc, spinComp, str_log , use_num_calc_for_extrapolation=3 ):
+        """
+        Extrapolate the Direct-Indirect-Gamma gaps and QP corrections with respect to 1/(Number of bands).
+        """
+        gap_keys = ["G0W0_Dir", "G0W0_Ind", "G0W0_Gam"]
+        qpc_keys = ["HOMO_Dir", "HOMO_Ind", "HOMO_Gam", "LUMO_Dir", "LUMO_Ind", "LUMO_Gam"]
+
+        extrapolated_gap = {"r2": {}}
+        extrapolated_QPc = {"r2": {}}
+    
+        num_calc = min( len(ar_nbandsInput) , use_num_calc_for_extrapolation )
+
+        # Fit gaps
+        for key in gap_keys:
+            extr_x = (1 / np.array(ar_nbandsInput[-num_calc:])).reshape(-1, 1)
+            extr_y = ns_gap[spinComp][key][-num_calc:]
+            reg = LinearRegression().fit(extr_x, extr_y)
+            extrapolated_gap[key]       = Float(reg.intercept_)
+            extrapolated_gap["r2"][key] = Float(reg.score(extr_x, extr_y))
+
+        # Fit QP corrections
+        for key in qpc_keys:
+            extr_x = (1 / np.array(ar_nbandsInput[-num_calc:])).reshape(-1, 1)
+            extr_y = ns_QPc[spinComp][key][-num_calc:]
+            reg = LinearRegression().fit(extr_x, extr_y)    
+            extrapolated_QPc[key]       = Float(reg.intercept_)
+            extrapolated_QPc["r2"][key] = Float(reg.score(extr_x, extr_y))
+
+        # Logging
+        str_log_spinSpecific = str_log
+        for key in gap_keys:
+            str_log_spinSpecific += f"\n > [3] bandGap_{key}_ar: {ns_gap[spinComp][key]}"
+            str_log_spinSpecific += f"\n >     bandGap_{key}_extrapolated: {extrapolated_gap[key]} (r^2={extrapolated_gap['r2'][key]})"
+        for key in qpc_keys:
+            str_log_spinSpecific += f"\n > [4] QPc_{key}_ar: {ns_QPc[spinComp][key]}"
+            str_log_spinSpecific += f"\n >     QPc_{key}_extrapolated: {extrapolated_QPc[key]} (r^2={extrapolated_QPc['r2'][key]})"
+
+        return extrapolated_gap, extrapolated_QPc, str_log_spinSpecific
+
+    @staticmethod
+    def _extrapolate_bands_into_dict(ar_nbandsInput , runningWC_DFT_G0W0 ):
+        ##[Part 4] Extrapolate ALL QPshifts [for all kpts, spin and bands<tmp_min_nbandsGW] and pass r2  
+        #for Metals and semimetals nbandsgw could be NOT defined by the workchain - in that case we resort to the safest definition, i.e. extrapolating all bands.
+        tmp_min_nbandsGW = min(ar_nbandsInput)  
+        try:   tmp_min_nbandsGW = int(min( [box.ns_parameters.nbandsgw for box in self.ctx.inputs_array] ))
+        except:pass 
+        
+        #First we extract the G0W0 bands in the AiiDA format - then extract as a list of array - and finally inlude only bands up to nbandsGW.
+        bands_G0W0_AiiDA        = [ runningWC_DFT_G0W0[WC_idx].outputs.bands_G0W0  for WC_idx in runningWC_DFT_G0W0]
+        bands_G0W0_differentCalcStacked              = [bnd.get_bands() for bnd in bands_G0W0_AiiDA]
+        bands_G0W0_upToNBANDSGW_differentCalcStacked = np.stack( [bnd[:,:tmp_min_nbandsGW] for bnd in bands_G0W0_differentCalcStacked] )
+        #The same for DFT bands
+        bands_DFT_AiiDA        = [ runningWC_DFT_G0W0[WC_idx].outputs.bands_DFT  for WC_idx in runningWC_DFT_G0W0]
+        bands_DFT_differentCalcStacked              = [bnd.get_bands() for bnd in bands_DFT_AiiDA]
+        bands_DFT_upToNBANDSGW_differentCalcStacked = np.stack( [bnd[:,:tmp_min_nbandsGW] for bnd in bands_DFT_differentCalcStacked] )
+        bands_QPc_upToNBANDSGW_differentCalcStacked = bands_G0W0_upToNBANDSGW_differentCalcStacked - bands_DFT_upToNBANDSGW_differentCalcStacked
+        #bands_G0W0_differentCalcStacked has shape List[ (#kpts , #bands) ]
+        #bands_G0W0_upToNBANDSGW_differentCalcStacked  has shape (#GWcalc , #kpts , #bands)
+        #bands_G0W0_extrapolated has shape (#kpts , #bands)
+
+        #Let's extrapolate now the QP corrections for all kpoints, spins and bands<tmp_min_nbandsGW
+        bands_G0W0_extrapolated    = np.zeros(np.shape(bands_G0W0_upToNBANDSGW_differentCalcStacked[0,:,:]))  #The zero refers to the Calculation index; bands_G0W0_upToNBANDSGW contains the bands of more than one calculations
+        bands_G0W0_extrapolated_r2 = np.zeros(np.shape(bands_G0W0_upToNBANDSGW_differentCalcStacked[0,:,:])) 
+        ar_inverseNbands = 1/np.array(ar_nbandsInput) #Remember that ar_nbandsInput contains all NBANDS of the various calculations used for the extrapolation.
+        for idx in np.ndindex(np.shape(bands_G0W0_extrapolated)): 
+            reg_b = LinearRegression().fit( ar_inverseNbands.reshape(-1, 1) , bands_G0W0_upToNBANDSGW_differentCalcStacked[:,idx[0],idx[1]] )
+            bands_G0W0_extrapolated[idx]    = reg_b.intercept_
+            bands_G0W0_extrapolated_r2[idx] = reg_b.score(ar_inverseNbands.reshape(-1, 1), bands_G0W0_upToNBANDSGW_differentCalcStacked[:,idx[0],idx[1]] )
+
+  
+        bands_QPc_extrapolated    = np.zeros(np.shape(bands_QPc_upToNBANDSGW_differentCalcStacked[0,:,:]))
+        bands_QPc_extrapolated_r2 = np.zeros(np.shape(bands_QPc_upToNBANDSGW_differentCalcStacked[0,:,:]))
+        for idx in np.ndindex(np.shape(bands_QPc_extrapolated)): 
+            reg_b = LinearRegression().fit( ar_inverseNbands.reshape(-1, 1) , bands_QPc_upToNBANDSGW_differentCalcStacked[:,idx[0],idx[1]] )
+            bands_QPc_extrapolated[idx]    = reg_b.intercept_
+            bands_QPc_extrapolated_r2[idx] = reg_b.score(ar_inverseNbands.reshape(-1, 1), bands_QPc_upToNBANDSGW_differentCalcStacked[:,idx[0],idx[1]] )
+
+        #Save the extrapolated in the proper format and output that
+        extrapolated_bands = {}
+        extrapolated_bands["bands_G0W0"] = bands_G0W0_extrapolated ; extrapolated_bands["bands_G0W0_r2"] = bands_G0W0_extrapolated_r2 
+        extrapolated_bands["bands_QPc"]  = bands_QPc_extrapolated ;  extrapolated_bands["bands_QPc_r2"]  = bands_QPc_extrapolated_r2
+        return extrapolated_bands
+
+
+
+
+
+    def elaborate_extrapolate_results(self):
         """
         Extract the Direct - indirect - Gamma gaps and Quasiparticle corrections from the G0W0 data points; extrapolate them to the infinite basis-set limit; returns them.
         """
-        def elaborate_results_gaps( runningWC_DFT_G0W0 , spinComp):
-            """
-            Collect the Indirect/Direct/Gamma gaps of all calculations used for the extrapolation in a single dict.
-
-            Parameters
-            ----------
-            runningWC_DFT_G0W0 : List
-                list of AiiDA nodes - where each node represents an individual G0W0 calculations                
-            spinComp : int
-                index of the spin component to be considered.
-            """
-            ns_gaps = {} ; ns_gaps_QPc ={}
-            ns_gaps['G0W0_Dir'] = [ self.ctx.runningWC_DFT_G0W0[WC_idx].outputs.gaps.get_dict()[spinComp]['G0W0_Dir']            for WC_idx in runningWC_DFT_G0W0 ]
-            ns_gaps['G0W0_Ind'] = [ self.ctx.runningWC_DFT_G0W0[WC_idx].outputs.gaps.get_dict()[spinComp]['G0W0_Ind']            for WC_idx in runningWC_DFT_G0W0 ]
-            ns_gaps['G0W0_Gam'] = [ self.ctx.runningWC_DFT_G0W0[WC_idx].outputs.gaps.get_dict()[spinComp]['G0W0_Gam']            for WC_idx in runningWC_DFT_G0W0 ]
-            ns_gaps_QPc['HOMO_Dir'] = [ self.ctx.runningWC_DFT_G0W0[WC_idx].outputs.gaps_QPc.get_dict()[spinComp]['HOMO_Dir']    for WC_idx in runningWC_DFT_G0W0 ]
-            ns_gaps_QPc['HOMO_Ind'] = [ self.ctx.runningWC_DFT_G0W0[WC_idx].outputs.gaps_QPc.get_dict()[spinComp]['HOMO_Ind']    for WC_idx in runningWC_DFT_G0W0 ]
-            ns_gaps_QPc['HOMO_Gam'] = [ self.ctx.runningWC_DFT_G0W0[WC_idx].outputs.gaps_QPc.get_dict()[spinComp]['HOMO_Gam']    for WC_idx in runningWC_DFT_G0W0 ]
-            ns_gaps_QPc['LUMO_Dir'] = [ self.ctx.runningWC_DFT_G0W0[WC_idx].outputs.gaps_QPc.get_dict()[spinComp]['LUMO_Dir']    for WC_idx in runningWC_DFT_G0W0 ]
-            ns_gaps_QPc['LUMO_Ind'] = [ self.ctx.runningWC_DFT_G0W0[WC_idx].outputs.gaps_QPc.get_dict()[spinComp]['LUMO_Ind']    for WC_idx in runningWC_DFT_G0W0 ]
-            ns_gaps_QPc['LUMO_Gam'] = [ self.ctx.runningWC_DFT_G0W0[WC_idx].outputs.gaps_QPc.get_dict()[spinComp]['LUMO_Gam']    for WC_idx in runningWC_DFT_G0W0 ]         
-            return ns_gaps , ns_gaps_QPc
-            
-        def extrapolate_gaps(ar_nbandsInput , ns_gap , ns_QPc , spinComp , str_log):
-            """
-            Extrapolate the Direct-Indirect-Gamma gaps with respect to 1/(Number of bands)
-
-            Parameters
-            ----------
-            ar_nbandsInput : list
-                List of number of bands of the various calculations used for the extrapolation, i.e. [NBANDS(1° G0W0) , NBANDS(2° G0W0), etc]
-            ns_gap : Dict
-                Contains the various gaps - it should contains a dict with the G0W0 Direct - Indirect - Gamma gaps.
-            ns_QPc : Dict
-                Similar to ns_gap, but contains the Quasiparticle corrections of HOMO and LUMO associated to the Direct - Indirect - Gamma gaps.
-            spinComp : int
-                Index of spin componet
-            str_log : String
-                Accumulate the Summary of the results (will be printed in the end).
-
-            """
-            ar_inverseNbands = 1/np.array(ar_nbandsInput) 
-            reg = {}
-            reg['G0W0_Dir'] = LinearRegression().fit(ar_inverseNbands.reshape(-1, 1), ns_gap[spinComp]['G0W0_Dir'] )
-            reg['G0W0_Ind'] = LinearRegression().fit(ar_inverseNbands.reshape(-1, 1), ns_gap[spinComp]['G0W0_Ind'] )
-            reg['G0W0_Gam'] = LinearRegression().fit(ar_inverseNbands.reshape(-1, 1), ns_gap[spinComp]['G0W0_Gam'] ) 
-
-            extrapolated_gap = {} ; extrapolated_gap['r2'] = {}
-            extrapolated_gap['G0W0_Dir'] = Float( reg['G0W0_Dir'].intercept_ ) 
-            extrapolated_gap['G0W0_Ind'] = Float( reg['G0W0_Ind'].intercept_ ) 
-            extrapolated_gap['G0W0_Gam'] = Float( reg['G0W0_Gam'].intercept_ ) 
-            extrapolated_gap['r2']['G0W0_Dir'] = Float( reg['G0W0_Dir'].score(ar_inverseNbands.reshape(-1, 1), ns_gap[spinComp]['G0W0_Dir'] ) ) 
-            extrapolated_gap['r2']['G0W0_Ind'] = Float( reg['G0W0_Ind'].score(ar_inverseNbands.reshape(-1, 1), ns_gap[spinComp]['G0W0_Ind'] ) ) 
-            extrapolated_gap['r2']['G0W0_Gam'] = Float( reg['G0W0_Gam'].score(ar_inverseNbands.reshape(-1, 1), ns_gap[spinComp]['G0W0_Gam'] ) ) 
-
-            reg_QPc = {}
-            extrapolated_QPc = {} ; extrapolated_QPc['r2'] = {}
-            reg_QPc['HOMO_Dir'] = LinearRegression().fit(ar_inverseNbands.reshape(-1, 1), ns_QPc[spinComp]['HOMO_Dir'] )
-            reg_QPc['HOMO_Ind'] = LinearRegression().fit(ar_inverseNbands.reshape(-1, 1), ns_QPc[spinComp]['HOMO_Ind'] )
-            reg_QPc['HOMO_Gam'] = LinearRegression().fit(ar_inverseNbands.reshape(-1, 1), ns_QPc[spinComp]['HOMO_Gam'] )         
-            reg_QPc['LUMO_Dir'] = LinearRegression().fit(ar_inverseNbands.reshape(-1, 1), ns_QPc[spinComp]['LUMO_Dir'] )
-            reg_QPc['LUMO_Ind'] = LinearRegression().fit(ar_inverseNbands.reshape(-1, 1), ns_QPc[spinComp]['LUMO_Ind'] )
-            reg_QPc['LUMO_Gam'] = LinearRegression().fit(ar_inverseNbands.reshape(-1, 1), ns_QPc[spinComp]['LUMO_Gam'] )  
-            extrapolated_QPc['HOMO_Dir'] = Float(reg_QPc['HOMO_Dir'].intercept_) 
-            extrapolated_QPc['HOMO_Ind'] = Float(reg_QPc['HOMO_Ind'].intercept_) 
-            extrapolated_QPc['HOMO_Gam'] = Float(reg_QPc['HOMO_Gam'].intercept_)       
-            extrapolated_QPc['LUMO_Dir'] = Float(reg_QPc['LUMO_Dir'].intercept_) 
-            extrapolated_QPc['LUMO_Ind'] = Float(reg_QPc['LUMO_Ind'].intercept_) 
-            extrapolated_QPc['LUMO_Gam'] = Float(reg_QPc['LUMO_Gam'].intercept_)    
-            extrapolated_QPc['r2']['HOMO_Dir'] = Float( reg_QPc['HOMO_Dir'].score(ar_inverseNbands.reshape(-1, 1), ns_QPc[spinComp]['HOMO_Dir']) ) 
-            extrapolated_QPc['r2']['HOMO_Ind'] = Float( reg_QPc['HOMO_Ind'].score(ar_inverseNbands.reshape(-1, 1), ns_QPc[spinComp]['HOMO_Ind']) ) 
-            extrapolated_QPc['r2']['HOMO_Gam'] = Float( reg_QPc['HOMO_Gam'].score(ar_inverseNbands.reshape(-1, 1), ns_QPc[spinComp]['HOMO_Gam']) ) 
-            extrapolated_QPc['r2']['LUMO_Dir'] = Float( reg_QPc['LUMO_Dir'].score(ar_inverseNbands.reshape(-1, 1), ns_QPc[spinComp]['LUMO_Dir']) ) 
-            extrapolated_QPc['r2']['LUMO_Ind'] = Float( reg_QPc['LUMO_Ind'].score(ar_inverseNbands.reshape(-1, 1), ns_QPc[spinComp]['LUMO_Ind']) ) 
-            extrapolated_QPc['r2']['LUMO_Gam'] = Float( reg_QPc['LUMO_Gam'].score(ar_inverseNbands.reshape(-1, 1), ns_QPc[spinComp]['LUMO_Gam']) ) 
-            
-            str_log_spinSpecific = str_log + ("\n > [3] ar_bandGap_G0W0_Dir="+str(ns_gap[spinComp]['G0W0_Dir'])
-                +"\n > [3] ar_bandGap_G0W0_Ind="+str(ns_gap[spinComp]['G0W0_Ind'])
-                +"\n > [3] ar_bandGap_G0W0_Gam="+str(ns_gap[spinComp]['G0W0_Gam'])
-                +"\n > [4] ar_QPc_HOMO_atDir="+str(ns_QPc[spinComp]['HOMO_Dir'])
-                +"\n > [4] ar_QPc_HOMO_atInd="+str(ns_QPc[spinComp]['HOMO_Ind'])
-                +"\n > [4] ar_QPc_HOMO_atGam="+str(ns_QPc[spinComp]['HOMO_Gam'])            
-                +"\n > [4] ar_QPc_LUMO_atDir="+str(ns_QPc[spinComp]['LUMO_Dir'])
-                +"\n > [4] ar_QPc_LUMO_atInd="+str(ns_QPc[spinComp]['LUMO_Ind'])
-                +"\n > [4] ar_QPc_LUMO_atGam="+str(ns_QPc[spinComp]['LUMO_Gam'])  
-                +"\n >  bandGap_G0W0_Dir_extrapolated="+str(extrapolated_gap['G0W0_Dir'])+" (r^2="+str(extrapolated_gap['r2']['G0W0_Dir'])+")"      
-                +"\n >  bandGap_G0W0_Ind_extrapolated="+str(extrapolated_gap['G0W0_Ind'])+" (r^2="+str(extrapolated_gap['r2']['G0W0_Ind'])+")"
-                +"\n >  bandGap_G0W0_Gam_extrapolated="+str(extrapolated_gap['G0W0_Gam'])+" (r^2="+str(extrapolated_gap['r2']['G0W0_Gam'])+")"
-                +"\n >  QPc_LUMO_Dir_extr="+str(extrapolated_QPc['LUMO_Dir'])+" (r^2="+str(extrapolated_QPc['r2']['LUMO_Dir'])+")"      
-                +"\n >  QPc_LUMO_Ind_extr="+str(extrapolated_QPc['LUMO_Ind'])+" (r^2="+str(extrapolated_QPc['r2']['LUMO_Ind'])+")"
-                +"\n >  QPc_LUMO_Gam_extr="+str(extrapolated_QPc['LUMO_Gam'])+" (r^2="+str(extrapolated_QPc['r2']['LUMO_Gam'])+")"
-                +"\n >  QPc_HOMO_Dir_extr="+str(extrapolated_QPc['HOMO_Dir'])+" (r^2="+str(extrapolated_QPc['r2']['HOMO_Dir'])+")"      
-                +"\n >  QPc_HOMO_Ind_extr="+str(extrapolated_QPc['HOMO_Ind'])+" (r^2="+str(extrapolated_QPc['r2']['HOMO_Ind'])+")"
-                +"\n >  QPc_HOMO_Gam_extr="+str(extrapolated_QPc['HOMO_Gam'])+" (r^2="+str(extrapolated_QPc['r2']['HOMO_Gam'])+")")
-            return extrapolated_gap , extrapolated_QPc , str_log_spinSpecific
-          
-
-
-          
+                    
+              
         #[Part1] outputting the ENMAX values, used as input in this workflow, might result useful (this saves the effort of reconstructing it later).
         self.ctx.encut_atENMAX.store()
         ##self.ctx.ENMAXarray.store() 
@@ -423,14 +491,16 @@ class VaspG0W0BasisExtrWorkChain(WorkChain):
         ar_encut_nbands.store()        
         self.out('pairs_nbands_encuts' , ar_encut_nbands )        
         
+
+        #[Part2] Extracting gaps and QP corrections (related to gaps) for all calculations.
         #If the calculation is spin-polarized, apply elaborate_results_gaps to both spin component - and save the gaps for each spin-component separately.
         if ('magnetic_moment_onsite' in self.inputs['ns_parameters']):
-            ns_gaps_spinUp , ns_gaps_QPc_spinUp = elaborate_results_gaps( self.ctx.runningWC_DFT_G0W0 , 'spinUp')
-            ns_gaps_spinDw , ns_gaps_QPc_spinDw = elaborate_results_gaps( self.ctx.runningWC_DFT_G0W0 , 'spinDw')
+            ns_gaps_spinUp , ns_gaps_QPc_spinUp = self._extract_gaps_from_outputs_into_dicts( self.ctx.runningWC_DFT_G0W0 , 'spinUp')
+            ns_gaps_spinDw , ns_gaps_QPc_spinDw = self._extract_gaps_from_outputs_into_dicts( self.ctx.runningWC_DFT_G0W0 , 'spinDw')
             ns_gap     = Dict(dict = {"spinUp":ns_gaps_spinUp     , "spinDw":  ns_gaps_spinDw     })
             ns_gap_QPc = Dict(dict = {"spinUp":ns_gaps_QPc_spinUp , "spinDw":  ns_gaps_QPc_spinDw })
         else:
-            ns_gaps_spinUp , ns_gaps_QPc_spinUp = elaborate_results_gaps( self.ctx.runningWC_DFT_G0W0 ,  'spinUp')
+            ns_gaps_spinUp , ns_gaps_QPc_spinUp = self._extract_gaps_from_outputs_into_dicts( self.ctx.runningWC_DFT_G0W0 ,  'spinUp')
             ns_gap     = Dict(dict = {"spinUp":ns_gaps_spinUp})
             ns_gap_QPc = Dict(dict = {"spinUp":ns_gaps_QPc_spinUp}) 
         ns_gap.store() ; ns_gap_QPc.store()
@@ -439,69 +509,33 @@ class VaspG0W0BasisExtrWorkChain(WorkChain):
 
         ##[Part3] Determining extrapolated G0W0 bandgaps and QP shifts through fitting nbands/gaps_G0W0
         if ('magnetic_moment_onsite' in self.inputs['ns_parameters']):
-            extrapolated_gap_spinUp , extrapolated_QPc_spinUp , str_log_spinUp = extrapolate_gaps( ar_nbandsInput , ns_gap , ns_gap_QPc , 'spinUp' , str_log )
-            extrapolated_gap_spinDw , extrapolated_QPc_spinDw , str_log_spinDw = extrapolate_gaps( ar_nbandsInput , ns_gap , ns_gap_QPc , 'spinDw' , str_log )
-            #extrapolated = Dict(dict = { "gaps"    : { "spinUp":extrapolated_gap_spinUp , "spinDw":extrapolated_gap_spinDw } ,
-            #                             "gaps_QPc": { "spinUp":extrapolated_QPc_spinUp , "spinDw":extrapolated_QPc_spinDw } })
-            extrapolated = { "gaps"    : { "spinUp":extrapolated_gap_spinUp , "spinDw":extrapolated_gap_spinDw } ,
-                             "gaps_QPc": { "spinUp":extrapolated_QPc_spinUp , "spinDw":extrapolated_QPc_spinDw } }
+            extrapolated_gap_spinUp , extrapolated_QPc_spinUp , str_log_spinUp = self._extrapolate_gaps_from_dicts( ar_nbandsInput , ns_gap , ns_gap_QPc , 'spinUp' , str_log )
+            extrapolated_gap_spinDw , extrapolated_QPc_spinDw , str_log_spinDw = self._extrapolate_gaps_from_dicts( ar_nbandsInput , ns_gap , ns_gap_QPc , 'spinDw' , str_log )
+            extrapolated = Dict(dict = { "gaps"    : { "spinUp":extrapolated_gap_spinUp , "spinDw":extrapolated_gap_spinDw } ,
+                                         "gaps_QPc": { "spinUp":extrapolated_QPc_spinUp , "spinDw":extrapolated_QPc_spinDw } })
+            #extrapolated = { "gaps"    : { "spinUp":extrapolated_gap_spinUp , "spinDw":extrapolated_gap_spinDw } ,
+            #                 "gaps_QPc": { "spinUp":extrapolated_QPc_spinUp , "spinDw":extrapolated_QPc_spinDw } }
             str_log = str_log +"\n [1 Spin Component]" +str_log_spinUp +"\n [2 Spin Component]" +str_log_spinDw
         else:
-            extrapolated_gap_spinUp , extrapolated_QPc_spinUp , str_log_spinUp = extrapolate_gaps( ar_nbandsInput , ns_gap , ns_gap_QPc , 'spinUp' , str_log )
-            #extrapolated = Dict(dict = { "gaps"    : { "spinUp":extrapolated_gap_spinUp } ,
-            #                             "gaps_QPc": { "spinUp":extrapolated_QPc_spinUp } }) 
-            extrapolated = { "gaps"    : { "spinUp":extrapolated_gap_spinUp } ,
-                             "gaps_QPc": { "spinUp":extrapolated_QPc_spinUp } }
+            extrapolated_gap_spinUp , extrapolated_QPc_spinUp , str_log_spinUp = self._extrapolate_gaps_from_dicts( ar_nbandsInput , ns_gap , ns_gap_QPc , 'spinUp' , str_log )
+            extrapolated = Dict(dict = { "gaps"    : { "spinUp":extrapolated_gap_spinUp } ,
+                                         "gaps_QPc": { "spinUp":extrapolated_QPc_spinUp } }) 
+            #extrapolated = { "gaps"    : { "spinUp":extrapolated_gap_spinUp } ,
+            #                 "gaps_QPc": { "spinUp":extrapolated_QPc_spinUp } }
             str_log = str_log +"\n [1 Spin Component]" +str_log_spinUp
         self.report(str_log)
-
-
-
-
-        ##[Part 4] Extrapolate ALL QPshifts [for all kpts, spin and bands<tmp_min_nbandsGW] and pass r2  
-        #for Metals and semimetals nbandsgw could be NOT defined by the workchain - in that case we resort to the safest definition, i.e. extrapolating all bands.
-        tmp_min_nbandsGW = min(ar_nbandsInput)  
-        try:   tmp_min_nbandsGW = int(min( [box.ns_parameters.nbandsgw for box in self.ctx.inputs_array] ))
-        except:pass 
-        #First we extract the G0W0 bands in the AiiDA format - then extract as a list of array - and finally inlude only bands up to nbandsGW.
-        bands_G0W0_AiiDA        = [self.ctx.runningWC_DFT_G0W0[WC_idx].outputs.bands_G0W0  for WC_idx in self.ctx.runningWC_DFT_G0W0]
-        bands_G0W0_differentCalcStacked              = [bnd.get_bands() for bnd in bands_G0W0_AiiDA]
-        bands_G0W0_upToNBANDSGW_differentCalcStacked = np.stack( [bnd[:,:tmp_min_nbandsGW] for bnd in bands_G0W0_differentCalcStacked] )
-        #The same for DFT bands
-        bands_DFT_AiiDA        = [self.ctx.runningWC_DFT_G0W0[WC_idx].outputs.bands_DFT  for WC_idx in self.ctx.runningWC_DFT_G0W0]
-        bands_DFT_differentCalcStacked              = [bnd.get_bands() for bnd in bands_DFT_AiiDA]
-        bands_DFT_upToNBANDSGW_differentCalcStacked = np.stack( [bnd[:,:tmp_min_nbandsGW] for bnd in bands_DFT_differentCalcStacked] )
-        bands_QPc_upToNBANDSGW_differentCalcStacked = bands_G0W0_upToNBANDSGW_differentCalcStacked - bands_DFT_upToNBANDSGW_differentCalcStacked
-        #bands_G0W0_differentCalcStacked has shape List[ (#kpts , #bands) ]
-        #bands_G0W0_upToNBANDSGW_differentCalcStacked  has shape (#GWcalc , #kpts , #bands)
-        #bands_G0W0_extrapolated has shape (#kpts , #bands)
-
-        #Let's extrapolate now the QP corrections for all kpoints, spins and bands<tmp_min_nbandsGW
-        bands_G0W0_extrapolated    = np.zeros(np.shape(bands_G0W0_upToNBANDSGW_differentCalcStacked[0,:,:]))  #The zero refers to the Calculation index; bands_G0W0_upToNBANDSGW contains the bands of more than one calculations
-        bands_G0W0_extrapolated_r2 = np.zeros(np.shape(bands_G0W0_upToNBANDSGW_differentCalcStacked[0,:,:])) 
-        ar_inverseNbands = 1/np.array(ar_nbandsInput) #Remember that ar_nbandsInput contains all NBANDS of the various calculations used for the extrapolation.
-        for idx in np.ndindex(np.shape(bands_G0W0_extrapolated)): 
-            reg_b = LinearRegression().fit( ar_inverseNbands.reshape(-1, 1) , bands_G0W0_upToNBANDSGW_differentCalcStacked[:,idx[0],idx[1]] )
-            bands_G0W0_extrapolated[idx]    = reg_b.intercept_
-            #We save also the r2
-            bands_G0W0_extrapolated_r2[idx] = reg_b.score(ar_inverseNbands.reshape(-1, 1), bands_G0W0_upToNBANDSGW_differentCalcStacked[:,idx[0],idx[1]] )
-
-  
-        bands_QPc_extrapolated    = np.zeros(np.shape(bands_QPc_upToNBANDSGW_differentCalcStacked[0,:,:]))
-        bands_QPc_extrapolated_r2 = np.zeros(np.shape(bands_QPc_upToNBANDSGW_differentCalcStacked[0,:,:]))
-        for idx in np.ndindex(np.shape(bands_QPc_extrapolated)): 
-            reg_b = LinearRegression().fit( ar_inverseNbands.reshape(-1, 1) , bands_QPc_upToNBANDSGW_differentCalcStacked[:,idx[0],idx[1]] )
-            bands_QPc_extrapolated[idx]    = reg_b.intercept_
-            #We save also the r2
-            bands_QPc_extrapolated_r2[idx] = reg_b.score(ar_inverseNbands.reshape(-1, 1), bands_QPc_upToNBANDSGW_differentCalcStacked[:,idx[0],idx[1]] )
-        #Save the extrapolated in the proper format and output that.
-        extrapolated["bands_G0W0"] = bands_G0W0_extrapolated ; extrapolated["bands_G0W0_r2"] = bands_G0W0_extrapolated_r2 
-        extrapolated["bands_QPc"]  = bands_G0W0_extrapolated ; extrapolated["bands_QPc_r2"]  = bands_G0W0_extrapolated_r2
-        extrapolated = Dict(dict=extrapolated)
         extrapolated.store()    
-        self.out('extrapolated'  , extrapolated )
+        self.out('extrapolated' , extrapolated )
+    
+        ##[Part4] Determining extrapolated ALL QP shifts [for all kpts, spin and bands<tmp_min_nbandsGW] and pass r2
+        extrapolated_bands = self._extrapolate_bands_into_dict( ar_nbandsInput , self.ctx.runningWC_DFT_G0W0 )
+        extrapolated_bands = Dict(extrapolated_bands)
+        extrapolated_bands.store()
+        self.out('extrapolated_bands' , extrapolated_bands )    
 
-        
+
+
+
     def clean_remoteFolder_DFT(self):
             from aiida import orm
             self.report(orm.CalcJobNode)

@@ -236,8 +236,9 @@ class VaspG0W0CompleteWorkChain(WorkChain):
         #finishedWC_extrBS contains the AiiDA nodes of the G0W0 calculations used for the extrapolations
         #finishedWC_extrBS[-1].outputs.pairs_nbands_encuts contains the encut/nbands of the first G0W0 node used for the extrapolation
         #which is the one with the lowest cutoffs among the nodes in finishedWC_extrBS.
-        self.ctx.input_DFTG0W0.ns_parameters.encut  = Float(  self.ctx.finishedWC_extrBS[-1].outputs.pairs_nbands_encuts.get_array('x_array')[0]  )
+        self.ctx.input_DFTG0W0.ns_parameters.encut  = Float(  self.ctx.finishedWC_extrBS[-1].outputs.pairs_nbands_encuts.get_array('x_array')[0]    )
         self.ctx.input_DFTG0W0.ns_parameters.nbands = Int(    self.ctx.finishedWC_extrBS[-1].outputs.pairs_nbands_encuts.get_array('y_array_0')[0]  )
+        self.ctx.input_DFTG0W0.ns_parameters.nomega = Int( 200 )
         
         #Use the DFT dense calculation finishedWC_DFTgr_SP_dense[-1]/finishedWC_DFTgr_NSP_dense[-1] as a starting point 
         #Meaning that the WAVECAR (and the CHGCAR) will be copied from these RemoteData

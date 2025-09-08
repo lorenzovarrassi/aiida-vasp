@@ -1,5 +1,6 @@
 # pylint: disable=too-many-arguments
 
+import math
 import numpy as np
 from copy import deepcopy
 from aiida.common.extendeddicts import AttributeDict
@@ -46,6 +47,9 @@ class VaspG0W0BasisExtrWorkChain(WorkChain):
             spec.input('ns_parameters.magnetic_moment_onsite' , valid_type=Dict       , required=False , help='Starting collinear on-site magnetic moment ; Syntax is {ElName:value}')
             spec.input('ns_parameters.nomega'                 , valid_type=Int        , required=False , default=lambda: Int(96) , help='number of frequency points for the chi and sigma calculation in G0W0 runs. Default is 96.') 
             spec.input('ns_parameters.encut_chi'              , valid_type=Float      , required=False , help='cutoff energy for the response function in eV - ENCUTGW variable in VASP') 
+
+            spec.input('ns_parallelization.kpar'              , valid_type=Int        , required=False , default=lambda: Int(1)      , help='kpar value to be used in G0W0 calculations')
+
             spec.input('kpoints'                              , valid_type=DataFactory('core.array.kpoints') , help='K-mesh used for VASP G0W0 and DFT runs; get_kpoints_mesh() must work.' )     
 
             spec.input('ns_reference.DFTgr_RemoteData'        , valid_type=RemoteData , help='Folder of the starting-point DFT ground-state; the workflows copies the starting point WAVECAR and CHGCAR from it; the CHGCAR is used only for magnetic collinear calcs.')
@@ -191,7 +195,7 @@ class VaspG0W0BasisExtrWorkChain(WorkChain):
         DFTgr_ENMAXmax  = Int( max( self.inputs.ns_reference.DFTgr_ENMAXarray.get_array('ENMAXarray') ) )  #maximum ENMAX between all POTCARs used (DFTgr_ENMAXmax)
         DFTgr_kpts      = self.inputs.ns_reference.DFTgr_kpoints
         DFTgr_cell      = self.inputs.structure
-        GW_mpithrd_num  = Int(self.inputs.options.get_dict()['resources']['num_machines'] * self.inputs.options.get_dict()['resources']['num_mpiprocs_per_machine'])   
+        GW_mpithrd_num  = Int( (self.inputs.options.get_dict()['resources']['num_machines'] * self.inputs.options.get_dict()['resources']['num_mpiprocs_per_machine']) // self.inputs.ns_parallelization.kpar.value  )   
        
 
 
@@ -228,7 +232,6 @@ class VaspG0W0BasisExtrWorkChain(WorkChain):
         if hasattr(self.inputs.ns_extrapolation, 'nbands_stride'): self.ctx.nbands_stride = self.inputs.ns_extrapolation.nbands_stride.value
         else:                                                      self.ctx.nbands_stride = GW_mpithrd_num
 
-
         #1.4] Let's handle the case in which the user wants to use the mode defined by cutoff_fractions.
         if hasattr(self.inputs.ns_extrapolation, 'cutoff_fractions'):
             self.ctx.cutoff_fractions = self.inputs.ns_extrapolation.cutoff_fractions.get_array('cutoff_fractions')
@@ -248,12 +251,13 @@ class VaspG0W0BasisExtrWorkChain(WorkChain):
         params_fit = get_EncutNbandFitParams_completeBasis_quadratic(DFTgr_kpts , DFTgr_cell , DFTgr_NGarray , DFTgr_ENMAXmax)
         nbands_atENMAX = get_closest_EncutNband_multiple(DFTgr_kpts , DFTgr_cell , DFTgr_NGarray , DFTgr_ENMAXmax , params_fit , self.ctx.nbands_stride , self.ctx.encut_atENMAX , Str("encut") , flag_twoSidesRounding=False )[0]['nbands']
 
-        #1.3-Redux] Let's ensure that nbands_stride is at least 10% of nbands_atENMAX - this avoid too many calculations for large volumes and different calculations with very similar nbands,
+        #1.3-Redux] Let's ensure that nbands_stride is at least 0.05% of nbands_atENMAX - this avoid too many calculations for large volumes and different calculations with very similar nbands,
         # where numerical noise could be dominant.
-        self.ctx.minimum_nbands_stride = int(0.10*nbands_atENMAX)
+        #Finally, let's ensure that nbands_stride is a multiple of #MPI-threads - because VASP rounds NBANDS to the closest multiple of #MPI-threads/KPAR, and that would create problems
+        #while reading WAVECAR/WAVEDER.
+        self.ctx.minimum_nbands_stride = int(0.05*nbands_atENMAX)
         self.ctx.nbands_stride = max(self.ctx.nbands_stride , self.ctx.minimum_nbands_stride)
-
-
+        self.ctx.nbands_stride = math.ceil( self.ctx.nbands_stride / GW_mpithrd_num) * GW_mpithrd_num
 
         # Now we can determine the encut-nbands pairs to be used in the extrapolation.
         # By default we the first calculation is at (DFTgr_ENMAXmax , nbands_atENMAX) and the other calculations are determined by increasing nbands in steps of 0.2*nbands_atENMAX
@@ -273,7 +277,7 @@ class VaspG0W0BasisExtrWorkChain(WorkChain):
         else:
             ENMAX_array = np.multiply(self.ctx.cutoff_fractions , DFTgr_ENMAXmax)
             for ec in ENMAX_array:
-                [tmp_EB , tmp_EB_logger] = get_closest_EncutNband_multiple(DFTgr_kpts , DFTgr_cell , DFTgr_NGarray , DFTgr_ENMAXmax , params_fit , self.ctx.nbands_stride , ec , Str("encut") , flag_twoSidesRounding= Bool(True) )
+                [tmp_EB , tmp_EB_logger] = get_closest_EncutNband_multiple(DFTgr_kpts , DFTgr_cell , DFTgr_NGarray , DFTgr_ENMAXmax , params_fit , Int(GW_mpithrd_num) , ec , Str("encut") , flag_twoSidesRounding= Bool(True) )
                 self.ctx.EncutNbands_completeBasis.append(tmp_EB)
                 self.ctx.EncutNbands_completeBasis_logger = self.ctx.EncutNbands_completeBasis_logger + tmp_EB_logger + "\n"
 
@@ -407,10 +411,10 @@ class VaspG0W0BasisExtrWorkChain(WorkChain):
         str_log_spinSpecific = str_log
         for key in gap_keys:
             str_log_spinSpecific += f"\n > [3] bandGap_{key}_ar: {ns_gap[spinComp][key]}"
-            str_log_spinSpecific += f"\n >     bandGap_{key}_extrapolated: {extrapolated_gap[key]} (r^2={extrapolated_gap['r2'][key]})"
+            str_log_spinSpecific += f"\n >     bandGap_{key}_extrapolated: {extrapolated_gap[key].value} (r^2={extrapolated_gap['r2'][key].value})"
         for key in qpc_keys:
             str_log_spinSpecific += f"\n > [4] QPc_{key}_ar: {ns_QPc[spinComp][key]}"
-            str_log_spinSpecific += f"\n >     QPc_{key}_extrapolated: {extrapolated_QPc[key]} (r^2={extrapolated_QPc['r2'][key]})"
+            str_log_spinSpecific += f"\n >     QPc_{key}_extrapolated: {extrapolated_QPc[key].value} (r^2={extrapolated_QPc['r2'][key].value})"
 
         return extrapolated_gap, extrapolated_QPc, str_log_spinSpecific
 

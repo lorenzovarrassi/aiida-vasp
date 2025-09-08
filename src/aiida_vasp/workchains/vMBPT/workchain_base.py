@@ -256,19 +256,21 @@ class VaspDFTGWWorkChain(WorkChain):
                     incar['incar']['lorbit'] = 11
                     incar['incar']['istart'] = 1     
                     incar['incar']['icharg'] = 1     
-
-
-                    
+       
                 else: 
                     incar['incar']['ispin'] = 1
 
                 #[Step 1.1] correct the INCAR in following run (if the first has failed)
                 #At the first iteration  self.ctx.WCrecord_DFT is empty and thus  self.ctx.WCrecord_DFT[-1] does not possess the attribute is_finished_ok; thus the try-except
                 try:
-                    if (self.ctx.control.iteration_counter > 0) and (not self.ctx.WCrecord_G0W0[-1].is_finished_ok):
+                    if (self.ctx.control.iteration_counter == 1) and (not self.ctx.WCrecord_G0W0[-1].is_finished_ok):
                         incar['incar']['lreal']   = 'Auto'   #in order to reduce Memory constraint
-                        incar['incar']['nmaxfockae'] = 1
-                        incar['incar']['kpar']       = 1   
+                        incar['incar']['omegatl'] = 8000     #in order to improve stability of the frequency integration
+                        #incar['incar']['nmaxfockae'] = 1
+                        #incar['incar']['kpar']       = 1   
+                    elif (self.ctx.control.iteration_counter >= 2) and (not self.ctx.WCrecord_G0W0[-1].is_finished_ok):
+                        incar['incar']['lreal']   = 'Auto'   #in order to reduce Memory constraint
+                        incar['incar']['omegatl'] = 16000    #in order to improve stability of the frequency integration
                 except:
                     pass
      

@@ -366,7 +366,7 @@ class VaspG0W0BasisExtrWorkChain(WorkChain):
             extrapolated_QPc["r2"][key] = Float(reg.score(extr_x, extr_y))
 
         # Logging
-        str_log_spinSpecific = str_log + "\n  >> [0] nbands used: "+str(ar_nbandsInput[-num_calc:])+"out of nbands array"+str(ar_nbandsInput)+"\n  >>     actually inverse nbands is used: "+str((1 / np.array(ar_nbandsInput[-num_calc:])).reshape(-1, 1))
+        str_log_spinSpecific = str_log + "\n  >> [0] nbands used: "+str(ar_nbandsInput[-num_calc:])+"out of nbands array"+str(ar_nbandsInput)+"\n  >>     actually inverse nbands is used: "+str((1 / np.array(ar_nbandsInput[-num_calc:])).reshape(-1, 1)).replace("\n"," ,")
         for key in gap_keys:
             str_log_spinSpecific += f"\n  >> [1] bandGap_{key}_ar: {ns_gap[spinComp][key]}"
             str_log_spinSpecific += f"\n  >>     bandGap_{key}_extrapolated: {extrapolated_gap[key].value} (r^2: {extrapolated_gap['r2'][key].value})"
@@ -461,15 +461,15 @@ class VaspG0W0BasisExtrWorkChain(WorkChain):
         self.report(str_log)
 
         if flag_is_extrapolation_converged:
-            str_log = str_log + "\n  > No additional calc is is required, extrapolation is converged!!!"
+            str_log = str_log + "\n  THUS: No additional calc is is required, extrapolation is converged!!!\n"
             self.report(str_log)
             return Bool(False)
         elif (len(self.ctx.runningWC_DFT_G0W0) >= self.ctx.max_num_runnable_G0W0_calcs) :
-            str_log = str_log + "\n  > Maximum number of calculations reached, cannot perform additional calculations!!!"
+            str_log = str_log + "\n  THUS: Maximum number of calculations reached, cannot perform additional calculations!!!\n"
             self.report(str_log)
             return Bool(False)
         else:
-            str_log = str_log + "\n  > Additional calc is is required, extrapolation is NOT converged!!!"
+            str_log = str_log + "\n  THUS: Additional calc is is required, extrapolation is NOT converged!!!\n"
             self.report(str_log)
             return Bool(True)        
 

@@ -300,9 +300,9 @@ class VaspDFTGWWorkChain(WorkChain):
             if self.inputs.ns_option.verbose:
                 str_log=('\n [VaspDFTGWWorkChain pk='+str(self.node.pk)+" <"+self.inputs.ns_option.calculationLabel.value+"> ][monitor_WCprogress at the start of iteration" +str(self.ctx.control.iteration_counter)+"]"
                 +'\n  >> monitor_WCprogress: WCrecord_DFT='+str(self.ctx.WCrecord_DFT))
-                if (len(self.ctx.WCrecord_DFT) >0) : str_log = str_log + '\n                       '+str(' '.join(["called by wkc "+str(node.pk)+" :"+str(node.called) for node in self.ctx.WCrecord_DFT]))
+                if (len(self.ctx.WCrecord_DFT) >0) : str_log = str_log + '\n                       '+str(' '.join(["  called by wkc "+str(node.pk)+" :"+str(node.called) for node in self.ctx.WCrecord_DFT]))
                 str_log = str_log + '\n  >> monitor_WCprogress: WCrecord_G0W0=' +str(self.ctx.WCrecord_G0W0)
-                if (len(self.ctx.WCrecord_G0W0)>0) : str_log = str_log + '\n                       '+str(' '.join(["called by wkc "+str(node.pk)+" :"+str(node.called) for node in self.ctx.WCrecord_G0W0]))
+                if (len(self.ctx.WCrecord_G0W0)>0) : str_log = str_log + '\n                       '+str(' '.join(["  called by wkc "+str(node.pk)+" :"+str(node.called) for node in self.ctx.WCrecord_G0W0]))
                 str_log = str_log + '\n  >> monitor_WCprogress: evaluating start of cycle iteration no:{}'.format(self.ctx.control.iteration_counter)
                
 

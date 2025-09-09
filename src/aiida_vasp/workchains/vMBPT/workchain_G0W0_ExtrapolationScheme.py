@@ -90,9 +90,9 @@ class VaspG0W0BasisExtrWorkChain(WorkChain):
                 #If the extrapolation from the first 3 G0W0s show a R2 value below the threshold (0.85) 
                 #for at least one of the gaps or QP corrections, run additional G0W0 calculations (up to num_calc_touse_for_extrapolation)
                 #and use the last three calculations for the extrapolation (i.e. a moving window of 3 calculations) 
-                #while_(cls.are_r2_under_threshold)(
-                #    cls.prepare_run_wc_DFT_G0W0_additionalG0W0s,
-                #),
+                while_(cls.are_r2_under_threshold)(
+                    cls.prepare_run_wc_DFT_G0W0_additionalG0W0s,
+                ),
 
                 cls.elaborate_extrapolate_results,
                 )
@@ -143,7 +143,7 @@ class VaspG0W0BasisExtrWorkChain(WorkChain):
                 if ('nbandsgw' in self.inputs['ns_parameters'] ):   self.ctx.inputs_array[ecutNbIdx].ns_parameters.nbandsgw = self.inputs.ns_parameters.nbandsgw
 
                 #Same paralleization options
-                self.ctx.inputs_array[ecutNbIdx].ns_parallelization.kpar  = Int(4)
+                self.ctx.inputs_array[ecutNbIdx].ns_parallelization.kpar  = self.inputs.ns_parallelization.kpar
                 self.ctx.inputs_array[ecutNbIdx].ns_parallelization.lreal = Bool(self.inputs.ns_parallelization.lreal)
                 
                 #Same DFT ground state as starting point
@@ -323,48 +323,6 @@ class VaspG0W0BasisExtrWorkChain(WorkChain):
 			+'\n[2 - determining (encut,nbands) -> determining corrected (encut,nbands)]--- --- --- --- --- --- --- --- --- --- --- --- --- --- --- ---\n\n')
 
 
-    def check_extrapolation_r2( runningWC_DFT_G0W0 ):
-        #Initializing stuff
-        list_gaps , list_gaps_QPc = AttributeDict() , AttributeDict() 
-        extrapolated_gap , extrapolated_gap['r2'] , extrapolated_QPc , extrapolated_QPc['r2'] = AttributeDict() , AttributeDict() , AttributeDict() , AttributeDict()
-        list_nbands = []   
-
-
-        if ('magnetic_moment_onsite' in  self.inputs['ns_parameters']):  
-            idx_toIterate     = list( itertools.product( ['spinUp','spinDw'] , ['G0W0_Dir', 'G0W0_Ind','G0W0_Gam']) )
-            idx_toIterate_QPc = list( itertools.product( ['spinUp','spinDw'] , ['HOMO_Dir', 'HOMO_Ind','HOMO_Gam' , 'LUMO_Dir','LUMO_Ind','LUMO_Gam']) )
-            list_gaps['spinUp']     , list_gaps['spinDw']     = AttributeDict() , AttributeDict()           
-            list_gaps_QPc['spinUp'] , list_gaps_QPc['spinDw'] = AttributeDict() , AttributeDict()
-            extrapolated_gap['spinUp']       , extrapolated_gap['spinDw']       = AttributeDict() , AttributeDict()
-            extrapolated_gap['r2']['spinUp'] , extrapolated_gap['r2']['spinDw'] = AttributeDict() , AttributeDict()   
-            extrapolated_QPc['spinUp']       , extrapolated_QPc['spinDw']       = AttributeDict() , AttributeDict()
-            extrapolated_QPc['r2']['spinUp'] , extrapolated_QPc['r2']['spinDw'] = AttributeDict() , AttributeDict()            
-        else: 
-            idx_toIterate     = list( itertools.product( ['spinUp'] , ['G0W0_Dir', 'G0W0_Ind','G0W0_Gam']) )
-            idx_toIterate_QPc = list( itertools.product( ['spinUp'] , ['HOMO_Dir', 'HOMO_Ind','HOMO_Gam','LUMO_Dir', 'LUMO_Ind','LUMO_Gam']) )
-            list_gaps['spinUp'] , list_gaps_QPc['spinUp'] = AttributeDict() , AttributeDict()    
-            extrapolated_gap['spinUp'] , extrapolated_gap['r2']['spinUp'] = AttributeDict() , AttributeDict() 
-            extrapolated_QPc['spinUp'] , extrapolated_QPc['r2']['spinUp'] = AttributeDict() , AttributeDict()   
-        for idx in idx_toIterate:     list_gaps[idx[0]][idx[1]]     = []
-        for idx in idx_toIterate_QPc: list_gaps_QPc[idx[0]][idx[1]] = []  
-
-        #Extracting stuff  
-        for wkc_idx in runningWC_DFT_G0W0:
-            list_nbands.append( runningWC_DFT_G0W0[wkc_idx].inputs.ns_parameters['nbands'].value )
-            for idx in idx_toIterate:     list_gaps[idx[0]][idx[1]].append(     runningWC_DFT_G0W0[wkc_idx].outputs.gaps.get_dict()[idx[0]][idx[1]]     )
-            for idx in idx_toIterate_QPc: list_gaps_QPc[idx[0]][idx[1]].append( runningWC_DFT_G0W0[wkc_idx].outputs.gaps_QPc.get_dict()[idx[0]][idx[1]] )    
-
-        #Interpolating onlt with first three
-        ar_inverseNbands = 1/np.array(list_nbands) 
-        for idx in idx_toIterate:
-            reg = LinearRegression().fit(ar_inverseNbands.reshape(-1, 1), np.array(list_gaps[idx[0]][idx[1]]) )
-            extrapolated_gap[idx[0]][idx[1]]       = reg.intercept_ 
-            extrapolated_gap['r2'][idx[0]][idx[1]] = reg.score(ar_inverseNbands.reshape(-1, 1),  np.array(list_gaps[idx[0]][idx[1]]) )
-        for idx in idx_toIterate_QPc: 
-            reg = LinearRegression().fit(ar_inverseNbands.reshape(-1, 1), np.array(list_gaps_QPc[idx[0]][idx[1]]) )
-            extrapolated_QPc[idx[0]][idx[1]]       =  reg.intercept_  
-            extrapolated_QPc['r2'][idx[0]][idx[1]] =  reg.score(ar_inverseNbands.reshape(-1, 1),  np.array(list_gaps_QPc[idx[0]][idx[1]]) )
-
 
 
     @staticmethod
@@ -408,13 +366,13 @@ class VaspG0W0BasisExtrWorkChain(WorkChain):
             extrapolated_QPc["r2"][key] = Float(reg.score(extr_x, extr_y))
 
         # Logging
-        str_log_spinSpecific = str_log
+        str_log_spinSpecific = str_log + "\n  >> [0] nbands used: "+str(ar_nbandsInput[-num_calc:])+"out of nbands array"+str(ar_nbandsInput)+"\n  >>     actually inverse nbands is used: "+str((1 / np.array(ar_nbandsInput[-num_calc:])).reshape(-1, 1))
         for key in gap_keys:
-            str_log_spinSpecific += f"\n > [3] bandGap_{key}_ar: {ns_gap[spinComp][key]}"
-            str_log_spinSpecific += f"\n >     bandGap_{key}_extrapolated: {extrapolated_gap[key].value} (r^2={extrapolated_gap['r2'][key].value})"
+            str_log_spinSpecific += f"\n  >> [1] bandGap_{key}_ar: {ns_gap[spinComp][key]}"
+            str_log_spinSpecific += f"\n  >>     bandGap_{key}_extrapolated: {extrapolated_gap[key].value} (r^2: {extrapolated_gap['r2'][key].value})"
         for key in qpc_keys:
-            str_log_spinSpecific += f"\n > [4] QPc_{key}_ar: {ns_QPc[spinComp][key]}"
-            str_log_spinSpecific += f"\n >     QPc_{key}_extrapolated: {extrapolated_QPc[key].value} (r^2={extrapolated_QPc['r2'][key].value})"
+            str_log_spinSpecific += f"\n  >> [2] QPc_{key}_ar: {ns_QPc[spinComp][key]}"
+            str_log_spinSpecific += f"\n  >>     QPc_{key}_extrapolated: {extrapolated_QPc[key].value} (r^2: {extrapolated_QPc['r2'][key].value})"
 
         return extrapolated_gap, extrapolated_QPc, str_log_spinSpecific
 
@@ -463,6 +421,67 @@ class VaspG0W0BasisExtrWorkChain(WorkChain):
         return extrapolated_bands
 
 
+    def are_r2_under_threshold(self):
+        ar_nbandsInput  = [ self.ctx.runningWC_DFT_G0W0[WC_idx].inputs.ns_parameters['nbands'].value  for WC_idx in self.ctx.runningWC_DFT_G0W0 ]
+
+        str_log = '\n VaspG0W0BasisExtrWorkChain pk='+str(self.node.pk)+" checking if the additional VaspDFTGWWorkChain is required\n only the gaps (and not QPc) are checked; threshold is = "+str(self.inputs.ns_extrapolation.r2_threshold.value) 
+        if ('magnetic_moment_onsite' in self.inputs['ns_parameters']):
+            ns_gaps_spinUp , ns_gaps_QPc_spinUp = self._extract_gaps_from_outputs_into_dicts( self.ctx.runningWC_DFT_G0W0 , 'spinUp')
+            ns_gaps_spinDw , ns_gaps_QPc_spinDw = self._extract_gaps_from_outputs_into_dicts( self.ctx.runningWC_DFT_G0W0 , 'spinDw')
+            ns_gap     = Dict(dict = {"spinUp":ns_gaps_spinUp     , "spinDw":  ns_gaps_spinDw     })
+            ns_gap_QPc = Dict(dict = {"spinUp":ns_gaps_QPc_spinUp , "spinDw":  ns_gaps_QPc_spinDw })
+        else:
+            ns_gaps_spinUp , ns_gaps_QPc_spinUp = self._extract_gaps_from_outputs_into_dicts( self.ctx.runningWC_DFT_G0W0 ,  'spinUp')
+            ns_gap     = Dict(dict = {"spinUp":ns_gaps_spinUp})
+            ns_gap_QPc = Dict(dict = {"spinUp":ns_gaps_QPc_spinUp}) 
+
+
+        ## Determining extrapolated G0W0 bandgaps and QP shifts through fitting nbands/gaps_G0W        if ('magnetic_moment_onsite' in self.inputs['ns_parameters']):
+        if ('magnetic_moment_onsite' in self.inputs['ns_parameters']):
+            extrapolated_gap_spinUp , extrapolated_QPc_spinUp , str_log_spinUp = self._extrapolate_gaps_from_dicts( ar_nbandsInput , ns_gap , ns_gap_QPc , 'spinUp' , str_log )
+            extrapolated_gap_spinDw , extrapolated_QPc_spinDw , str_log_spinDw = self._extrapolate_gaps_from_dicts( ar_nbandsInput , ns_gap , ns_gap_QPc , 'spinDw' , str_log )
+            flag_is_extrapolation_converged = ( (extrapolated_gap_spinUp["r2"]["G0W0_Dir"] >= self.ctx.r2_threshold) and
+                                                (extrapolated_gap_spinUp["r2"]["G0W0_Ind"] >= self.ctx.r2_threshold) and
+                                                (extrapolated_gap_spinUp["r2"]["G0W0_Gam"] >= self.ctx.r2_threshold) and
+                                                (extrapolated_gap_spinDw["r2"]["G0W0_Dir"] >= self.ctx.r2_threshold) and
+                                                (extrapolated_gap_spinDw["r2"]["G0W0_Ind"] >= self.ctx.r2_threshold) and
+                                                (extrapolated_gap_spinDw["r2"]["G0W0_Gam"] >= self.ctx.r2_threshold) )
+            
+        else:
+            extrapolated_gap_spinUp , extrapolated_QPc_spinUp , str_log_spinUp = self._extrapolate_gaps_from_dicts( ar_nbandsInput , ns_gap , ns_gap_QPc , 'spinUp' , str_log )
+            flag_is_extrapolation_converged = ( (extrapolated_gap_spinUp["r2"]["G0W0_Dir"] >= self.ctx.r2_threshold) and
+                                                (extrapolated_gap_spinUp["r2"]["G0W0_Ind"] >= self.ctx.r2_threshold) and
+                                                (extrapolated_gap_spinUp["r2"]["G0W0_Gam"] >= self.ctx.r2_threshold) )
+
+        str_log = str_log + "\n\n > [5] Extrapolation results (r2 values):"
+        if ('magnetic_moment_onsite' in self.inputs['ns_parameters']):
+            str_log = str_log + "\n\n > [spin UP]"+str_log_spinUp + "\n\n > [spin DW]"+str_log_spinDw
+        else:
+            str_log = str_log + "\n\n > [spin UP]"+str_log_spinUp   
+        self.report(str_log)
+
+        if flag_is_extrapolation_converged:
+            str_log = str_log + "\n  > No additional calc is is required, extrapolation is converged!!!"
+            self.report(str_log)
+            return Bool(False)
+        elif (len(self.ctx.runningWC_DFT_G0W0) >= self.ctx.max_num_runnable_G0W0_calcs) :
+            str_log = str_log + "\n  > Maximum number of calculations reached, cannot perform additional calculations!!!"
+            self.report(str_log)
+            return Bool(False)
+        else:
+            str_log = str_log + "\n  > Additional calc is is required, extrapolation is NOT converged!!!"
+            self.report(str_log)
+            return Bool(True)        
+
+    def prepare_run_wc_DFT_G0W0_additionalG0W0s(self):
+        print("\n\n [prepare_run_wc_DFT_G0W0_additionalG0W0s \n\n")
+        print(len(self.ctx.runningWC_DFT_G0W0) , self.ctx.max_num_runnable_G0W0_calcs)
+        print(len(self.ctx.EncutNbands_completeBasis) , self.ctx.num_calc_touse_for_extrapolation)
+
+        ecutNbIdx = len(self.ctx.runningWC_DFT_G0W0)
+        self.ctx.runningWC_DFT_G0W0[ecutNbIdx] =  self.submit(VaspDFTGWWorkChain   , **self.ctx.inputs_array[ecutNbIdx]) 
+        key = f'WC_DFT_G0W0_{ecutNbIdx}'
+        self.to_context(**{key: self.ctx.runningWC_DFT_G0W0[ecutNbIdx]})
 
 
 

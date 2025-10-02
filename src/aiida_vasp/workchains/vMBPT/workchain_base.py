@@ -66,9 +66,6 @@ class VaspDFTGWWorkChain(WorkChain):
             spec.input('ns_option.maximum_iterations'              , valid_type=Int  , required=False , default=lambda: Int(2)      , help='maximum number of times the workchain will restart a crashed G0W0 runs.')
             spec.input('ns_option.verbose'                         , valid_type=Bool , required=False , default=lambda: Bool(True)  )
             spec.input('ns_option.run_G0W0'                        , valid_type=Bool , required=False , default=lambda: Bool(True)  , help='If False, run a single G0W0 calculations; if True, run a DFT and G0W0 ON TOP on it, using same encut and number of bands and the DFT wavefunctions and energies as starting point')
-#            spec.input('ns_option.compute_dipole_transition_mat'   , valid_type=Bool , required=False , default=lambda: Bool(False) , help='Compute the DFT dipole matrix elements (LOPTICS flag).')
-#            spec.input('ns_option.select_algo_Exact'               , valid_type=Bool , required=False , default=lambda: Bool(False) , help='The DFT step will be run with ALGO=Exact.' )
-#            spec.input('ns_option.select_single_iteration'         , valid_type=Bool , required=False , default=lambda: Bool(False) , help='If activated, the DFT step will run a single self-consistency step (nelm=1).' )
             spec.input('ns_option.calculationLabel'                , valid_type=Str  , required=False , default=lambda: Str("")     , help='The summary printed at the end will be labeled with this string.')
 
 

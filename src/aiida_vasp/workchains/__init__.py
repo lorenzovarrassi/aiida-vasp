@@ -15,5 +15,6 @@ __all__ = (
     'VaspInitScriptWorkChain',
     'VaspmBSEInitScriptWorkChain',
     'VaspG0W0BasisExtrWorkChain',
-    'VaspG0W0CompleteWorkChain'
+    'VaspG0W0CompleteWorkChain',
+    'VaspG0W0KptsConvWorkChain'
 )

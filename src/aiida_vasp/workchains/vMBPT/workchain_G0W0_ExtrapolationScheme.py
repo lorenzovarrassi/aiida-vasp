@@ -424,7 +424,7 @@ class VaspG0W0BasisExtrWorkChain(WorkChain):
     def are_r2_under_threshold(self):
         ar_nbandsInput  = [ self.ctx.runningWC_DFT_G0W0[WC_idx].inputs.ns_parameters['nbands'].value  for WC_idx in self.ctx.runningWC_DFT_G0W0 ]
 
-        str_log = '\n VaspG0W0BasisExtrWorkChain pk='+str(self.node.pk)+" checking if the additional VaspDFTGWWorkChain is required\n only the gaps (and not QPc) are checked; threshold is = "+str(self.inputs.ns_extrapolation.r2_threshold.value) 
+        str_log = '\n  VaspG0W0BasisExtrWorkChain pk='+str(self.node.pk)+" checking if the additional VaspDFTGWWorkChain is required\n  only the gaps (and not QPc) are checked; threshold is = "+str(self.inputs.ns_extrapolation.r2_threshold.value) 
         if ('magnetic_moment_onsite' in self.inputs['ns_parameters']):
             ns_gaps_spinUp , ns_gaps_QPc_spinUp = self._extract_gaps_from_outputs_into_dicts( self.ctx.runningWC_DFT_G0W0 , 'spinUp')
             ns_gaps_spinDw , ns_gaps_QPc_spinDw = self._extract_gaps_from_outputs_into_dicts( self.ctx.runningWC_DFT_G0W0 , 'spinDw')
@@ -453,23 +453,23 @@ class VaspG0W0BasisExtrWorkChain(WorkChain):
                                                 (extrapolated_gap_spinUp["r2"]["G0W0_Ind"] >= self.ctx.r2_threshold) and
                                                 (extrapolated_gap_spinUp["r2"]["G0W0_Gam"] >= self.ctx.r2_threshold) )
 
-        str_log = str_log + "\n\n > [5] Extrapolation results (r2 values):"
+        str_log = str_log + "\n > [5] Extrapolation results (r2 values):"
         if ('magnetic_moment_onsite' in self.inputs['ns_parameters']):
-            str_log = str_log + "\n\n > [spin UP]"+str_log_spinUp + "\n\n > [spin DW]"+str_log_spinDw
+            str_log = str_log + "\n > [spin UP]"+str_log_spinUp + "\n\n > [spin DW]"+str_log_spinDw
         else:
-            str_log = str_log + "\n\n > [spin UP]"+str_log_spinUp   
+            str_log = str_log + "\n > [spin UP]"+str_log_spinUp   
         self.report(str_log)
 
         if flag_is_extrapolation_converged:
-            str_log = str_log + "\n  THUS: No additional calc is is required, extrapolation is converged!!!\n"
+            str_log = str_log + "\n  THUS: NO ADDITIONAL CALC is is required, extrapolation is converged!!!\n"
             self.report(str_log)
             return Bool(False)
         elif (len(self.ctx.runningWC_DFT_G0W0) >= self.ctx.max_num_runnable_G0W0_calcs) :
-            str_log = str_log + "\n  THUS: Maximum number of calculations reached, cannot perform additional calculations!!!\n"
+            str_log = str_log + "\n  THUS: NO ADDITIONAL CALC Maximum number of calculations reached, cannot perform additional calculations!!!\n"
             self.report(str_log)
             return Bool(False)
         else:
-            str_log = str_log + "\n  THUS: Additional calc is is required, extrapolation is NOT converged!!!\n"
+            str_log = str_log + "\n  THUS: ADDITIONAL CALC IS is required, extrapolation is NOT converged!!!\n"
             self.report(str_log)
             return Bool(True)        
 

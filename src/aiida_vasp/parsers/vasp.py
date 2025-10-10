@@ -124,6 +124,7 @@ class ParserSettingsConfig(OptionContainer):
     file_mapping: Dict[str, str] = Field(
         description='Mapping of file names to quantities', default_factory=lambda: dict(DEFAULT_FILE_MAPPING)
     )
+    parse_contcar: bool = True
     kpoints_from_ibzkpt: bool = False
     check_completeness: bool = True
     electronic_step_energies: bool = False
@@ -201,6 +202,14 @@ class VaspParser(Parser):
             )
         else:
             user_config = ParserSettingsConfig()
+        
+        # If a GW or MBPT calculations are run, often CONTCAR is written empty (zero bytes); 
+        # this gives an error visible in self.errored_parsers {'CONTCAR': IndexError('list index out of range')}
+        # Let's therefore skip parsing CONTCAR if a MBPT calculation is done
+        flag_ALGO_MBPT = ["CHI",'EVGW0','EVGW',"G0W0","GW0","GW","scGW0","scGW","G0W0R","GW0R","GWR","scGW0R","scGWR","ACFDT","RPA","ACFDTR","RPAR","BSE","TDHF"]  
+        if self.node.inputs.parameters['algo'] in flag_ALGO_MBPT :
+            user_config.parse_contcar = False
+        
         # Initialize the containers
         self.user_config = user_config
         return user_config
@@ -300,7 +309,9 @@ class VaspParser(Parser):
         )
         parse_and_add('OUTCAR', OutcarParser, required=True)
         parse_and_add('vasp_output', StreamParser, required=True)
-        parse_and_add('CONTCAR', PoscarParser, required=True)
+        
+        if user_config.parse_contcar:
+            parse_and_add('CONTCAR', PoscarParser, required=True)
 
 
         if user_config.kpoints_from_ibzkpt:

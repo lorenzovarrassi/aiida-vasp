@@ -217,8 +217,8 @@ class VaspMBPTKptsConvWorkChain(WorkChain):
             #In the Case 2 where self.inputs.ns_reference.DFTgr_RemoteData is passed but NSP is not lauched - that is not controlled here, but the NSP is not lauched later.
             self.ctx.inputs_DFTgr_NSP.ns_reference.DFTgr_RemoteData  =  self.inputs.ns_reference.DFTgr_RemoteData
         
-        self.report("\n [wkc_KptsConv][Preliminary DFT-GroundState calc - NonSpinPolarized - From scratch]\n               > Lauching DFT(NonSpinPolarized) using workchain_DFT_G0W0 on k-mesh "
-                            +np.array2string(  self.ctx.control['kmesh'][0] , separator=" , ").replace('\n', '')+"\n")  
+        self.report("\n [wkc_KptsConv][Preliminary DFT-GroundState calc - NonSpinPolarized - From scratch]\n  > Lauching DFT(NonSpinPolarized) using workchain_DFT_G0W0 on k-mesh "
+                            +np.array2string(   self.ctx.control['kmesh'][self.ctx.control.iteration_counter] , separator=" , ").replace('\n', '')+"\n")  
         runningWC_DFT_NSP = self.submit(VaspDFTGWWorkChain , **self.ctx.inputs_DFTgr_NSP) 
         return ToContext(WC_NSP=append_(runningWC_DFT_NSP))
 
@@ -277,7 +277,7 @@ class VaspMBPTKptsConvWorkChain(WorkChain):
         
         runningWC_G0W0 = self.submit(VaspDFTGWWorkChain , **self.ctx.input_DFTG0W0) 
 
-        self.report("\n [wkc_KptsConv] Launching VaspDFTGWWorkChain ok="+str(runningWC_G0W0.pk)+" on k-mesh "
+        self.report("\n [wkc_KptsConv] Launching VaspDFTGWWorkChain pk="+str(runningWC_G0W0.pk)+" on k-mesh "
                     +np.array2string(self.ctx.control['kmesh'][self.ctx.control.iteration_counter] , separator=" , ").replace('\n', '')+"\n")
         return ToContext(WC_G0W0=append_(runningWC_G0W0))       
     
@@ -316,10 +316,10 @@ class VaspMBPTKptsConvWorkChain(WorkChain):
             WF_G0W0_gaps = [ wc.outputs.gaps.get_dict() for wc in self.ctx.WC_G0W0 ]
             WF_G0W0_gaps_toCompare = {} ; delta_gap = {}
             WF_G0W0_gaps_toCompare['spinUp'] = [ gaps['spinUp'][ gap_type ]  for gaps in WF_G0W0_gaps ]
-            str_log = str_log + ("\n  > G0W0 gaps to be compared - Spin.up: " + str(WF_G0W0_gaps_toCompare["Spin.up"]) )
+            str_log = str_log + ("\n  > G0W0 gaps to be compared - SpinUp: " + str(WF_G0W0_gaps_toCompare["spinUp"]) )
             if ('magnetic_moment_onsite' in self.inputs['ns_parameters']):  
                 WF_G0W0_gaps_toCompare['spinDw'] = [ gaps['spinDw'][ gap_type ]  for gaps in WF_G0W0_gaps ]
-                str_log = str_log + ("\n  > G0W0 gaps to be  compared - Spin.dw: " + str(WF_G0W0_gaps_toCompare["Spin.dn"]) )
+                str_log = str_log + ("\n  > G0W0 gaps to be  compared - SpinDw: " + str(WF_G0W0_gaps_toCompare["spinDw"]) )
 
             delta_gap['spinUp'] = abs( WF_G0W0_gaps_toCompare['spinUp'][-1] - WF_G0W0_gaps_toCompare['spinUp'][-2] )
             if ('magnetic_moment_onsite' in self.inputs['ns_parameters']):  
@@ -327,19 +327,19 @@ class VaspMBPTKptsConvWorkChain(WorkChain):
                 
             if ('magnetic_moment_onsite' in self.inputs['ns_parameters']):  
                 flag_is_converged = ( delta_gap['spinUp'] < thr ) and ( delta_gap['spinDw'] < thr )
-                str_log = str_log + ("\n  > Delta - Spin.up: " + str(delta_gap['spinUp']) + "- threshold: " + str(thr) )
-                str_log = str_log + ("\n  > Delta - Spin.dw: " + str(delta_gap['spinDw']) + "- threshold: " + str(thr) )
+                str_log = str_log + ("\n  > Delta (SpinUp) among last two data points: " + str( np.round(delta_gap['spinUp'],decimals=4) ) + "- threshold: " + str(thr) )
+                str_log = str_log + ("\n  > Delta (SpinDw) among last two data points: " + str( np.round(delta_gap['spinDw'],decimals=4) ) + "- threshold: " + str(thr) )
             else:
                 flag_is_converged = ( delta_gap['spinUp'] < thr )
-                str_log = str_log + ("\n  > Delta - Spin.up: " + str(delta_gap['spinUp']) + "- threshold: " + str(thr) )
-            str_log = str_log + ("\n  --> Convergence is therefore reached?: " + str(flag_is_converged) )
+                str_log = str_log + ("\n  > Delta (SpinUp) among last two data points: " + str( np.round(delta_gap['spinUp'],decimals=4) ) + "- threshold: " + str(thr) )
+            str_log = str_log + ("  --> Convergence is reached?: " + str(flag_is_converged) )
             
             
             if flag_is_converged:
                 str_log = str_log + ("\n  --> K-Convergence reached with k-mesh: " + np.array2string( self.ctx.control['kmesh'][self.ctx.control.iteration_counter] , separator=" ").replace('\n', '')) 
                 self.report(str_log)
                 self.ctx.control['kmesh_converged']   = DataFactory('core.array.kpoints')()
-                self.ctx.input_DFTG0W0.kpoints.set_kpoints_mesh(   self.ctx.control['kmesh'][self.ctx.control.iteration_counter] )
+                self.ctx.control['kmesh_converged'].set_kpoints_mesh(   self.ctx.control['kmesh'][self.ctx.control.iteration_counter] )
 
                 return False
             else:
@@ -531,7 +531,6 @@ class VaspMBPTKptsConvWorkChain(WorkChain):
     
             
     def elaborate_results(self):
-        print(self.ctx.control.iteration_counter)
         kmesh_final = np.array(self.ctx.control['kmesh'][self.ctx.control.iteration_counter], dtype=int)
         node_kpoints = DataFactory('core.array.kpoints')()
         node_kpoints.set_kpoints_mesh(kmesh_final)
@@ -539,7 +538,7 @@ class VaspMBPTKptsConvWorkChain(WorkChain):
         self.out('final_kMesh', node_kpoints )
     
         #kdensity = _get_kspacing_from_kmesh(self.inputs.structure.cell, kmesh_final)  # list of 3 floats
-        #self.out('final_kDensity', Float(float(np.mean(kdensity))))
+       # self.out('final_kDensity', Float(float(np.mean(kdensity))))
     
      
        

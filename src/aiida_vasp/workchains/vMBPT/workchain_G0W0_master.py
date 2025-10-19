@@ -13,8 +13,9 @@ from aiida_vasp.utils.workchains import site_magnetization_to_magmom
 
 import warnings
 from .workchain_G0W0_ExtrapolationScheme import VaspG0W0BasisExtrWorkChain , input_magnetic_moment_tomagmom , VaspDFTGWWorkChain
+from .workchain_G0W0_base import VaspDFTGWWorkChain
 from .utils_calcfunctions import input_magnetic_moment_tomagmom 
-from .workchain_base import VaspDFTGWWorkChain
+
 
 
 

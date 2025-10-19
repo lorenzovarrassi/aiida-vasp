@@ -1,7 +1,9 @@
 from .v2 import *
-from .vMBPT.workchain_base import VaspDFTGWWorkChain
-from .vMBPT.workchain_initscript_base    import VaspInitScriptWorkChain
-from .vMBPT.workchain_interpolation_mBSE import VaspmBSEInitScriptWorkChain
+from .vMBPT.workchain_G0W0_base      import VaspDFTGWWorkChain
+from .vMBPT.workchain_G0W0_kptsConv  import VaspMBPTKptsConvWorkChain
+from .vMBPT.workchain_G0W0_master    import VaspG0W0CompleteWorkChain
+from .vMBPT.workchain_wrapper_VaspWorkchain_initscript    import VaspInitScriptWorkChain
+from .vMBPT.workchain_mBSE_base_interpolation import VaspmBSEInitScriptWorkChain
 
 __all__ = (
     'VaspBandsWorkChain',
@@ -16,5 +18,5 @@ __all__ = (
     'VaspmBSEInitScriptWorkChain',
     'VaspG0W0BasisExtrWorkChain',
     'VaspG0W0CompleteWorkChain',
-    'VaspG0W0KptsConvWorkChain'
+    'VaspMBPTKptsConvWorkChain'
 )

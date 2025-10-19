@@ -5,6 +5,6 @@ __all__ = (
     'VaspmBSEInitScriptWorkChain',
     'workchain_G0W0_ExtrapolationScheme',
     'workchain_G0W0_master',
-    'workchain_Wannierization',
+    'workchain_G0W0_Wannierization',
     'workchain_G0W0_kptsConv',
 )

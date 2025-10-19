@@ -16,7 +16,7 @@ from aiida_vasp.utils.aiida_utils import get_data_class
 from aiida.common.extendeddicts   import AttributeDict
 from aiida_vasp.utils.workchains  import site_magnetization_to_magmom
 
-from .workchain_initscript_base import VaspInitScriptWorkChain
+from .workchain_wrapper_VaspWorkchain_initscript import VaspInitScriptWorkChain
 
 
 import warnings
@@ -39,21 +39,28 @@ class VaspmBSEInitScriptWorkChain(WorkChain):
 
 
 
-            spec.input('ns_parameters.encut'                  , valid_type=Float      , required=False , help='cutoff energy for the wavefunction in eV. ENCUT variable in VASP.')  #ns stands for namespace
-            spec.input('ns_parameters.nbands'                 , valid_type=Int        , required=False , help='total number of bands included in the DFT and G0W0 runs. NBANDS variable in VASP.'  )   
+            spec.input('ns_parameters.encut'                  , valid_type=Float      , required=False , help='Cutoff energy for the wavefunction in eV. ENCUT variable in VASP.')  #ns stands for namespace
+            spec.input('ns_parameters.nbands'                 , valid_type=Int        , required=False , help='Total number of bands included in the DFT and G0W0 runs. NBANDS variable in VASP.'  )   
             spec.input('ns_parameters.magnetic_moment_onsite' , valid_type=Dict       , required=False , help='Starting collinear on-site magnetic moment ; Syntax is {ElName:value}')
             
             spec.input("options" , valid_type=Dict)
 
+            spec.input("scissor" , valid_type=Int , required=False)
             spec.input("ns_interpolation.G0W0_reference"      , valid_type=RemoteData     , required=True  )
             spec.input("ns_interpolation.remote_initscript"   , valid_type=RemoteData     , required=False )
             spec.input("ns_interpolation.local_initscript"    , valid_type=SinglefileData , required=False )
             spec.input("ns_interpolation.nbandsgw_to_interpolate" , valid_type=Int        , required=False )
             
-            spec.input("ns_BSE.static_inverse_diel"  , valid_type=Float , required=True )
-            spec.input("ns_BSE.screening_parameter"  , valid_type=Float , required=True )   
-            spec.input("ns_BSE.G0W0_gap"             , valid_type=Float , required=True )
-            spec.input("ns_BSE.OMEGAMAX"             , valid_type=Float , required=True )
+            spec.input("ns_BSE.static_inverse_diel"  , valid_type=Float , required=True  , help='Required for analytic diagonal screening in mBSE.' )
+            spec.input("ns_BSE.screening_parameter"  , valid_type=Float , required=True  , help='Required for analytic diagonal screening in mBSE.' )
+            
+            spec.input("ns_BSE.energy_window"        , valid_type=Float , required=False , help="Required for the automatic determination of the NBANDSV/NBANDSO given a target energy window")
+            spec.input("ns_BSE.G0W0_gap"             , valid_type=Float , required=False , help="Required for the automatic determination of the NBANDSV/NBANDSO given a target energy window")
+            spec.input("ns_BSE.OMEGAMAX"             , valid_type=Float , required=False , help='Required for analytic diagonal screening in mBSE.' )
+            spec.input("ns_BSE_NBANDSV"              , valid_type=Int   , required=False , help='Alternative to the target energy window.' )
+            spec.input("ns_BSE_NBANDSO"              , valid_type=Int   , required=False , help='Alternative to the target energy window.' )
+
+
 
             spec.output("dielectrics"        , valid_type=ArrayData )
             spec.output("opticaltransitions" , valid_type=ArrayData )
@@ -141,9 +148,8 @@ class VaspmBSEInitScriptWorkChain(WorkChain):
  
     def prepare_run_interpolation_BSE(self):
     
-            def _determine_BSEmatrix_dimension( energyWindow_goal , G0W0_gap , bandsData_dense_DFTgr ):
+            def _determine_BSEmatrix_dimension( energyWindow_goal , G0W0_gap , bandsData_dense_DFTgr , max_bandsInMatrix=4 ):
                 
-                max_bandsInMatrix = 4
 
                 b_band = bandsData_dense_DFTgr.get_array('bands')
                 b_occ  = bandsData_dense_DFTgr.get_array('occupations')
@@ -159,18 +165,26 @@ class VaspmBSEInitScriptWorkChain(WorkChain):
                     idx_HO = idx_HO_forDifferentKpts[0]
          
                 #bval_ho =max( array of the values of the band w/ index idx_HO for all k-points )
+                #bcon_lu =min( array of the values of the band w/ index idx_HO+1 for all k-points )
+                #Thus, bval_ho and bcon_lu are the absolute band energies of the valence band maximum and conduction band minimum respectively
                 bval_ho = max( b_band[ : , idx_HO   ] )
-                bcon_lu = min( b_band[ : , idx_HO+1 ] )   
+                bcon_lu = min( b_band[ : , idx_HO+1 ] )  
+                
+                #For each of the max_bandsInMatrix valence bands below the highest occupied one, we determine the min and max band energies over all k-points
+                #Similarly, for each of the max_bandsInMatrix conduction bands above the lowest unoccupied one, we determine the min and max band energies over all k-points 
                 bval_eachb_min = [ min(b_band[ : , bVal_idx ])  for bVal_idx in range(idx_HO-max_bandsInMatrix+1 , idx_HO+1) ]
                 bval_eachb_max = [ max(b_band[ : , bVal_idx ])  for bVal_idx in range(idx_HO-max_bandsInMatrix+1 , idx_HO+1) ]
                 cval_eachb_min = [ min(b_band[ : , bCon_idx ])  for bCon_idx in range(idx_HO+1 , idx_HO+max_bandsInMatrix+1) ]
                 cval_eachb_max = [ max(b_band[ : , bCon_idx ])  for bCon_idx in range(idx_HO+1 , idx_HO+max_bandsInMatrix+1) ]
                 bval_eachb_min.reverse()
                 bval_eachb_max.reverse()
+
+                #Compute the deltas from the reference points
                 bval_eachb_min_deltaFromHO = bval_ho - bval_eachb_min
                 bval_eachb_max_deltaFromHO = bval_ho - bval_eachb_max
                 cval_eachb_min_deltaFromLU = cval_eachb_min - bcon_lu
                 cval_eachb_max_deltaFromLU = cval_eachb_max - bcon_lu
+
 
                 minTransition_forEachCouple = [ G0W0_gap +cval_eachb_min_deltaFromLU[idx] +bval_eachb_max_deltaFromHO[idx] for idx in range (max_bandsInMatrix) ]
                 minTransition_forEachCouple = np.array( minTransition_forEachCouple )

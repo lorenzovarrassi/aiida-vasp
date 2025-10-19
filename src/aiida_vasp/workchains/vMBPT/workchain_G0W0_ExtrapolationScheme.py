@@ -16,7 +16,7 @@ from aiida_vasp.utils.workchains import site_magnetization_to_magmom
 
 
 from .utils_calcfunctions import get_closest_EncutNband_multiple , get_EncutNbandFitParams_completeBasis_quadratic , input_magnetic_moment_tomagmom
-from .workchain_base import VaspDFTGWWorkChain
+from .workchain_G0W0_base import VaspDFTGWWorkChain
 
 
 

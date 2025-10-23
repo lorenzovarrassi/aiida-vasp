@@ -34,10 +34,10 @@ class VaspG0W0BasisExtrWorkChain(WorkChain):
             super(VaspG0W0BasisExtrWorkChain, cls).define(spec)        
 
             spec.expose_inputs(cls._next_workchain , exclude=('kpoints','parameters', )) 
-            spec.expose_inputs(VaspDFTGWWorkChain  , exclude=('kpoints','parameters', 'ns_parameters' , 'ns_continuationJob' , 'ns_option')) 
+            spec.expose_inputs(VaspDFTGWWorkChain  , exclude=('kpoints','parameters', 'ns_parameters' , 'ns_option')) 
 
 
-            spec.input('ns_extrapolation.mode'                  , valid_type=Str       , required=False , default=lambda: Str("final") , help='either final , memory-conserving , standard, custom.') 
+#            spec.input('ns_extrapolation.mode'                  , valid_type=Str       , required=False , default=lambda: Str("final") , help='either final , memory-conserving , standard, custom.') 
             spec.input('ns_extrapolation.encut_chi_low'         , valid_type=Bool      , required=False , default=lambda: Bool(False)  , help='if not specified, ENCUTGW defined as 0.63 x ENCUT ; - if true ENCUTGW = 0.50 x ENCUT.' )
             spec.input('ns_extrapolation.nbands_stride'         , valid_type=Int       , required=False , help='minimum nbands steps used to increase the number of bands in the fit for the final (an other) modes')
             spec.input('ns_extrapolation.cutoff_fractions'      , valid_type=ArrayData , required=False , help='specify the fractions of the cutoff of the first calculation to be used for the extrapolation; it overrides the standard mode')
@@ -52,7 +52,7 @@ class VaspG0W0BasisExtrWorkChain(WorkChain):
 
             spec.input('kpoints'                              , valid_type=DataFactory('core.array.kpoints') , help='K-mesh used for VASP G0W0 and DFT runs; get_kpoints_mesh() must work.' )     
 
-            spec.input('ns_reference.DFTgr_RemoteData'        , valid_type=RemoteData , help='Folder of the starting-point DFT ground-state; the workflows copies the starting point WAVECAR and CHGCAR from it; the CHGCAR is used only for magnetic collinear calcs.')
+            spec.input('ns_reference.DFTgr_RemoteData'        , valid_type=RemoteData , required=False , help='Folder of the starting-point DFT ground-state; the workflows copies the starting point WAVECAR and CHGCAR from it; the CHGCAR is used only for magnetic collinear calcs.')
             spec.input('ns_reference.DFTgr_NGarray'           , valid_type=ArrayData  , help='FFT grid used to determine the complete basis compatible with a given cutoff.')
             spec.input('ns_reference.DFTgr_ENMAXarray'        , valid_type=ArrayData  , help='Array containing the ENMAX of all employed POTCARs.') 
             spec.input('ns_reference.DFTgr_kpoints'	          , valid_type=DataFactory('core.array.kpoints') , help='k-points used to determine the complete basis compatible with a given cutoff. Must contain explicit mesh : get_kpoints() must work.' )
@@ -146,13 +146,21 @@ class VaspG0W0BasisExtrWorkChain(WorkChain):
                 self.ctx.inputs_array[ecutNbIdx].ns_parallelization.kpar  = self.inputs.ns_parallelization.kpar
                 self.ctx.inputs_array[ecutNbIdx].ns_parallelization.lreal = Bool(self.inputs.ns_parallelization.lreal)
                 
-                #Same DFT ground state as starting point
-                self.ctx.inputs_array[ecutNbIdx].ns_reference.DFTgr_RemoteData = self.inputs.ns_reference.DFTgr_RemoteData        #self.ctx.finishedWC_DFTgr[-1].outputs.remote_folder
-
                 self.ctx.inputs_array[ecutNbIdx].ns_option.maximum_iterations  = self.inputs.ns_option.GW_max_iteration
                 self.ctx.inputs_array[ecutNbIdx].ns_option.verbose             = self.inputs.ns_option.verbose
                 self.ctx.inputs_array[ecutNbIdx].ns_option.calculationLabel    = Str("extrapolation point "+str(ecutNbIdx) )               
-                self.ctx.inputs_array[ecutNbIdx].ns_option.run_G0W0            = Bool(True) 
+                
+                #Run_1DFTgr is false for the G0W0 data points because we reuse the single DFTgr done at the beginning (even if the encut is not really identical to the ones used for the extrapolation)
+                #Thus that DFTgr is used a)to determine FFT grid (NGX NGY NGZ) and ENMAX - b)as starting point for the workflow_G0W0_base
+                #Reusing DFTgr for the G0W0s data points allows to reduce the overall number of calculations; DFTgr is usually very quick compared to G0W0/DFTvo, but we are worried by the time spent in queue in HPC clusters.
+                #However internal testing has been shown that launching a DFTvo (thus ALGO=Exact and NELM=1) on a DFTgr with a different encut may cause error in the band energies; the culprit is NELM=1
+
+                if ('DFTgr_RemoteData' in self.inputs['ns_reference']) :
+                    self.ctx.inputs_array[ecutNbIdx].ns_reference.DFTgr_RemoteData = self.inputs.ns_reference.DFTgr_RemoteData        #self.ctx.finishedWC_DFTgr[-1].outputs.remote_folder               
+                    self.ctx.inputs_array[ecutNbIdx].ns_option.run_1DFTgr = Bool(False) 
+                else:
+                    self.ctx.inputs_array[ecutNbIdx].ns_option.run_1DFTgr = Bool(True) 
+                self.ctx.inputs_array[ecutNbIdx].ns_option.run_2DFTvo_3G0W0 = Bool(True) 
 
                 #now let's manage the ENCUTGW terms:
                 #By default they are kp at 0.63*ENCUT - if the encut_chi_low flag is activated, just 0.50
@@ -243,7 +251,7 @@ class VaspG0W0BasisExtrWorkChain(WorkChain):
         #
         #We have however a problem: when we launch a VASP calculations, VASP automatically rounds the given NBANDS to the closest multiple of #MPI-threads/KPAR.
         #This is problematic, because IT BREAKS the complete basis hypothesis for that G0W0 calculation.
-        #If the extrapolation is applied in "final mode", we:
+        #If the extrapolation is applied in the standard mode, we:
         # 1) invert the relation nbands=nbands(encut) (determined by the complete-basis-hypothesis) to encut=encut(nbands). The solution is not analytical,
         #    we will use the inverted relation to determine the encut corresponding to a given nbands respecting the complete-basis-hypothesis
         # 2) determine nbands corresponding to the DFTgr_ENMAXmax encut value - this value is nbands_atENMAX; 
@@ -283,7 +291,8 @@ class VaspG0W0BasisExtrWorkChain(WorkChain):
 
 
         #Inputs handling - printing the input data if requested.
-        if self.inputs.ns_option.verbose and self.inputs.ns_extrapolation.mode.value != 'final':
+#       if self.inputs.ns_option.verbose and self.inputs.ns_extrapolation.mode.value != 'final':
+        if self.inputs.ns_option.verbose : 
             self.report(
              "\n[preparatory-1 - input of DFT ground state]-- --- --- --- --- --- --- --- --- --- --- --- --- --- --- --- --- --- --- --- --- --- --- ---"
             +"\n  Inside routine determine_completeBasis_encutNband - list input data determined from DFTgr"
@@ -293,36 +302,16 @@ class VaspG0W0BasisExtrWorkChain(WorkChain):
             +'\n  > cell                :'+str(DFTgr_cell)
             +'\n  > GW_mpithrd_num      :'+str(GW_mpithrd_num)
             +'\n  > nbands_stride         :'+str(self.ctx.nbands_stride)
-            +'\n  > mode                :'+str(self.inputs.ns_extrapolation.mode)
+#            +'\n  > mode                :'+str(self.inputs.ns_extrapolation.mode)
            +"\n[1 - input handling]--- --- --- --- --- --- --- --- --- --- --- --- --- --- --- --- --- --- --- --- --- --- --- --- --- --- --- --- --- -"
             +'\n[2 - determining (encut,nbands) -> determining corrected (encut,nbands)]--- --- --- --- --- --- --- --- --- --- --- --- --- --- --- --- '
-            +"\n  > mode            :"+str(self.inputs.ns_extrapolation.mode.value)
+#            +"\n  > mode            :"+str(self.inputs.ns_extrapolation.mode.value)
             +"\n  > DFTgr_ENMAXmax  :"+str(DFTgr_ENMAXmax)
             +"\n  -> in mode!=final cutoff_fractions :"+str(self.ctx.cutoff_fractions)
             +"\n               not corrected encuts :"+str(ENMAX_array)
             +"\n"+self.ctx.EncutNbands_completeBasis_logger
 			+"\n  > corrected encut-nbands couples  :"+str(self.ctx.EncutNbands_completeBasis)
 			+'\n[2 - determining (encut,nbands) -> determining corrected (encut,nbands)]--- --- --- --- --- --- --- --- --- --- --- --- --- --- --- --- ')
-        if self.inputs.ns_option.verbose and self.inputs.ns_extrapolation.mode.value == 'final':
-            self.report("\n[preparatory-1 - input of DFT ground state]-- --- --- --- --- --- --- --- --- --- --- --- --- --- --- --- --- --- --- --- ---"
-            +"\n  Inside routine determine_completeBasis_encutNband - list input data determined from DFTgr"
-            +'\n  > nNGX, NGY, NGZ array:'+str(DFTgr_NGarray)
-            +'\n  > max ENMAX           :'+str(DFTgr_ENMAXmax)
-            +'\n  > kpoints mesh        :'+str(DFTgr_kpts)
-            +'\n  > cell                :'+str(DFTgr_cell)
-            +'\n  > GW_mpithrd_num     :'+str(GW_mpithrd_num)
-            +'\n  > nbands_stride         :'+str(self.ctx.nbands_stride)
-            +'\n  > mode                :'+str(self.inputs.ns_extrapolation.mode)
-             
-            +"\n[1 - input handling]--- --- --- --- --- --- --- --- --- --- --- --- --- --- --- --- --- --- --- --- --- --- --- --- --- --- --- --- ---"
-            +'\n[2 - determining (encut,nbands) -> determining corrected (encut,nbands)]--- --- --- --- --- --- --- --- --- --- --- --- --- --- --- ---'
-            +"\n  > mode            :"+str(self.inputs.ns_extrapolation.mode.value)
-            +"\n  > DFTgr_ENMAXmax  :"+str(DFTgr_ENMAXmax)
-            +"\n"+self.ctx.EncutNbands_completeBasis_logger
-			+"\n  > corrected encut-nbands couples       :"+str(self.ctx.EncutNbands_completeBasis)
-			+'\n[2 - determining (encut,nbands) -> determining corrected (encut,nbands)]--- --- --- --- --- --- --- --- --- --- --- --- --- --- --- ---\n\n')
-
-
 
 
     @staticmethod
@@ -366,7 +355,7 @@ class VaspG0W0BasisExtrWorkChain(WorkChain):
             extrapolated_QPc["r2"][key] = Float(reg.score(extr_x, extr_y))
 
         # Logging
-        str_log_spinSpecific = str_log + "\n  >> [0] nbands used: "+str(ar_nbandsInput[-num_calc:])+"out of nbands array"+str(ar_nbandsInput)+"\n  >>     actually inverse nbands is used: "+str((1 / np.array(ar_nbandsInput[-num_calc:])).reshape(-1, 1)).replace("\n"," ,")
+        str_log_spinSpecific = str_log + "\n  >> [0] nbands used: "+str(ar_nbandsInput[-num_calc:])+" out of nbands array"+str(ar_nbandsInput)+"\n  >>     actually inverse nbands is used: "+str((1 / np.array(ar_nbandsInput[-num_calc:])).reshape(-1, 1)).replace("\n"," ,")
         for key in gap_keys:
             str_log_spinSpecific += f"\n  >> [1] bandGap_{key}_ar: {ns_gap[spinComp][key]}"
             str_log_spinSpecific += f"\n  >>     bandGap_{key}_extrapolated: {extrapolated_gap[key].value} (r^2: {extrapolated_gap['r2'][key].value})"

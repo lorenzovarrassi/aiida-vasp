@@ -64,15 +64,16 @@ class VaspDFTGWWorkChain(WorkChain):
             spec.input('ns_reference.DFTgr_RemoteData'        , valid_type=RemoteData , required=False , help='the DFT ground state wavefunction (WAVECAR) and CHGCAR will be copied from this RemoteData folder as a starting point' )
             
             spec.input('ns_option.maximum_iterations'              , valid_type=Int  , required=False , default=lambda: Int(2)      , help='maximum number of times the workchain will restart a crashed G0W0 runs.')
-            spec.input('ns_option.verbose'                         , valid_type=Bool , required=False , default=lambda: Bool(True)  )
-            spec.input('ns_option.run_G0W0'                        , valid_type=Bool , required=False , default=lambda: Bool(True)  , help='If False, run a single G0W0 calculations; if True, run a DFT and G0W0 ON TOP on it, using same encut and number of bands and the DFT wavefunctions and energies as starting point')
+            spec.input('ns_option.verbose'                         , valid_type=Bool , required=False , default=lambda: Bool(True)  , help='If True, the workchain will print additional information on the progress.')
+            spec.input("ns_option.run_1DFTgr"                      , valid_type=Bool , required=False , default=lambda: Bool(False) , help='If True, run a DFT calculation to get the ground state (WAVECAR and CHGCAR) to be used as a starting point for following calculations. If False, no DFT ground state calculation is performed; in this case, DFTgr_RemoteData must be provided as input.')
+            spec.input('ns_option.run_2DFTvo_3G0W0'                , valid_type=Bool , required=False , default=lambda: Bool(True)  , help='Run the single-iteration DFT with all unoccupied bands included (DFTvo, vo stands for virtual orbital) and G0W0 with same encut and number of bands and the DFT wavefunctions and energies as starting point.')
             spec.input('ns_option.calculationLabel'                , valid_type=Str  , required=False , default=lambda: Str("")     , help='The summary printed at the end will be labeled with this string.')
 
 
-            spec.output('RemoteData_G0W0' , valid_type=RemoteData , required=False , help='RemoteData for the DFT calculation node.' )
-            spec.output('RemoteData_DFT'  , valid_type=RemoteData , required=False , help='RemoteData for the G0W0 calculation node.')
-            spec.output('bands_G0W0'      , valid_type=BandsData  , required=False , help='BandsData for the DFT calculation node.' )
-            spec.output('bands_DFT'       , valid_type=BandsData  , required=False , help='BandsData for the G0W0 calculation node.')
+            spec.output('RemoteData_G0W0' , valid_type=RemoteData , required=False , help='RemoteData for the G0W0 calculation node.' )
+            spec.output('RemoteData_DFT'  , valid_type=RemoteData , required=False , help='RemoteData for the DFT calculation node.')
+            spec.output('bands_G0W0'      , valid_type=BandsData  , required=False , help='BandsData for the G0W0 calculation node.' )
+            spec.output('bands_DFT'       , valid_type=BandsData  , required=False , help='BandsData for the DFT calculation node.')
            
             spec.output('gaps'            , valid_type=Dict       , required=False , help='Direct and indirect gaps for the DFT and G0W0 nodes.' )
             spec.output('gaps_QPc'        , valid_type=Dict       , required=False , help='QP HOMO correction at direct gap kpt')
@@ -85,79 +86,152 @@ class VaspDFTGWWorkChain(WorkChain):
             #spec.expose_outputs(cls._next_workchain) 
 
             spec.exit_code(401,'REACHED_MAXIMUM_TRY_NUMBER'  ,message='The workflow reached the maximum number of tries.')
-            spec.exit_code(100,'GENERIC_EXIT_CODE'           ,message='generic exit code.')
+            spec.exit_code(402,'NO_STARTING_WAVECAR_DFTvo'   ,message='No starting WAVECAR found for DFTvo calculation.')
+            spec.exit_code(100,'ERROR_FAILURE'           ,message='generic exit code.')
 
 
             spec.outline(
                 cls.initialize,
-                while_(cls.monitor_WCprogress)(     # Check if the previous iteration of the cycle has run correctly; if not, it tries to change the INCAR to correc the errors.
-                    cls.prepare_calc_DFT,           # Prepare the DFT calculation; this calculation must have the same number of bands of the G0W0 one.
-                    cls.run_calc,                   # Run it.
-                    cls.prepare_calc_G0W0,          # Prepare the G0W0 calculation
-                    cls.run_calc,                     
+                cls.prepare_calc_DFT,             # Prepare the DFTgr calculation; this calculation must have only the same encut of the DFTvo/G0W0 ones.
+                cls.run_calc_DFT,                     # Run it.
+                while_(cls.monitor_WCprogress)(   # Check if the previous iteration of the cycle has run correctly; if not, it tries to change the INCAR to correc the errors.
+                    cls.prepare_calc_DFT,         # Prepare the DFTvo calculation; this calculation must have the same number of bands of the G0W0 one.
+                    cls.run_calc_DFT,                 # Run it.
+                    cls.prepare_calc_G0W0,        # Prepare the G0W0 calculation
+                    cls.run_calc_G0W0,                     
                     ),
                 cls.elaborate_results,
                 #cls.clean_remoteFolder_DFT,
                 )
 
-    def run_calc(self):
-            if self.inputs.ns_option.verbose:
-                str_log = ('\n [VaspDFTGWWorkChain pk='+str(self.node.pk)+" <"+self.inputs.ns_option.calculationLabel.value 
-                + "> iteration="+str(self.ctx.control.iteration_counter)+"][run_calc]"
-                + '\n  launching a calc? '+str(self.ctx.WCtoRun) )
-                #DEprecATED  #if self.inputs.ns_option.compute_dipole_transition_mat: str_log = str_log + '\n                     The DFT run is the preparatory step to G0W0 (LOPTICS=T , nelm=1='
-                str_log = str_log + ('\n  at this step we have already done:'
-                + '\n  >> WCrecord_DFT='+str(self.ctx.WCrecord_DFT)
-                + '\n  >> WCrecord_G0W0='+str(self.ctx.WCrecord_G0W0)+'\n\n')
+
+ 
+    def run_calc_DFT(self):
+        if self.inputs.ns_option.verbose:
+            str_encut  = str(self.inputs.ns_parameters.encut.value)  if 'encut'  in self.inputs['ns_parameters'] else 'NotSpecified'
+            str_nbands = str(self.inputs.ns_parameters.nbands.value) if 'nbands' in self.inputs['ns_parameters'] else 'NotSpecified'
+            str_nomega = str(self.inputs.ns_parameters.nomega.value) if 'nomega' in self.inputs['ns_parameters'] else 'NotSpecified'
+            str_kmesh = str(self.inputs.kpoints.get_kpoints_mesh()[0])
+            str_log = ('\n [VaspDFTGWWorkChain pk='+str(self.node.pk)+" <"+self.inputs.ns_option.calculationLabel.value 
+                    + "> iteration="+str(self.ctx.control.iteration_counter)+"][run_calc_DFT]" 
+                    +"\n With parameters ENCUT="+str_encut+" NBANDS="+str_nbands+" NOMEGA="+str_nomega+" k-mesh="+str(str_kmesh)
+                    +'\n Remaining steps requested to this workchain: '+str(self.ctx.control.WC_toRun ) )
+            # str_log = str_log + ('\n Steps already finished:'
+            #                     + '\n  >> WCrecord_1DFTgr='+str(self.ctx.WCrecord_1DFTgr)
+            #                     + '\n  >> WCrecord_2DFTvo='+str(self.ctx.WCrecord_2DFTvo) 
+            #                     + '\n  >> WCrecord_3G0W0='+str(self.ctx.WCrecord_3G0W0)+'\n')
+            str_log = str_log + ('\n Steps already finished:'
+                                + '\n  >> WCrecord_1DFTgr='+str([ node.pk for node in self.ctx.WCrecord_1DFTgr ])
+                                + ' - w/ calcJobs pk='+str([ node.called_descendants[0].pk for node in self.ctx.WCrecord_1DFTgr ])
+                                + '\n  >> WCrecord_2DFTvo='+str([ node.pk for node in self.ctx.WCrecord_2DFTvo ])
+                                + ' - w/ calcJobs pk='+str([ node.called_descendants[0].pk for node in self.ctx.WCrecord_2DFTvo ])
+                                + '\n  >> WCrecord_3G0W0='+str([ node.pk for node in self.ctx.WCrecord_3G0W0 ]) 
+                                + ' - w/ calcJobs pk='+str([ node.called_descendants[0].pk for node in self.ctx.WCrecord_3G0W0 ]) +'\n')
+            self.report(str_log)
+        
+        # The order of the if-elif is important; only one calculation is launched at each cycle iteration; and the order of priority is DFTgr > DFTvo > G0W0.
+        # Run DFTgr (ground state) calculation
+        if self.ctx.control.WC_toRun.get('DFTgr', False):
+            runningWC_1 = self.submit(self._next_workchain, **self.ctx.inputs_DFT_finalized)
+            self.report('launching DFTgr workchain{}<{}> '.format(self._next_workchain.__name__, runningWC_1.pk))
+            return ToContext(WCrecord_1DFTgr=append_(runningWC_1))
+
+        # Run DFTvo (virtual orbitals) calculation
+        elif self.ctx.control.WC_toRun.get('DFTvo', False):
+            runningWC_2 = self.submit(self._next_workchain, **self.ctx.inputs_DFT_finalized)
+            self.report('launching DFTvo workchain{}<{}> '.format(self._next_workchain.__name__, runningWC_2.pk))
+            return ToContext(WCrecord_2DFTvo=append_(runningWC_2))
+                   
+     
+    def run_calc_G0W0(self):
+        if self.inputs.ns_option.verbose:
+            str_encut  = str(self.inputs.ns_parameters.encut.value)  if 'encut'  in self.inputs['ns_parameters'] else 'NotSpecified'
+            str_nbands = str(self.inputs.ns_parameters.nbands.value) if 'nbands' in self.inputs['ns_parameters'] else 'NotSpecified'
+            str_nomega = str(self.inputs.ns_parameters.nomega.value) if 'nomega' in self.inputs['ns_parameters'] else 'NotSpecified'
+            str_kmesh = str(self.inputs.kpoints.get_kpoints_mesh()[0])
+            str_log = ('\n [VaspDFTGWWorkChain pk='+str(self.node.pk)+" <"+self.inputs.ns_option.calculationLabel.value 
+                    + "> iteration="+str(self.ctx.control.iteration_counter)+"][run_calc_G0W0]"
+                    +"\n With parameters ENCUT="+str_encut+" NBANDS="+str_nbands+" NOMEGA="+str_nomega+" k-mesh="+str(str_kmesh)
+                    +'\n Remaining steps requested to this workchain: '+str(self.ctx.control.WC_toRun ) )
+            str_log = str_log + ('\n  Steps already finished:'
+                                + '\n  >> WCrecord_1DFTgr='+str(self.ctx.WCrecord_1DFTgr)
+                                + '\n  >> WCrecord_2DFTvo='+str(self.ctx.WCrecord_2DFTvo) 
+                                + '\n  >> WCrecord_3G0W0='+str(self.ctx.WCrecord_3G0W0)+'\n\n')
+            self.report(str_log)
+        
+        if self.ctx.control.WC_toRun.get('G0W0', False):
+            runningWC_3 = self.submit(self._next_workchain, **self.ctx.inputs_GW_finalized)
+            self.report('launching G0W0 workchain{}<{}> '.format(self._next_workchain.__name__, runningWC_3.pk))
+            return ToContext(WCrecord_3G0W0=append_(runningWC_3))
+
+                            
             
 
-            # The DFT calculation nodes are appended to WCrecord_DFT ; the G0W0s ones to WCrecord_G0W0;                 #DEprecATED 
-            # at each iteration of the cycle while_(cls.monitor_WCprogress) a single DFT calculation node is appended   #DEprecATED
-            # and eventually (if no error in the DFT are encountered) a single G0W0 one.                                #DEprecATED
-            # The flags WCtoRun['DFT'] and WCtoRun['G0W0'] which determine where to append the node, are set in prepare_calc_DFT and prepare_calc_G0W0  #DEprecATED
-            if self.ctx.WCtoRun['DFT']==True and self.ctx.WCtoRun['G0W0']==False  :
-                runningWC_DFT = self.submit(self._next_workchain , **self.ctx.inputs_DFT_finalized) 
-                self.report('launching DFT workchain{}<{}> '.format(self._next_workchain.__name__, runningWC_DFT.pk))
-                return ToContext(WCrecord_DFT=append_(runningWC_DFT))
-
-            if self.ctx.WCtoRun['DFT']==False and self.ctx.WCtoRun['G0W0']==True :
-                runningWC_G0W0 = self.submit(self._next_workchain   , **self.ctx.inputs_GW_finalized) 
-                self.report('launching G0W0 workchain{}<{}> '.format(self._next_workchain.__name__, runningWC_G0W0.pk))
-                return ToContext(WCrecord_G0W0=append_(runningWC_G0W0))
-
     def initialize(self):
-            self.ctx.WCrecord_DFT   = []
-            self.ctx.WCrecord_G0W0  = []
+            #Lists to store the calculation nodes at each iteration of the cycle
+            self.ctx.WCrecord_1DFTgr = []
+            self.ctx.WCrecord_2DFTvo = []
+            self.ctx.WCrecord_3G0W0  = []
 
             #All self.ctx.control variables are used in the monitor_WCprogress functions
             self.ctx.control = AttributeDict()          
-            self.ctx.control.iteration_counter = 0
+            self.ctx.control.iteration_counter = -1
             self.ctx.control.FINISHED_SUCCESSFULLY      = False            
             self.ctx.control.REACHED_MAXIMUM_TRY_NUMBER = False
             
+            # Define which calculation to run
+            self.ctx.control.WC_toRun = {"DFTgr":self.inputs.ns_option.run_1DFTgr.value , 
+                                         "DFTvo":self.inputs.ns_option.run_2DFTvo_3G0W0.value ,
+                                         "G0W0": self.inputs.ns_option.run_2DFTvo_3G0W0.value }
+            
 
     def prepare_calc_DFT(self):
-            ##[Part 1] Defining self.ctx.inputs for DFT calculations <--/--/--/--/--/--/--/--/--/--/--/--/--/--/--/--/--/--/--/--/--/--/--/--/--/--/--/--/--/--/--/--/>
+            ##[Part 1] Defining self.ctx.inputs for DFT calculations #---------- ---------- ---------- 
             self.ctx.inputs_DFT = AttributeDict() 
             self.ctx.inputs_DFT.update(self.exposed_inputs(self._next_workchain))
 
-            ##[Part 1][Step 1.0] Folder are not cancelled automatically because we may want to keep WAVECARs, WAVEDERs, WFULLs for following calculation. Folder can be cancelled later
+            ## Folder are not cancelled automatically because we may want to keep WAVECARs, WAVEDERs, WFULLs for following calculation. Folder can be cancelled later
             self.ctx.inputs_DFT.clean_workdir=Bool(False)
 
-            ##[Part 2] Defining kpoints - restart data - settings 
+            ## Defining kpoints - restart data - settings 
             self.ctx.inputs_DFT.kpoints = self.inputs.kpoints
 
-            if ('DFTgr_RemoteData' in self.inputs['ns_reference']):
-                self.ctx.inputs_DFT.restart_folder = self.inputs.ns_reference.DFTgr_RemoteData
-
-
             self.ctx.inputs_DFT.settings = AttributeDict({'parser_settings': {'include_node': ['bands','kpoints','structure','NGarray','maximum_number_pw']}})
-            
+
             ##[Part 3][Defining INCAR]
             incar = {'incar': {'ediff':1E-7 , 'algo':"Normal" , 'ismear':0 , 'sigma':0.02 , 'prec':'Accurate' , 'nelm':200 , 'lmaxmix':4}}
-            if ('encut'  in self.inputs['ns_parameters']):  incar['incar']['encut']  = self.inputs.ns_parameters.encut
-            if ('nbands' in self.inputs['ns_parameters']):  incar['incar']['nbands'] = self.inputs.ns_parameters.nbands
-            
+            if ('encut'  in self.inputs['ns_parameters']):  
+                incar['incar']['encut']  = self.inputs.ns_parameters.encut
+
+
+
+
+            if self.ctx.control.WC_toRun["DFTgr"] == True:
+                # This scope controls the DFTgr-ONLY settings, i.e. the settings that we do NOT want for DFTvo
+                # (if the interpreter enter the scope the DFTvo's one defined by (self.ctx.control.WC_toRun["DFTvo"] == True) is not traversed, because it's an elif)
+                # For the DFT ground state calculation (DFTgr) we may want to use a previous WAVECAR as starting point; not obligatory. It's used if ('DFTgr_RemoteData' in self.inputs['ns_reference']) is set.
+                if ('DFTgr_RemoteData' in self.inputs['ns_reference']):
+                    self.ctx.inputs_DFT.restart_folder = self.inputs.ns_reference.DFTgr_RemoteData
+                    
+            elif (self.ctx.control.WC_toRun["DFTvo"] == True) :
+                # First define the number of bands to the input value; for a G0W0 values bands up to very high energies are included, therefore we want to avoid including in the ground state
+                if ('nbands' in self.inputs['ns_parameters']) : 
+                    incar['incar']['nbands'] = self.inputs.ns_parameters.nbands
+                
+                # For the DFT calculation including all virtual orbitals (DFTvo) we must use as starting point a WAVECAR
+                # if a previous DFTgr calculation has been done in this workchain, we use its WAVECAR and do not consider the input DFTgr_RemoteData (which in this case has been used for DFTgr calculation).            
+                if (self.inputs.ns_option.run_1DFTgr.value == True):
+                   self.ctx.inputs_DFT.restart_folder = self.ctx.WCrecord_1DFTgr[-1].outputs.remote_folder
+                # Otherwise, we must use the input DFTgr_RemoteData as starting point.
+                elif (self.inputs.ns_option.run_1DFTgr.value == False) and ('DFTgr_RemoteData' in self.inputs['ns_reference']):
+                   self.ctx.inputs_DFT.restart_folder = self.inputs.ns_reference.DFTgr_RemoteData
+                else:
+                   return self.exit_codes.NO_STARTING_WAVECAR_DFTvo
+
+
+
+
+            # Parallelization settings : for now we report kpar and npar as defined from the inputs.ns_parallelization namespace.
             if ('kpar'  in self.inputs['ns_parallelization']): incar['incar']['kpar'] = self.inputs.ns_parallelization.kpar.value
             if ('npar'  in self.inputs['ns_parallelization']): incar['incar']['npar'] = self.inputs.ns_parallelization.npar.value
             if self.inputs.ns_parallelization.lreal == True: incar['incar']['lreal'] = 'Auto'
@@ -174,53 +248,54 @@ class VaspDFTGWWorkChain(WorkChain):
                 incar['incar']['amix'] = 0.2
                 incar['incar']['bmix'] = 0.00001
                 
-            #if self.inputs.ns_option.compute_dipole_transition_mat or self.inputs.ns_option.run_G0W0 :
-            if self.inputs.ns_option.run_G0W0 :  
+                
+            # This double check because we want those corrections only for DFTvo and not for DFTgr
+            # But if both run_1DFTgr and run_2DFTvo_3G0W0 are set as true, when DFTgr is run both WC_toRun["DFTvo"] and WC_toRun["DFTgr"] are True
+            # While when DFTvo will be run, DFTgr has already been Finished AND therefore set to False
+            if (self.ctx.control.WC_toRun["DFTvo"] == True) and (self.ctx.control.WC_toRun["DFTgr"] == False) :  
                 incar['incar']['loptics'] = '.TRUE.'  
                 incar['incar']['algo']    = "Exact"
                 incar['incar']['nelm']    = 1      
-            #if self.inputs.ns_option.select_algo_Exact == True:               incar['incar']['algo'] = "Exact"
-            #if (self.inputs['ns_option']['select_single_iteration'] == True): incar['incar']['nelm'] = 1      
-            self.ctx.inputs_DFT.parameters = Dict( incar) #convert to AiiDA format
 
-
-            # Finalized!
+            #Convert to AiiDA Dict the parameters and then finalize the whole inputs
+            self.ctx.inputs_DFT.parameters = Dict(dict=incar) 
             self.ctx.inputs_DFT_finalized = prepare_process_inputs(self.ctx.inputs_DFT , namespaces=['dynamics','verify'])
 
-            
-
-            # If WCrecord_DFT is empty, we have to run a DFT calc.
-            if len(self.ctx.WCrecord_DFT) == 0:
-                self.ctx.WCtoRun = {'DFT':True , 'G0W0':False}
-            else: 
-                #This else means if the DFT run is already done - This case happens where the G0W0 at the previous iteration failed;
-                #Thus we avoid to redo also the DFT, use the DFT of the previous iteration as a starting point and do not redo it. 
-                WC_PreviousIdentical = None
-                for previousWC_idx, previousWC in enumerate(self.ctx.WCrecord_DFT) :
-                    try:    previousWC_loptics = previousWC.inputs.parameters.get_dict()['incar']['loptics']
-                    except: previousWC_loptics = None
-                    try:    presentWC_loptics = incar['incar']['loptics']
-                    except: presentWC_loptics = None                     
-                    try: # if previous DFT exists, extract final encut / nbands / kpoints / loptics and check if identical; if yes, do not required to relaunch         
-                        previousWC_encut   = previousWC.inputs.parameters.get_dict()['incar']['encut']
-                        previousWC_kpoints = previousWC.inputs.kpoints.get_kpoints_mesh()            
-                        previousWC_nbands  = np.shape(previousWC.outputs.bands.get_bands())[1] # BandsData indexs: [0]=spin components; [1]=represents kpts index, [2]=bands
-                        
-                        if (previousWC.is_finished_ok              and previousWC_encut  == incar['incar']['encut']  and 
-                            previousWC_nbands  == incar['nbands']  and previousWC_loptics == presentWC_loptics          ):
-                            WC_PreviousIdentical = self.ctx.WCrecord_DFT[previousWC_idx]  
-                    except: pass
-                
-                    if WC_PreviousIdentical != None:
-                        self.ctx.WCtoRun = {'DFT':False , 'G0W0':False}        # No need to redo the DFT calc.
-                        self.ctx.WCrecord_DFT.append(WC_PreviousIdentical)     # GW routines will copy WAVECAR and WAVEDER from self.ctx.WCrecord_DFT[-1].outputs.remote_folder                
-                        self.report("For this iteration we reuse the DFT of" , WC_PreviousIdentical)
-                    else:
-                        self.ctx.WCtoRun = {'DFT':True  , 'G0W0':False }       # No luck, we should redo the DFT calculation.
+            # ##[Part 2] Understanding what to run between DFT and G0W0s #-------- ---------- ----------
+            # # If WCrecord_DFT is empty, we have to run a DFT calc.
+            # if len(self.ctx.WCrecord_2DFTvo) > 0:
+            #     #This means if the DFT run is already done - This case happens where the G0W0 at the previous iteration failed;
+            #     #Thus we avoid to redo also the DFT, use the DFT of the previous iteration as a starting point and do not redo it. 
+            #     WC_PreviousIdentical = None
+            #     for previousWC_idx, previousWC in enumerate(self.ctx.WCrecord_2DFTvo) :
+            #        
+            #         # try to extract loptics from previous and present INCAR; if not present, set to None
+            #         try:    previousWC_loptics = previousWC.inputs.parameters.get_dict()['incar']['loptics']
+            #         except: previousWC_loptics = None
+            #         try:    presentWC_loptics = incar['incar']['loptics']
+            #         except: presentWC_loptics = None
+            #         #try to extract encut / nbands / kpoints from previous and present INCAR;
+            #         #If they are identical and the previous DFT finished ok, we can reuse the previous DFT calculation; in thicase we set WC_PreviousIdentical to the previousWC
+            #         try: # if previous DFT exists, extract final encut / nbands / kpoints / loptics and check if identical; if yes, do not required to relaunch         
+            #             previousWC_encut   = previousWC.inputs.parameters.get_dict()['incar']['encut']
+            #             previousWC_kpoints = previousWC.inputs.kpoints.get_kpoints_mesh()            
+            #             previousWC_nbands  = np.shape(previousWC.outputs.bands.get_bands())[1] # BandsData indexs: [0]=spin components; [1]=represents kpts index, [2]=bands
+            #            
+            #             if (previousWC.is_finished_ok              and previousWC_encut  == incar['incar']['encut']  and 
+            #                 previousWC_nbands  == incar['nbands']  and previousWC_loptics == presentWC_loptics          ):
+            #                 WC_PreviousIdentical = self.ctx.WCrecord_DFT[previousWC_idx]  
+            #         except: pass
+            #    
+            #         if WC_PreviousIdentical != None:
+            #             self.ctx.WCtoRun = {'DFT':False , 'G0W0':False}        # No need to redo the DFT calc.
+            #             self.ctx.WCrecord_DFT.append(WC_PreviousIdentical)     # GW routines will copy WAVECAR and WAVEDER from self.ctx.WCrecord_DFT[-1].outputs.remote_folder                
+            #             self.report("For this iteration we reuse the DFT of" , WC_PreviousIdentical)
+            #         else:
+            #             self.ctx.WCtoRun = {'DFT':True  , 'G0W0':False }       # No luck, we should redo the DFT calculation.
     
     def prepare_calc_G0W0(self):
-            if  not self.ctx.WCrecord_DFT[-1].is_finished_ok :        
-                self.report("\n DFT node <"+str(self.ctx.WCrecord_DFT[-1])+"> has not finished correctly - not even trying G0W0 for this iteration!")
+            if  not self.ctx.WCrecord_2DFTvo[-1].is_finished_ok :        
+                self.report("\n DFT node <"+str(self.ctx.WCrecord_2DFTvo[-1])+"> has not finished correctly - not even trying G0W0 for this iteration!")
             else:
                 self.ctx.inputs_GW = AttributeDict() 
                 self.ctx.inputs_GW.update(self.exposed_inputs(self._next_workchain))
@@ -235,13 +310,11 @@ class VaspDFTGWWorkChain(WorkChain):
                                    'nmaxfockae':2 , 'prec':'Accurate'}} #nmaxfockae is set to 2 Following Klimes et al, 2014.
                 if ('encut'  in self.inputs['ns_parameters']):  incar['incar']['encut']  = self.inputs.ns_parameters.encut
                 if ('nbands' in self.inputs['ns_parameters']):  incar['incar']['nbands'] = self.inputs.ns_parameters.nbands            
-                else: incar['incar']['nbands'] =  np.shape(self.ctx.WCrecord_DFT[-1].outputs.bands.get_bands())[1]   #In altenrnativa : self.ctx.WCrecord_DFT[-1].outputs.get_dict()['run_status']['nbands']
-
-
+                else: incar['incar']['nbands'] =  np.shape(self.ctx.WCrecord_2DFTvo[-1].outputs.bands.get_bands())[1]   #In altenrnativa : self.ctx.WCrecord_DFT[-1].outputs.get_dict()['run_status']['nbands']
 
                 if ('encut_chi' in self.inputs['ns_parameters']):  
-                    incar['incar']['encutgw']      = self.inputs.ns_parameters.encut_chi                                                            
-                    incar['incar']['encutgwsoft']  = self.inputs.ns_parameters.encut_chi                                                            
+                    incar['incar']['encutgw']      = self.inputs.ns_parameters.encut_chi.value                                                      
+                    incar['incar']['encutgwsoft']  = self.inputs.ns_parameters.encut_chi.value                                                       
                 
                 if ('nbandsgw' in self.inputs['ns_parameters']):       incar['incar']['nbandsgw'] = self.inputs.ns_parameters.nbandsgw               #THIS IS TO-TEST           
                 if self.inputs.ns_parallelization.lreal: incar['incar']['lreal'] = 'Auto'                                                   
@@ -260,18 +333,18 @@ class VaspDFTGWWorkChain(WorkChain):
                 #[Step 1.1] correct the INCAR in following run (if the first has failed)
                 #At the first iteration  self.ctx.WCrecord_DFT is empty and thus  self.ctx.WCrecord_DFT[-1] does not possess the attribute is_finished_ok; thus the try-except
                 try:
-                    if (self.ctx.control.iteration_counter == 1) and (not self.ctx.WCrecord_G0W0[-1].is_finished_ok):
+                    if (self.ctx.control.iteration_counter == 1) and (not self.ctx.WCrecord_3G0W0[-1].is_finished_ok):
                         incar['incar']['lreal']   = 'Auto'   #in order to reduce Memory constraint
                         incar['incar']['omegatl'] = 8000     #in order to improve stability of the frequency integration
                         #incar['incar']['nmaxfockae'] = 1
                         #incar['incar']['kpar']       = 1   
-                    elif (self.ctx.control.iteration_counter >= 2) and (not self.ctx.WCrecord_G0W0[-1].is_finished_ok):
+                    elif (self.ctx.control.iteration_counter >= 2) and (not self.ctx.WCrecord_3G0W0[-1].is_finished_ok):
                         incar['incar']['lreal']   = 'Auto'   #in order to reduce Memory constraint
                         incar['incar']['omegatl'] = 16000    #in order to improve stability of the frequency integration
                 except:
                     pass
      
-                self.ctx.inputs_GW.parameters = Dict( incar ) #convert to AiiDA format
+                self.ctx.inputs_GW.parameters = Dict( dict=incar ) #convert to AiiDA format
 
                 self.ctx.inputs_GW.kpoints = self.inputs.kpoints
 
@@ -282,55 +355,89 @@ class VaspDFTGWWorkChain(WorkChain):
 
                 #[Step 3] G0W0 should use DFT's WAVECAR and WAVEDER as a starting point.
                 # restart_folder and fileToIncludeFromRestartFolder are VaspCalculation's inputs (passed through expose_inputs).
-                self.ctx.inputs_GW.restart_folder = self.ctx.WCrecord_DFT[-1].outputs.remote_folder
+                self.ctx.inputs_GW.restart_folder = self.ctx.WCrecord_2DFTvo[-1].outputs.remote_folder
 
                 self.ctx.inputs_GW_finalized = prepare_process_inputs(self.ctx.inputs_GW, namespaces=['dynamics','verify'])
-            
-            if self.inputs.ns_option.run_G0W0 and self.ctx.WCrecord_DFT[-1].is_finished_ok: 
-                  self.ctx.WCtoRun = {'DFT':False  , 'G0W0':True}
-            else: self.ctx.WCtoRun = {'DFT':False  , 'G0W0':False}
 
     def monitor_WCprogress(self):
+            # Policy:
+            # 1] Check if have reached the maximum num of tries
+            # 2] If GW path requested:
+            # 2.1] Check if you need to run DFTvo of it has been already run
+            #  2.2] If should be run, Ensure that required inputs DFTvo exists (ground state is finished or DFTgr_remoteData is supplied.
+            #  2.3] Then do/redo DFTvo until OK, 
+            #  2.4] Then do/redo G0W0 until OK.
+            # 3] If no GW path:
+            #  3.1] If run_1DFTgr is requested, do/redo DFTgr until OK, then finish.
+            #  3.2] Else finish immediately.
+            # Note: Respect maximum_iterations (hard stop when exceeded).
+   
+            # iteration_counter starts at -1; thus the first iteration (BEFORE running the first try of DFTvo/G0W0) is iteration_counter=0
             self.ctx.control.iteration_counter = self.ctx.control.iteration_counter + 1
-           
-
-            if self.inputs.ns_option.verbose:
-                str_log=('\n [VaspDFTGWWorkChain pk='+str(self.node.pk)+" <"+self.inputs.ns_option.calculationLabel.value+"> ][monitor_WCprogress at the start of iteration" +str(self.ctx.control.iteration_counter)+"]"
-                +'\n  >> monitor_WCprogress: WCrecord_DFT='+str(self.ctx.WCrecord_DFT))
-                if (len(self.ctx.WCrecord_DFT) >0) : str_log = str_log + '\n                       '+str(' '.join(["  called by wkc "+str(node.pk)+" :"+str(node.called) for node in self.ctx.WCrecord_DFT]))
-                str_log = str_log + '\n  >> monitor_WCprogress: WCrecord_G0W0=' +str(self.ctx.WCrecord_G0W0)
-                if (len(self.ctx.WCrecord_G0W0)>0) : str_log = str_log + '\n                       '+str(' '.join(["  called by wkc "+str(node.pk)+" :"+str(node.called) for node in self.ctx.WCrecord_G0W0]))
-                str_log = str_log + '\n  >> monitor_WCprogress: evaluating start of cycle iteration no:{}'.format(self.ctx.control.iteration_counter)
-               
-
-            try:    lastGW_exitCode  = self.ctx.WCrecord_G0W0[-1].exit_status
-            except: lastGW_exitCode  = None
-            try:    lastDFT_exitCode = self.ctx.WCrecord_DFT[-1].exit_status
-            except: lastDFT_exitCode = None
             
-            #Brief synthesis of t
-            #[case 1]: first iteration, not calculation is yet done: CONTINUE
-            #[case 2]: DFT finished ok and G0W0 is not required:     EXIT CYCLE WITH SUCCESS
-            #[case 3]: G0W0 finished ok:                             EXIT CYCLE WITH SUCCESS
-            #[case 4]: num of tries exceed maximum number; exit workchain with error.
-            #[case 5]: retry.
-            if len(self.ctx.WCrecord_DFT) == 0:   
-                self.report(str_log+'\n  -> monitor_WCprogress: VaspDFTGWWorkChain started first iteration!'+"\n")
-                return True
-            elif (not self.inputs.ns_option.run_G0W0) and (lastDFT_exitCode == 0) : 
-                self.report(str_log+'\n  -> monitor_WCprogress:VaspDFTGWWorkChain cycle exit - DFT calculation at iteration {} finished successfully, G0W0 is not required!'.format(self.ctx.control.iteration_counter-1)+"\n")
-                self.ctx.control.FINISHED_SUCCESSFULLY      = True
+            last_WCnodes_run = {"DFTgr": self.ctx.WCrecord_1DFTgr[-1] if self.ctx.WCrecord_1DFTgr else None ,
+                                "DFTvo": self.ctx.WCrecord_2DFTvo[-1] if self.ctx.WCrecord_2DFTvo else None ,
+                                "G0W0":  self.ctx.WCrecord_3G0W0[-1]  if self.ctx.WCrecord_3G0W0  else None }
+            last_WCnodes_finishedOk = {"DFTgr": bool(last_WCnodes_run["DFTgr"] and last_WCnodes_run["DFTgr"].is_finished_ok) ,
+                                       "DFTvo": bool(last_WCnodes_run["DFTvo"] and last_WCnodes_run["DFTvo"].is_finished_ok) , 
+                                       "G0W0":  bool(last_WCnodes_run["G0W0"]  and last_WCnodes_run["G0W0"].is_finished_ok ) }
+            
+            str_encut  = str(self.inputs.ns_parameters.encut.value)  if 'encut'  in self.inputs['ns_parameters'] else 'NotSpecified'
+            str_nbands = str(self.inputs.ns_parameters.nbands.value) if 'nbands' in self.inputs['ns_parameters'] else 'NotSpecified'
+            str_nomega = str(self.inputs.ns_parameters.nomega.value) if 'nomega' in self.inputs['ns_parameters'] else 'NotSpecified'
+            str_kmesh = str(self.inputs.kpoints.get_kpoints_mesh()[0])
+            str_log=('\n [VaspDFTGWWorkChain pk='+str(self.node.pk)+" <"+self.inputs.ns_option.calculationLabel.value+"> ][monitor_WCprogress]"
+                +"\n  >> with parameters ENCUT="+str_encut+" NBANDS="+str_nbands+" NOMEGA="+str_nomega+" k-mesh="+str(str_kmesh)
+                +'\n  >> monitor at start of cycle iteration no:'+str(self.ctx.control.iteration_counter)+" of path DFTvo->G0W0 (0 is the first)."
+                +'\n  >> last_WCnodes_run[DFTgr]='+str(last_WCnodes_run["DFTgr"])+" + and last node finished ok="+ str(last_WCnodes_finishedOk["DFTgr"])
+                +'\n  >> last_WCnodes_run[DFTvo]='+str(last_WCnodes_run["DFTvo"])+" + and last node finished ok="+ str(last_WCnodes_finishedOk["DFTvo"])
+                +'\n  >> last_WCnodes_run[G0W0] ='+str(last_WCnodes_run["G0W0"])+" + and last node finished ok="+ str(last_WCnodes_finishedOk["G0W0"]) )
+            str_log = str_log + '\n  [Debug] WCrecord_2DFTvo='+str(self.ctx.WCrecord_2DFTvo)
+            if (len(self.ctx.WCrecord_2DFTvo) >0) : str_log = str_log + '\n                       '+str(' '.join(["  called by wkc "+str(node.pk)+" :"+str(node.called) for node in self.ctx.WCrecord_2DFTvo]))
+            str_log = str_log + '\n  [Debug] WCrecord_3G0W0=' +str(self.ctx.WCrecord_3G0W0)
+            if (len(self.ctx.WCrecord_3G0W0)>0) : str_log = str_log + '\n                       '+str(' '.join(["  called by wkc "+str(node.pk)+" :"+str(node.called) for node in self.ctx.WCrecord_3G0W0]))
+               
+           
+            # [1] Check if have reached the maximum num of tries
+            if self.ctx.control.iteration_counter > self.inputs.ns_option.maximum_iterations.value :
+               self.ctx.control.REACHED_MAXIMUM_TRY_NUMBER = True
+               return self.exit_codes.REACHED_MAXIMUM_TRY_NUMBER
+
+            
+            # [2] GW path requested: DFTvo → G0W0 (with WAVECAR check).
+            if bool( self.inputs.ns_option.run_2DFTvo_3G0W0.value ):
+                # [2.1] We need to run DFTvo or is it correcly run?
+                str_log=str_log+ "+'\n  [Check] DFTvo is complete and correct ?"+str(not last_WCnodes_finishedOk['DFTvo'])
+                if (not last_WCnodes_finishedOk['DFTvo']):
+                    # [2.2] We need a input WAVECAR for DFTvo: either a successful DFTgr in this WC or an external one in inputs.
+                    # If it not satisfied, we cannot continue
+                    flag_have_wavecar_for_DFTvo = last_WCnodes_finishedOk["DFTgr"] or ('ns_reference' in self.inputs and 'DFTgr_RemoteData' in self.inputs['ns_reference'])
+                    str_log=str_log+ "+'\n  [Check] DFTvo input (DFTgr WAVECAR-CHGCAR) is correctly found?"+str(flag_have_wavecar_for_DFTvo)
+                    if not flag_have_wavecar_for_DFTvo:  return self.exit_codes.NO_STARTING_WAVECAR_DFTvo
+                    
+                    # Arrived here we assume the input WAVECAR is fine, so no need to run DFTvo - and that we must run DFTvo
+                    self.ctx.control.WC_toRun = {'DFTgr': False, 'DFTvo': True, 'G0W0': True}
+                    return True
+                else:
+                    #Arrived here we assume that DFTvo is fine: we need to focus on G0W0
+                    str_log=str_log+ "+'\n  [Check] G0W0 is complete and correct?"+str(not last_WCnodes_finishedOk['G0W0'])
+                    if last_WCnodes_finishedOk["G0W0"]:
+                        self.ctx.control.FINISHED_SUCCESSFULLY = True
+                        self.ctx.control.WC_toRun = {'DFTgr': False, 'DFTvo': False, 'G0W0': False}
+                        return False
+                    else:
+                        self.ctx.control.WC_toRun = {'DFTgr': False, 'DFTvo': False, 'G0W0': True}
+                        return True
+                
+                #This
                 return False
-            elif lastGW_exitCode == 0:
-                self.report(str_log+'\n  >> monitor_WCprogress: VaspDFTGWWorkChain cycle exit - G0W0 calculations at iteration {} finished successfully!'.format(self.ctx.control.iteration_counter-1)+"\n")
-                self.ctx.control.FINISHED_SUCCESSFULLY      = True
-            elif self.ctx.control.iteration_counter > self.inputs.ns_option.maximum_iterations +1:
-                self.report(str_log+'\n  -> monitor_WCprogress: VaspDFTGWWorkChain EXCEEDED maximum number of iterations!'+"\n")
-                self.ctx.control.REACHED_MAXIMUM_TRY_NUMBER = True
-                return False
+           
             else:
-                self.report(str_log+'\n -> something got wrong in last iteration, continuing!'+"\n")
-                return True
+                # Here only DFTgr was required
+                self.ctx.control.WC_toRun = {'DFTgr': False, 'DFTvo': False, 'G0W0': False}
+                return False
+
+           
 
     def elaborate_results(self):
         """
@@ -367,11 +474,11 @@ class VaspDFTGWWorkChain(WorkChain):
         
             #Prepare the symmary in the str_log string; this string is not initialized from scratch in this function but took as an argument; the function concatenates (and does not overwrite it) its results.
             #This is useful for spin-polarized calculations: in this case each call of elaborate_single_spin_component will add the results of one of the two spin components.
-            try: str_log=str_log+("\n >> [2] input encut , nbands  :"
+            try: str_log=str_log+("\n >> [2] input encut , nbands: "
                                 +str(lastNode_G0W0.inputs.parameters.get_dict()['incar']['encut'])+" , "
                                 +str(lastNode_G0W0.inputs.parameters.get_dict()['incar']['nbands'])     )
             except:pass
-            str_log=str_log+("\n >> [2] output maximum num pw at DFT    : "+str(lastNode_DFT.outputs.maximum_number_pw.get_array()[0] )
+            str_log=str_log+("\n >> [2] output maximum num pw at DFT: "+str(lastNode_DFT.outputs.maximum_number_pw.get_array()[0] )
                             +"\n >> [2] output nbands (effectively used): "+str(lastNode_G0W0.outputs.misc.get_dict()['run_status']['nbands'])
                             +"\n >> [2] k-mesh used and shift: " +str(self.inputs.kpoints.get_kpoints_mesh() )
                             +"\n >> [3] HOMO GW eigenvalues : "+str(bnd['G0W0_HOMO'])
@@ -459,19 +566,39 @@ class VaspDFTGWWorkChain(WorkChain):
             +"\n >> [1] self.ctx.control.FINISHED_SUCCESSFULLY       ="+str(self.ctx.control.FINISHED_SUCCESSFULLY     )
             +"\n >> [1] self.ctx.control.REACHED_MAXIMUM_TRY_NUMBER  ="+str(self.ctx.control.REACHED_MAXIMUM_TRY_NUMBER)
             +"\n >> [2] PAW potentials used = "+str(self.inputs.potential_mapping.get_dict())                          )
+            # str_log = str_log + ('\n >> [2] Steps run:'
+            #                    + '\n        WCrecord_1DFTgr='+str(self.ctx.WCrecord_1DFTgr)
+            #                    + '\n         w/ calcJobs pk='+str([ node.called_descendants[0].pk for node in self.ctx.WCrecord_1DFTgr ])
+            #                    + '\n        WCrecord_2DFTvo='+str(self.ctx.WCrecord_2DFTvo) 
+            #                    + '\n         w/ calcJobs pk='+str([ node.called_descendants[0].pk for node in self.ctx.WCrecord_2DFTvo ])
+            #                    + '\n         WCrecord_3G0W0='+str(self.ctx.WCrecord_3G0W0)
+            #                    + '\n         w/ calcJobs pk='+str([ node.called_descendants[0].pk for node in self.ctx.WCrecord_3G0W0 ]) )
+            str_log = str_log + ('\n >> [2] Steps run:'
+                               + '\n        WCrecord_1DFTgr='+str([ node.pk for node in self.ctx.WCrecord_1DFTgr ])
+                               + ' - w/ calcJobs pk='+str([ node.called_descendants[0].pk for node in self.ctx.WCrecord_1DFTgr ])
+                               + '\n        WCrecord_2DFTvo='+str([ node.pk for node in self.ctx.WCrecord_2DFTvo ])
+                               + ' - w/ calcJobs pk='+str([ node.called_descendants[0].pk for node in self.ctx.WCrecord_2DFTvo ])
+                               + '\n         WCrecord_3G0W0='+str([ node.pk for node in self.ctx.WCrecord_3G0W0 ]) 
+                               + ' - w/ calcJobs pk='+str([ node.called_descendants[0].pk for node in self.ctx.WCrecord_3G0W0 ]) 
+                               )
+        
         
         
         #WCrecord_DFT may contain more than one calculations nodes; this means that one (or more) DFT calculations failed.
         #(if the DFT calculations finishes successfully and only the G0W0 fails, the DFT is not re-run).
         #In this case, use the last calculation in the WCrecord_DFT array.
-        if  (len(self.ctx.WCrecord_DFT)>0) and  (self.ctx.WCrecord_DFT[-1].is_finished_ok):        
-            lastNode_DFT  = self.ctx.WCrecord_DFT[-1]
-            self.out('RemoteData_DFT' , self.ctx.WCrecord_DFT[-1].outputs.remote_folder ) 
-            self.out('bands_DFT'      , self.ctx.WCrecord_DFT[-1].outputs.bands         )
-            self.out('NGarray'        , self.ctx.WCrecord_DFT[-1].outputs.NGarray       ) 
-            self.out('ENMAXarray'     , self.ctx.WCrecord_DFT[-1].outputs.ENMAXarray    )  
-            self.out('kpoints'        , self.ctx.WCrecord_DFT[-1].outputs.kpoints       )  
-        else: lastNode_DFT = None
+        if self.inputs.ns_option.run_2DFTvo_3G0W0.value and (self.ctx.WCrecord_2DFTvo[-1].is_finished_ok):    
+            lastNode_DFT = self.ctx.WCrecord_2DFTvo[-1]
+        elif self.inputs.ns_option.run_1DFTgr.value and (self.ctx.WCrecord_1DFTgr[-1].is_finished_ok):    
+            lastNode_DFT = self.ctx.WCrecord_1DFTgr[-1]
+        else:
+            lastNode_DFT = None
+        if  lastNode_DFT :
+            self.out('RemoteData_DFT' , lastNode_DFT.outputs.remote_folder ) 
+            self.out('bands_DFT'      , lastNode_DFT.outputs.bands         )
+            self.out('NGarray'        , lastNode_DFT.outputs.NGarray       ) 
+            self.out('ENMAXarray'     , lastNode_DFT.outputs.ENMAXarray    )  
+            self.out('kpoints'        , lastNode_DFT.outputs.kpoints       )  
         
         
         
@@ -480,8 +607,8 @@ class VaspDFTGWWorkChain(WorkChain):
         #if it contains more than entry, there are two possible cases:
         #a) either all failed and thus WCrecord_G0W0[-1].is_finished_ok -> also in this case lastNode_G0W0=None
         #or b) the cycle controlled by monitor_WCprogress exited because the last one finished successfully.
-        if  (len(self.ctx.WCrecord_G0W0)>0) and  (self.ctx.WCrecord_G0W0[-1].is_finished_ok):        
-            lastNode_G0W0 = self.ctx.WCrecord_G0W0[-1]
+        if  (len(self.ctx.WCrecord_3G0W0)>0) and  (self.ctx.WCrecord_3G0W0[-1].is_finished_ok):        
+            lastNode_G0W0 = self.ctx.WCrecord_3G0W0[-1]
             self.out('RemoteData_G0W0' , lastNode_G0W0.outputs.remote_folder)
             self.out('bands_G0W0'      , lastNode_G0W0.outputs.bands)
         else: lastNode_G0W0 = None 
@@ -532,7 +659,7 @@ class VaspDFTGWWorkChain(WorkChain):
 
             cleaned_calcs = []
 
-            for WC_DFT in self.ctx.WCrecord_DFT:
+            for WC_DFT in self.ctx.WCrecord_2DFTvo:
                 for called_descendant_DFT in WC_DFT.called_descendants:
                     if isinstance(called_descendant_DFT, orm.CalcJobNode):
                         self.report(called_descendant_DFT)

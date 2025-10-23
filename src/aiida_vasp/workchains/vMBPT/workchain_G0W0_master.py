@@ -12,8 +12,9 @@ from aiida.common.extendeddicts  import AttributeDict
 from aiida_vasp.utils.workchains import site_magnetization_to_magmom
 
 import warnings
-from .workchain_G0W0_ExtrapolationScheme import VaspG0W0BasisExtrWorkChain , input_magnetic_moment_tomagmom , VaspDFTGWWorkChain
+from .workchain_G0W0_ExtrapolationScheme import VaspG0W0BasisExtrWorkChain , input_magnetic_moment_tomagmom
 from .workchain_G0W0_base import VaspDFTGWWorkChain
+from .workchain_G0W0_kptsConv import VaspMBPTKptsConvWorkChain
 from .utils_calcfunctions import input_magnetic_moment_tomagmom 
 
 
@@ -36,7 +37,9 @@ class VaspG0W0CompleteWorkChain(WorkChain):
             super(VaspG0W0CompleteWorkChain, cls).define(spec) 
 
             spec.expose_inputs(cls._next_workchain         , exclude=('kpoints','potential_family','potential_mapping','parameters','settings')) 
-            spec.expose_inputs(VaspG0W0BasisExtrWorkChain  , exclude=('kpoints','potential_family','potential_mapping','ns_reference')) 
+            spec.expose_inputs(VaspG0W0BasisExtrWorkChain  , exclude=('kpoints','potential_family','potential_mapping','ns_reference','ns_option')) 
+            spec.expose_inputs(VaspMBPTKptsConvWorkChain   , exclude=('kpoints','potential_family','potential_mapping','ns_opt_converge','ns_option')) 
+
             
             spec.input('cutoff_startingReferenceDFT' ,  valid_type=Float , required=False , help='Reference energy cut-off used for the extrapolations.'  ) 
             
@@ -45,8 +48,15 @@ class VaspG0W0CompleteWorkChain(WorkChain):
             spec.input('potential.family_NCPAW'  , valid_type=Str  , help='AiiDA-VASP potential family for the NC-PAWs.'  , required=False )
             spec.input('potential.mapping_NCPAW' , valid_type=Dict , help='AiiDA-VASP potential mapping for the NC-PAWs.' , required=False ) 
             
-            spec.input('flag.should_NV_bePerformed'  , valid_type=Bool , required=False , default=lambda: Bool(False) , help='Force the execution of the norm-violation correction.')
-            spec.input('flag.perform_Wannerization'  , valid_type=Bool , required=False , default=lambda: Bool(False) , help='Wannierize the bands of the G0W0 6x6x6 Dense calculation.' )
+            spec.input('ns_option.should_NV_bePerformed'   , valid_type=Bool , required=False , default=lambda: Bool(False) , help='Force the execution of the norm-violation correction.')
+            spec.input('ns_option.perform_Wannerization'   , valid_type=Bool , required=False , default=lambda: Bool(False) , help='Wannierize the bands of the G0W0 6x6x6 Dense calculation.' )
+            spec.input('ns_option.perform_KptsConvergence' , valid_type=Bool , required=False , default=lambda: Bool(True)  , help='Perform the kpts Convergence - the converged k-mesh will be used for the dense calculation (and not the sparse).' )
+            spec.input('ns_option.use_initial_DFTgr_forExtrapolationG0W0s'   , valid_type=Bool , required=False , default=lambda: Bool(False) , help='Use the initial DFT ground state for all G0W0 calculations used in the interpolation, without redoing for each data points.')
+            #If self.inputs.ns_option.use_initial_DFTgr_forExtrapolationG0W0s.value is True, then for all G0W0s used as data points for the Extrapolation do NOT run the DFTgr, 
+            #and pass as a starting point DIRECTLY to the DFTvo (of the various data points) the WAVECAR of the single DFTgr run at the beginning to get ENMAX/(NGX NGY NGZ).
+            #The problem is that the single DFTgr is run using an ENCUT which is usually different to the ENCUTs of all three data-points, and thus it may cause errors.
+            #if False, DFTgr is rerun for each data-point; safer, because each DFTgr is therefore run at the same ENCUT of the corresponding G0W0; however three more calcs (at least)
+            #should be submitted.          
 
             kpoints_sparse_defaultvalue = DataFactory('core.array.kpoints')()
             kpoints_sparse_defaultvalue.set_kpoints_mesh([3,3,3])
@@ -66,6 +76,9 @@ class VaspG0W0CompleteWorkChain(WorkChain):
                 #spin-polarized calculation is run using the non-spin-polarized as a starting point.
                 cls.prepare_run_DFTground_USPAW_NSP     ,
                 cls.prepare_run_DFTground_USPAW_SP      ,
+                
+                #Kpts-Convergence for the dense k-point mesh
+                cls.prepare_run_kpts_convergence        ,
                 
                 #Basis set incompleteness correction
                 cls.prepare_run_Extrapolation_BS        ,  
@@ -91,7 +104,6 @@ class VaspG0W0CompleteWorkChain(WorkChain):
             )
             
             spec.exit_code(402,'ONE_OR_MORE_GW_FAILED',message='One or more GW calculations failed.')
-            spec.exit_code(403,'NON_EXISTENT_MODE'    ,message='The inserted mode does not exist - Please choose between custom , final , standard , memory-conserving.')
 
  
     def prepare_run_DFTground_USPAW_NSP(self):
@@ -114,11 +126,13 @@ class VaspG0W0CompleteWorkChain(WorkChain):
             inputs_DFTgr_NSP.potential_family  = self.inputs.potential.family_USPAW
             inputs_DFTgr_NSP.potential_mapping = self.inputs.potential.mapping_USPAW
             
-            
-            #Given that is a DFT ground state, we are not interested in computing the WAVEDER, using ALGO=Exact 
-            #(which is adviced only for many virtual orbitals), using NELM=1, or running the G0W0 routines. 
-            #Thus we set all to False
-            inputs_DFTgr_NSP.ns_option.run_G0W0 = Bool(False)
+            #The DFTground state before the extrapolations is used to determine ENMAX and the FFT-mesh used (NGX , NGY , NGZ)
+            #And, if self.inputs.ns_option.use_initial_DFTgr_forExtrapolationG0W0s is True, is used also a DFTgr starting point for the G0W0 calcs of the extrapolation 
+            #(which skips the DFTgr and start from DFTvo taking the WAVECAR of THIS DFTgr as input)
+            inputs_DFTgr_NSP.ns_option.run_1DFTgr       = Bool(True)
+            inputs_DFTgr_NSP.ns_option.run_2DFTvo_3G0W0 = Bool(False)
+
+            inputs_DFTgr_NSP.ns_option.verbose = Bool(True)
 
 
             #The previous part is common to both calls of the function; from now on we differentiate the cases for the sparse k-point mesh
@@ -163,8 +177,11 @@ class VaspG0W0CompleteWorkChain(WorkChain):
                 inputs_DFTgr_SP.potential_family  = self.inputs.potential.family_USPAW
                 inputs_DFTgr_SP.potential_mapping = self.inputs.potential.mapping_USPAW
             
-                inputs_DFTgr_SP.ns_option.run_G0W0 = Bool(False)
-
+                inputs_DFTgr_SP.ns_option.run_1DFTgr = Bool(True)
+                inputs_DFTgr_SP.ns_option.run_2DFTvo_3G0W0 = Bool(False)
+                
+                inputs_DFTgr_SP.ns_option.verbose = Bool(True)
+            
                 inputs_DFTgr_SP.ns_parameters.magnetic_moment_onsite = self.inputs.ns_parameters.magnetic_moment_onsite
 
 
@@ -218,6 +235,53 @@ class VaspG0W0CompleteWorkChain(WorkChain):
             runningWC_DFTgr_NC = self.submit(VaspDFTGWWorkChain , **self.ctx.inputs_DFTgr_NC)                 
             self.report('\n [Ground-State-3] launching DFT-groundState - NC-PAW vasp.vasp workchain <{}> \n\n'.format(runningWC_DFTgr_NC.pk))
             return ToContext(finishedWC_DFTgr_SP=append_(runningWC_DFTgr_NC))
+    
+    
+    def prepare_run_kpts_convergence(self):
+        # If the user asked to skip, keep the provided dense mesh around for later steps
+        if (self.inputs['ns_option']['perform_KptsConvergence'].value is False):
+            self.report("\n [KptsConv] Skipped (ns_option.perform_KptsConvergence = False).")            
+        
+        kconv_inputs = AttributeDict()
+        #kconv_inputs.update(self.exposed_inputs(self._next_workchain))         # structure, code, resources, etc.
+        kconv_inputs.update(self.exposed_inputs(VaspMBPTKptsConvWorkChain))       
+
+
+        # Potentials: converge on US-PAW (cheaper), consistent with the dense run
+        kconv_inputs.potential_family  = self.inputs.potential.family_USPAW
+        kconv_inputs.potential_mapping = self.inputs.potential.mapping_USPAW
+
+
+        kconv_inputs.ns_parameters = AttributeDict()
+        # [param -1] To keep calculations lighter, we use NOMEGA=1 for the kpts-conv
+        kconv_inputs.ns_parameters.nomega = Int(1)  # explicit as requested
+        # [param -2] Define encut as 0.80 * max( ENMAXarray ) ; 0.80 in order to keep the calculations for the G0W0 more lighter.
+        try:
+            if ('finishedWC_DFTgr_SP' in self.ctx):     DFTgr_node = self.ctx.finishedWC_DFTgr_SP[-1]
+            elif ('finishedWC_DFTgr_NSP' in self.ctx):  DFTgr_node = self.ctx.finishedWC_DFTgr_NSP[-1]
+            arr =   DFTgr_node.outputs.ENMAXarray.get_array('ENMAXarray')
+            encut_from_enmax = float(np.max(arr))
+            kconv_inputs.ns_parameters.encut = Float(encut_from_enmax)
+        except Exception: pass
+        # [param -3] And the usual magnetic_moments
+        if 'magnetic_moment_onsite' in self.inputs.ns_parameters:
+            kconv_inputs.ns_parameters.magnetic_moment_onsite = self.inputs.ns_parameters.magnetic_moment_onsite
+       
+        #In order to control the convergence via the explicit k-mesh and not the k-density (which is more intuitive)
+        #We have to supply both the kmesh.startingValue and kmesh.maxValue of kMesh; only the step is optional (default=1)
+        #We use the dense mesh passed as input to this VaspG0W0CompleteWorkChain as startingValue
+        dense_mesh, _ = self.inputs.kpoints.dense.get_kpoints_mesh()
+        kconv_inputs.ns_kpoints = AttributeDict() ; kconv_inputs.ns_kpoints.kMesh = AttributeDict()
+        kconv_inputs.ns_kpoints.kMesh.startingValue = List(list=[int(dense_mesh[0]), int(dense_mesh[1]), int(dense_mesh[2])])
+        kconv_inputs.ns_kpoints.kMesh.maxValue      = List([20,20,20])
+        
+        self.report("\n [KptsConv] Submitting VaspMBPTKptsConvWorkChain…")
+        running = self.submit(VaspMBPTKptsConvWorkChain, **kconv_inputs)
+        return ToContext(finishedWC_KptsConv=append_(running))
+
+
+
+    
           
 
     def prepare_run_DFT_G0W0_dense(self):
@@ -230,8 +294,11 @@ class VaspG0W0CompleteWorkChain(WorkChain):
         self.ctx.input_DFTG0W0.clean_workdir = Bool(False)            
         self.ctx.input_DFTG0W0.potential_family  = self.inputs.potential.family_USPAW
         self.ctx.input_DFTG0W0.potential_mapping = self.inputs.potential.mapping_USPAW
-        self.ctx.input_DFTG0W0.ns_option.run_G0W0 = Bool(True)
-               
+        self.ctx.input_DFTG0W0.ns_option.run_1DFTgr = Bool(False)
+        self.ctx.input_DFTG0W0.ns_option.run_2DFTvo_3G0W0 = Bool(True)   
+        
+        
+        
         self.ctx.input_DFTG0W0.kpoints = self.inputs.kpoints.dense   
         
         #finishedWC_extrBS contains the AiiDA nodes of the G0W0 calculations used for the extrapolations
@@ -239,7 +306,7 @@ class VaspG0W0CompleteWorkChain(WorkChain):
         #which is the one with the lowest cutoffs among the nodes in finishedWC_extrBS.
         self.ctx.input_DFTG0W0.ns_parameters.encut  = Float(  self.ctx.finishedWC_extrBS[-1].outputs.pairs_nbands_encuts.get_array('x_array')[0]    )
         self.ctx.input_DFTG0W0.ns_parameters.nbands = Int(    self.ctx.finishedWC_extrBS[-1].outputs.pairs_nbands_encuts.get_array('y_array_0')[0]  )
-        self.ctx.input_DFTG0W0.ns_parameters.nomega = Int( 200 )
+        self.ctx.input_DFTG0W0.ns_parameters.nomega = Int( 200 ) 
         
         #Use the DFT dense calculation finishedWC_DFTgr_SP_dense[-1]/finishedWC_DFTgr_NSP_dense[-1] as a starting point 
         #Meaning that the WAVECAR (and the CHGCAR) will be copied from these RemoteData
@@ -281,12 +348,19 @@ class VaspG0W0CompleteWorkChain(WorkChain):
         #  which allows get_kpoints() used to determine complete basis.
         self.ctx.extrBS.inputs.kpoints = self.inputs.kpoints.sparse   
 
+        #Here source_wcNode is the initial DFTgr in this workflow
         if ('magnetic_moment_onsite' in self.inputs['ns_parameters']):
             self.ctx.extrBS.inputs.ns_parameters.magnetic_moment_onsite = self.inputs.ns_parameters.magnetic_moment_onsite
             source_wcNode =  self.ctx.finishedWC_DFTgr_SP[-1]
         else:
             source_wcNode =  self.ctx.finishedWC_DFTgr_NSP[-1]
-
+        
+        #We will use for several things: 
+        #1] The extrapolation workchain needs the ENMAX of the POTCAs + NGX,NGY,NGZ of the FFT grid from the DFT starting point
+        self.ctx.extrBS.inputs.ns_reference.DFTgr_NGarray    = source_wcNode.outputs.NGarray            
+        self.ctx.extrBS.inputs.ns_reference.DFTgr_ENMAXarray = source_wcNode.outputs.ENMAXarray
+        
+        #2] We defined nbandsgw based on the occupation of the source_wcNode
         #NBANDSGW Definition: We want to define NBANDSGW = #occupied.states + 6; in theory we extrapolate just gap, so we would need #occ.states +1 or +2 ; +6 just for safety:
         occ = source_wcNode.outputs.bands_DFT.get_array("occupations") < 0.45
         c_kptNum = np.shape(occ)[1]
@@ -299,18 +373,21 @@ class VaspG0W0CompleteWorkChain(WorkChain):
                 bndIdx_HOMO = max ( [ np.where(occ[0,kptIdx,1:] != occ[0,kptIdx,:-1] )[0][0]    for kptIdx in range(c_kptNum)] )               
                 self.ctx.extrBS.inputs.ns_parameters.nbandsgw = Int( bndIdx_HOMO + 6 )    
         except: pass
-
-        #We use data from the DFT starting point :  the WAVECAR (copied by passing the remote data)(CHGCAR is also by default copied, but reused by setting ISTART=1 only for magnetic)
-        # + information about the ENMAX of the POTCAR + NGX,NGY,NGZ of the FFT grid.
-        self.ctx.extrBS.inputs.ns_reference.DFTgr_RemoteData = source_wcNode.outputs.RemoteData_DFT
-        self.ctx.extrBS.inputs.ns_reference.DFTgr_NGarray    = source_wcNode.outputs.NGarray          
-        self.ctx.extrBS.inputs.ns_reference.DFTgr_ENMAXarray = source_wcNode.outputs.ENMAXarray
-        
+    
+        #3] As alternative for starting point of the three G0W0 data points
+        #And if use_initial_DFTgr_forExtrapolationG0W0s is True also the WAVECAR (copied by passing the remote data)(CHGCAR is also by default copied, but reused by setting ISTART=1 only for magnetic)
+        #If ns_reference.DFTgr_RemoteData is set in the extrapolation workchain, by default it reuse it as DFTgr for the G0W0 data points (thus skipping the step DFTgr in the path DFTgr -> DFTvo -> G0W0 and reusing this)
+        #Otherwise it is used
+        if self.inputs.ns_option['use_initial_DFTgr_forExtrapolationG0W0s'].value == True:
+            self.ctx.extrBS.inputs.ns_reference.DFTgr_RemoteData = source_wcNode.outputs.RemoteData_DFT
+    
+    
+        #4] The kpoints related
+        self.ctx.extrBS.inputs.ns_reference.DFTgr_kpoints    = source_wcNode.outputs.kpoints            
         #self.ctx.finishedWC_DFTgr_NSP[-1].outputs.kpoints does not work for VASP G0W0s: it doesn't use VASP automatic generation but define manually the points inside KPOINTS
         # - may give error in screened_2e.F -> use inputs self.inputs.kpoints.sparse, which alows get_kpoints_mesh() for VASP automatic generation
         #self.ctx.finishedWC_DFTgr_NSP[-1].outputs.kpoints does not work for determine_completeBasis_encutNband: it requires explicit k-mesh 
         #-> use self.ctx.finishedWC_DFTgr_SP[-1].outputs.kpoints which allows get_kpoints() used to determine complete basis.
-        self.ctx.extrBS.inputs.ns_reference.DFTgr_kpoints    = source_wcNode.outputs.kpoints            
 
         runningWC_extrBS = self.submit(VaspG0W0BasisExtrWorkChain, **self.ctx.extrBS.inputs)
         return ToContext(finishedWC_extrBS = append_(runningWC_extrBS))            
@@ -329,7 +406,7 @@ class VaspG0W0CompleteWorkChain(WorkChain):
         
         self.ctx.extrNV.inputs.ns_parameters = deepcopy( self.ctx.extrBS.inputs.ns_parameters )   
 
-        if self.inputs.flag.should_NV_bePerformed:
+        if self.inputs.ns_option.should_NV_bePerformed:
             self.ctx.extrNV.extr = self.submit(VaspG0W0BasisExtrWorkChain, **self.ctx.extrNV.inputs)
             #key = f'extrapolation-NormViolation'
             #self.to_context(**{key: self.ctx.extrNV.extr})        
@@ -337,7 +414,7 @@ class VaspG0W0CompleteWorkChain(WorkChain):
             return ToContext(finishedWC_extrNV = append_(runningWC_extrNV))            
 
     def determine_flag_NC(self):
-        if ( 'should_NV_bePerformed' in self.inputs['flag'] ): self.ctx.flag_NV = self.inputs['flag']['should_NV_bePerformed']
+        if ( 'should_NV_bePerformed' in self.inputs['ns_option'] ): self.ctx.flag_NV = self.inputs['ns_option']['should_NV_bePerformed']
         else: self.ctx.flag_NV = Bool(True)
         return self.ctx.flag_NV
         
@@ -347,7 +424,7 @@ class VaspG0W0CompleteWorkChain(WorkChain):
         """
         Prepare and call the workchain_wannerization, which wannierize the bands of the G0W0 dense calculation.
         """
-        if self.inputs['ns_parameters']['perform_Wannerization']:  
+        if self.inputs['ns_option']['perform_Wannerization']:  
             inputs_Wan = AttributeDict()
             inputs_Wan.ns_option , inputs_Wan.ns_parameters = AttributeDict() , AttributeDict()
             inputs_Wan.update(self.exposed_inputs(self._next_workchain))

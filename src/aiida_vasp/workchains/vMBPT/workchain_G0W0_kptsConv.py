@@ -11,7 +11,6 @@ from sklearn.linear_model import LinearRegression
 
 
 from .workchain_G0W0_base import VaspDFTGWWorkChain
-from .workchain_G0W0_master import VaspG0W0CompleteWorkChain
 
 from aiida import load_profile
 load_profile()
@@ -99,9 +98,7 @@ class VaspMBPTKptsConvWorkChain(WorkChain):
             spec.outline(
                 cls.initialize,
                 while_(cls.monitor_convergence)(
-                    cls.prepare_run_DFTgr_NSP , 
-                    cls.prepare_run_DFTgr_SP  ,
-                    cls.prepare_run_DFT_G0W0  ,
+                     cls.prepare_run_MBPT,
                 ),
                 cls.elaborate_results
             
@@ -112,7 +109,7 @@ class VaspMBPTKptsConvWorkChain(WorkChain):
         
         self.ctx.control['kmesh_converged'] = None ; self.ctx.control['kdensity_converged'] = None ; 
         self.ctx.control['G0W0_gapType_toConverge'] = "G0W0_Dir"  #Can be "G0W0_Dir" , "G0W0_Ind" , "G0W0_Gam"
-        self.ctx.WC_NSP = [] ; self.ctx.WC_SP = [] ; self.ctx.WC_MBPT = []
+        self.ctx.WC_MBPT = []
 
             
         ##[ The Kpoint part ]
@@ -150,7 +147,7 @@ class VaspMBPTKptsConvWorkChain(WorkChain):
         if ('kMesh' in self.inputs.ns_kpoints) and ('startingValue' in self.inputs.ns_kpoints.kMesh) :
             kmesh_start    = self.inputs.ns_kpoints.kMesh.startingValue.get_list()
             kdensity_start = max( _get_kspacing_from_kmesh(self.inputs.structure.cell, kmesh_start) )
-            str_log = ("\n [Initializing K-points convergence]"+"\n > Starting k-mesh is specified by the user, using it as starting k-mesh")
+            str_log = ("\n [Initializing K-points convergence]"+"\n > Starting k-mesh is specified by the user ("+str(self.inputs.ns_kpoints.kMesh.startingValue.get_list())+") - using as starting k-mesh")
         else:
             # If kMesh is not specified, use kDensity.startingValue
             kdensity_start = max( self.inputs.ns_kpoints.kDensity.minimum_constraint.value , self.inputs.ns_kpoints.kDensity.startingValue.value )
@@ -194,93 +191,50 @@ class VaspMBPTKptsConvWorkChain(WorkChain):
         str_log = str_log + ( "\n   > kdensity list: "+str(self.ctx.control['kdensity']) )
         self.report(str_log)
 
-                                     
-    def prepare_run_DFTgr_NSP(self):
-        #The NSP is always run except the Case.2 - [MagMom is passed][referenceData is passed]	-> (Spin-polarized reading CHGCAR) 
-        #the NSP calculation is skipped; however for simplicity we always prepare the input for the NSP calculation and then we decide whether to launch it or not
-        #In this way we avoid to have two different branches in the code; the code preparation is very light so.
-        self.ctx.inputs_DFTgr_NSP = AttributeDict()
-        self.ctx.inputs_DFTgr_NSP.ns_option , self.ctx.inputs_DFTgr_NSP.ns_parameters , self.ctx.inputs_DFTgr_NSP.ns_reference = AttributeDict() , AttributeDict() , AttributeDict()
+
+
+    def prepare_run_MBPT(self):
+        # Build inputs for the base workchain
+        self.ctx.inputs_G0W0base = AttributeDict()
+        self.ctx.inputs_G0W0base.ns_option , self.ctx.inputs_G0W0base.ns_parameters , self.ctx.inputs_G0W0base.ns_reference = AttributeDict() , AttributeDict() , AttributeDict()
         #self.ctx.inputs_DFTgr_NSP.update(self.exposed_inputs(self._next_workchain))
-        self.ctx.inputs_DFTgr_NSP.update(self.exposed_inputs(VaspDFTGWWorkChain))
-        self.ctx.inputs_DFTgr_NSP.clean_workdir = Bool(False)            
-        self.ctx.inputs_DFTgr_NSP.potential_family  = self.inputs.potential_family
-        self.ctx.inputs_DFTgr_NSP.potential_mapping = self.inputs.potential_mapping
-        self.ctx.inputs_DFTgr_NSP.ns_option.run_G0W0 = Bool(False)
-        
+        self.ctx.inputs_G0W0base.update(self.exposed_inputs(VaspDFTGWWorkChain))
+        self.ctx.inputs_G0W0base.clean_workdir = Bool(False)            
+        self.ctx.inputs_G0W0base.potential_family  = self.inputs.potential_family
+        self.ctx.inputs_G0W0base.potential_mapping = self.inputs.potential_mapping
+        self.ctx.inputs_G0W0base.ns_option.run_1DFTgr       = Bool(True)
+        self.ctx.inputs_G0W0base.ns_option.run_2DFTvo_3G0W0 = Bool(True)
+
         #Finally, kpoint related stuff        
-        self.ctx.inputs_DFTgr_NSP.kpoints =DataFactory('core.array.kpoints')()
-        self.ctx.inputs_DFTgr_NSP.kpoints.set_kpoints_mesh(  self.ctx.control['kmesh'][self.ctx.control.iteration_counter] )
-                   
-        if  ("ns_reference" in self.inputs) and ("DFTgr_RemoteData" in self.inputs["ns_reference"]):
-            #We always add the possibility to restart from a given DFT calculation when it is passed; in the  Case.2 - [MagMom is passed][referenceData is passed]	-> (Spin-polarized reading CHGCAR) 
-            #In the Case 2 where self.inputs.ns_reference.DFTgr_RemoteData is passed but NSP is not lauched - that is not controlled here, but the NSP is not lauched later.
-            self.ctx.inputs_DFTgr_NSP.ns_reference.DFTgr_RemoteData  =  self.inputs.ns_reference.DFTgr_RemoteData
-        
+        self.ctx.inputs_G0W0base.kpoints = DataFactory('core.array.kpoints')()
+        self.ctx.inputs_G0W0base.kpoints.set_kpoints_mesh(  self.ctx.control['kmesh'][self.ctx.control.iteration_counter] )
+           
+        # Reference WAVECAR/CHGCAR if user provided (optional)
+        if ('ns_reference' in self.inputs) and ('DFTgr_RemoteData' in self.inputs['ns_reference']):
+            self.ctx.inputs_G0W0base.ns_reference = AttributeDict()
+            self.ctx.inputs_G0W0base.ns_reference.DFTgr_RemoteData = self.inputs.ns_reference.DFTgr_RemoteData
+
+
+        # ns_parameters (copy through what you use)
+        if 'encut' in self.inputs.ns_parameters:        self.ctx.inputs_G0W0base.ns_parameters.encut = self.inputs.ns_parameters.encut
+        if 'nbands' in self.inputs.ns_parameters:       self.ctx.inputs_G0W0base.ns_parameters.nbands = self.inputs.ns_parameters.nbands
+        if 'nomega' in self.inputs.ns_parameters:       self.ctx.inputs_G0W0base.ns_parameters.nomega = self.inputs.ns_parameters.nomega
+        if 'encut_chi' in self.inputs.ns_parameters:    self.ctx.inputs_G0W0base.ns_parameters.encut_chi = self.inputs.ns_parameters.encut_chi
+        elif 'encut' in self.inputs.ns_parameters:  
+            # sensible default if not provided
+            self.ctx.inputs_G0W0base.ns_parameters.encut_chi = Float(self.inputs.ns_parameters.encut.value * 0.5)
+        # Spin-polarization if requested
+        if 'magnetic_moment_onsite' in self.inputs.ns_parameters:
+            self.ctx.inputs_G0W0base.ns_parameters.magnetic_moment_onsite = self.inputs.ns_parameters.magnetic_moment_onsite
+
+                                     
         self.report("\n [wkc_KptsConv][Preliminary DFT-GroundState calc - NonSpinPolarized - From scratch]\n  > Lauching DFT(NonSpinPolarized) using workchain_DFT_G0W0 on k-mesh "
                             +np.array2string(   self.ctx.control['kmesh'][self.ctx.control.iteration_counter] , separator=" , ").replace('\n', '')+"\n")  
-        runningWC_DFT_NSP = self.submit(VaspDFTGWWorkChain , **self.ctx.inputs_DFTgr_NSP) 
-        return ToContext(WC_NSP=append_(runningWC_DFT_NSP))
-
-
-            
-
-    def prepare_run_DFTgr_SP(self): 
-        if ("magnetic_moment_onsite" in self.inputs["ns_parameters"]): 
-            self.ctx.inputs_DFTgr_SP = deepcopy( self.ctx.inputs_DFTgr_NSP )
-            self.ctx.inputs_DFTgr_SP.ns_parameters.magnetic_moment_onsite = self.inputs.ns_parameters.magnetic_moment_onsite 
-
-            assert (len(self.ctx.WC_NSP) > 0) , "In prepare_run_DFTgr_SP - should start from a previous NSP calculation, but self.ctx.WC_NSP is empty; this is a bug, please report it" 
-            if (len(self.ctx.WC_NSP) > 0) and self.ctx.WC_NSP[-1].is_finished_ok:    
-                self.ctx.inputs_DFTgr_SP.ns_reference.DFTgr_RemoteData  = self.ctx.WC_NSP[-1].outputs.RemoteData_DFT
-            else:
-                return self.exit_codes.NO_STARTINGDFT_FOR_SP
-            
-            self.report("\n [wkc_KptsConv][Preliminary DFT-GroundState calc - SpinPolarized]\n               > Lauching DFT(SpinPolarized) using VaspDFTGWWorkChain on k-mesh "
-                        +np.array2string(self.ctx.control['kmesh'][0] , separator=" , ").replace('\n', '')+"\n")
-            runningWC_DFT_SP = self.submit(VaspDFTGWWorkChain , **self.ctx.inputs_DFTgr_SP) 
-            return ToContext(WC_SP=append_(runningWC_DFT_SP))   
-        else:
-            self.ctx.WC_SP = []
-
-
-    def prepare_run_DFT_G0W0(self):
-        if ("magnetic_moment_onsite" in self.inputs["ns_parameters"])       and len(self.ctx.WC_SP) > 0:  #a SP calculation is needed and available
-            DFT_nodes_to_use_asStarting = self.ctx.WC_SP
-        elif not ("magnetic_moment_onsite" in self.inputs["ns_parameters"]) and len(self.ctx.WC_NSP) > 0: #a NSP calculation is needed and available
-            DFT_nodes_to_use_asStarting = self.ctx.WC_NSP
-        else:
-            self.report("ERROR: No suitable starting DFT calculation found for G0W0. Either NSP or SP DFT must be available.")
-            return self.exit_codes.NO_STARTINGDFT_FOR_GW
-        
-        self.ctx.input_DFTG0W0 = AttributeDict()
-        self.ctx.input_DFTG0W0.ns_option , self.ctx.input_DFTG0W0.ns_parameters , self.ctx.input_DFTG0W0.ns_reference = AttributeDict() , AttributeDict() , AttributeDict()
-        self.ctx.input_DFTG0W0.update(self.exposed_inputs( VaspDFTGWWorkChain ))
-        #self.ctx.input_DFTG0W0.update(self.exposed_inputs(self._next_workchain))
-        self.ctx.input_DFTG0W0.potential_family  = self.inputs.potential_family
-        self.ctx.input_DFTG0W0.potential_mapping = self.inputs.potential_mapping
-        self.ctx.input_DFTG0W0.ns_option.run_G0W0 = Bool(True)
-               
-        self.ctx.input_DFTG0W0.kpoints = DataFactory('core.array.kpoints')()
-        self.ctx.input_DFTG0W0.kpoints.set_kpoints_mesh(   self.ctx.control['kmesh'][self.ctx.control.iteration_counter] )
-        
-        self.ctx.input_DFTG0W0.ns_parameters['encut']  = self.inputs.ns_parameters['encut']
-        self.ctx.input_DFTG0W0.ns_parameters['nbands'] = self.inputs.ns_parameters['nbands']  
-        self.ctx.input_DFTG0W0.ns_parameters['nomega'] = self.inputs.ns_parameters['nomega']
-        self.ctx.input_DFTG0W0.ns_parameters['encut_chi'] = Float( self.ctx.input_DFTG0W0.ns_parameters['encut'].value * 0.50 )
-        
-        if ("magnetic_moment_onsite" in self.inputs["ns_parameters"]):
-            self.ctx.input_DFTG0W0.ns_parameters.magnetic_moment_onsite = DFT_nodes_to_use_asStarting[-1].inputs.ns_parameters.magnetic_moment_onsite
-            #self.ctx.input_DFTG0W0.ns_parameters.magnetic_moment_onsite = self.inputs.ns_parameters.magnetic_moment_onsite 
+        running_G0W0base = self.submit(VaspDFTGWWorkChain , **self.ctx.inputs_G0W0base) 
+        return ToContext(WC_MBPT=append_(running_G0W0base))
          
-        self.ctx.input_DFTG0W0.ns_reference.DFTgr_RemoteData =  DFT_nodes_to_use_asStarting[-1].outputs.RemoteData_DFT
-        
-        runningWC_G0W0 = self.submit(VaspDFTGWWorkChain , **self.ctx.input_DFTG0W0) 
 
-        self.report("\n [wkc_KptsConv] Launching VaspDFTGWWorkChain pk="+str(runningWC_G0W0.pk)+" on k-mesh "
-                    +np.array2string(self.ctx.control['kmesh'][self.ctx.control.iteration_counter] , separator=" , ").replace('\n', '')+"\n")
-        return ToContext(WC_G0W0=append_(runningWC_G0W0))       
-    
+
     
     
     
@@ -305,7 +259,7 @@ class VaspMBPTKptsConvWorkChain(WorkChain):
                 str_log = str_log + ("\n  > Not enough calculations to perform convergence check; launching next k-mesh calculation.");  self.report(str_log)
                 self.ctx.control.iteration_counter += 1
                 if self.ctx.control.iteration_counter >= len(self.ctx.control['kmesh']):
-                    self.report("\n  > Reached maximum number of k-meshes to be tested; convergence not found.")
+                    self.report("\n  > Reached maximum number of k-meshes to be tested; convergence not found.\n")
                     return self.exit_codes.CONVERGENCE_NOT_FOUND    
                 return True
             
@@ -313,7 +267,7 @@ class VaspMBPTKptsConvWorkChain(WorkChain):
             thr = self.inputs.ns_kpoints.convergence_threshold.value
             gap_type = self.ctx.control.get('G0W0_gapType_toConverge', 'G0W0_Dir')  # default to direct gap
             
-            WF_G0W0_gaps = [ wc.outputs.gaps.get_dict() for wc in self.ctx.WC_G0W0 ]
+            WF_G0W0_gaps = [ wc.outputs.gaps.get_dict() for wc in self.ctx.WC_MBPT ]
             WF_G0W0_gaps_toCompare = {} ; delta_gap = {}
             WF_G0W0_gaps_toCompare['spinUp'] = [ gaps['spinUp'][ gap_type ]  for gaps in WF_G0W0_gaps ]
             str_log = str_log + ("\n  > G0W0 gaps to be compared - SpinUp: " + str(WF_G0W0_gaps_toCompare["spinUp"]) )
@@ -327,23 +281,23 @@ class VaspMBPTKptsConvWorkChain(WorkChain):
                 
             if ('magnetic_moment_onsite' in self.inputs['ns_parameters']):  
                 flag_is_converged = ( delta_gap['spinUp'] < thr ) and ( delta_gap['spinDw'] < thr )
-                str_log = str_log + ("\n  > Delta (SpinUp) among last two data points: " + str( np.round(delta_gap['spinUp'],decimals=4) ) + "- threshold: " + str(thr) )
-                str_log = str_log + ("\n  > Delta (SpinDw) among last two data points: " + str( np.round(delta_gap['spinDw'],decimals=4) ) + "- threshold: " + str(thr) )
+                str_log = str_log + ("\n  > (Delta (SpinUp) among last two data points): " + str( np.round(delta_gap['spinUp'],decimals=4) ) + " - threshold: " + str(thr) )
+                str_log = str_log + ("\n  > (Delta (SpinUp) among last two data points): " + str( np.round(delta_gap['spinDw'],decimals=4) ) + " - threshold: " + str(thr) )
             else:
                 flag_is_converged = ( delta_gap['spinUp'] < thr )
-                str_log = str_log + ("\n  > Delta (SpinUp) among last two data points: " + str( np.round(delta_gap['spinUp'],decimals=4) ) + "- threshold: " + str(thr) )
+                str_log = str_log + ("\n  > (Delta (SpinUp) among last two data points): " + str( np.round(delta_gap['spinUp'],decimals=4) ) + " - threshold: " + str(thr) )
             str_log = str_log + ("  --> Convergence is reached?: " + str(flag_is_converged) )
             
             
             if flag_is_converged:
-                str_log = str_log + ("\n  --> K-Convergence reached with k-mesh: " + np.array2string( self.ctx.control['kmesh'][self.ctx.control.iteration_counter] , separator=" ").replace('\n', '')) 
+                str_log = str_log + ("\n  --> K-Convergence reached with k-mesh: " + np.array2string( self.ctx.control['kmesh'][self.ctx.control.iteration_counter] , separator=" ").replace('\n', '')+"\n") 
                 self.report(str_log)
                 self.ctx.control['kmesh_converged']   = DataFactory('core.array.kpoints')()
                 self.ctx.control['kmesh_converged'].set_kpoints_mesh(   self.ctx.control['kmesh'][self.ctx.control.iteration_counter] )
 
                 return False
             else:
-                str_log = str_log + ("\n  > K-point convergence NOT reached; launching next k-mesh calculation.")
+                str_log = str_log + ("\n  > K-point convergence NOT reached; launching next k-mesh calculation.\n")
                 self.report(str_log)
                 self.ctx.control.iteration_counter += 1
                 if self.ctx.control.iteration_counter >= len(self.ctx.control['kmesh']):
@@ -464,8 +418,8 @@ class VaspMBPTKptsConvWorkChain(WorkChain):
             #Control of convergence starts after completions of first three calcs.
             #remember that the counter is increased as the last thing before returning, and AFTER this check
             #thus before the conv.check of the 3° iteration of the cycle is=1; and after the 3°run is =2
-            GWgap_Gradient         = _compute_GWgap_gradient( self.inputs     , self.ctx.control , self.ctx.WC_G0W0 )
-            GWgap_Extrapolated , _ = _compute_GWgap_extrapolated( self.inputs , self.ctx.control , self.ctx.WC_G0W0 )
+            GWgap_Gradient         = _compute_GWgap_gradient( self.inputs     , self.ctx.control , self.ctx.WC_MBPT )
+            GWgap_Extrapolated , _ = _compute_GWgap_extrapolated( self.inputs , self.ctx.control , self.ctx.WC_MBPT )
             
      
             ##[Check - 2] for convergence - using gradient
@@ -535,7 +489,7 @@ class VaspMBPTKptsConvWorkChain(WorkChain):
         node_kpoints = DataFactory('core.array.kpoints')()
         node_kpoints.set_kpoints_mesh(kmesh_final)
         node_kpoints.store()
-        self.out('final_kMesh', node_kpoints )
+        self.out('kmesh_converged', node_kpoints )
     
         #kdensity = _get_kspacing_from_kmesh(self.inputs.structure.cell, kmesh_final)  # list of 3 floats
        # self.out('final_kDensity', Float(float(np.mean(kdensity))))

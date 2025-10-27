@@ -16,7 +16,7 @@ from .workchain_G0W0_ExtrapolationScheme import VaspG0W0BasisExtrWorkChain , inp
 from .workchain_G0W0_base import VaspDFTGWWorkChain
 from .workchain_G0W0_kptsConv import VaspMBPTKptsConvWorkChain
 from .utils_calcfunctions import input_magnetic_moment_tomagmom 
-
+from .utils_calcfunctions import get_closest_EncutNband_multiple, get_EncutNbandFitParams_completeBasis_quadratic
 
 
 
@@ -256,13 +256,41 @@ class VaspG0W0CompleteWorkChain(WorkChain):
         # [param -1] To keep calculations lighter, we use NOMEGA=1 for the kpts-conv
         kconv_inputs.ns_parameters.nomega = Int(1)  # explicit as requested
         # [param -2] Define encut as 0.80 * max( ENMAXarray ) ; 0.80 in order to keep the calculations for the G0W0 more lighter.
-        try:
-            if ('finishedWC_DFTgr_SP' in self.ctx):     DFTgr_node = self.ctx.finishedWC_DFTgr_SP[-1]
-            elif ('finishedWC_DFTgr_NSP' in self.ctx):  DFTgr_node = self.ctx.finishedWC_DFTgr_NSP[-1]
-            arr =   DFTgr_node.outputs.ENMAXarray.get_array('ENMAXarray')
-            encut_from_enmax = float(np.max(arr))
-            kconv_inputs.ns_parameters.encut = Float(encut_from_enmax)
-        except Exception: pass
+        
+        if ('finishedWC_DFTgr_SP' in self.ctx):     DFTgr_node = self.ctx.finishedWC_DFTgr_SP[-1]
+        elif ('finishedWC_DFTgr_NSP' in self.ctx):  DFTgr_node = self.ctx.finishedWC_DFTgr_NSP[-1]
+        #We do not want to use encut=enmax but a lower one
+        #It's known that the k-points and (encut-nbands) convergences for GWs are not interdependent
+        #In the sense that the converged k-point.mesh does not depend from the encut/nbands used for studying the convergence
+        #To be more computationally efficient we therefore lower the encut/nbands          
+        DFTgr_ENMAXarr = DFTgr_node.outputs.ENMAXarray.get_array('ENMAXarray')
+        DFTgr_ENMAXmax = float( np.max(DFTgr_ENMAXarr) )
+        fraction_enmax_used_asencut = 0.75
+        kconv_inputs.ns_parameters.encut = Float( fraction_enmax_used_asencut*DFTgr_ENMAXmax )
+            
+            
+        DFTgr_NGarray  = DFTgr_node.outputs.NGarray
+        DFTgr_kpts     = DFTgr_node.outputs.kpoints
+        DFTgr_cell     = DFTgr_node.inputs.structure
+        #Now Reconstruct NBANDS from this encut value using the complete-basis constraint - Using same logic as in extrapolation:
+        #in VASP NBANDS should be a multiple of GW_mpithrd_num - otherwise an error is passed
+        GW_mpithrd_num  = Int (self.inputs.options.get_dict()['resources']['num_machines'] *
+                               self.inputs.options.get_dict()['resources']['num_mpiprocs_per_machine'] / self.inputs.ns_parallelization.kpar.value )
+        params_fit = get_EncutNbandFitParams_completeBasis_quadratic( DFTgr_kpts, DFTgr_cell, DFTgr_NGarray, Float(DFTgr_ENMAXmax) )
+            
+        nbands_entry, log = get_closest_EncutNband_multiple(
+                DFTgr_kpts, DFTgr_cell, DFTgr_NGarray,
+                Float(DFTgr_ENMAXmax), params_fit,
+                GW_mpithrd_num,
+                kconv_inputs.ns_parameters.encut, 
+                Str("encut"),flag_twoSidesRounding=Bool(True)  )
+        nbands_value = int( nbands_entry['nbands'] )
+        #kconv_inputs.ns_parameters.nbands = Int( nbands_value )
+        kconv_inputs.ns_parameters.nbands = Int( 40 )
+        
+        self.report(f" [KptsConv] Complete-basis nbands reconstructed: {nbands_value} for encut { kconv_inputs.ns_parameters.encut.value}")
+                        
+
         # [param -3] And the usual magnetic_moments
         if 'magnetic_moment_onsite' in self.inputs.ns_parameters:
             kconv_inputs.ns_parameters.magnetic_moment_onsite = self.inputs.ns_parameters.magnetic_moment_onsite

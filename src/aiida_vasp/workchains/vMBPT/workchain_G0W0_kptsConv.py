@@ -80,8 +80,6 @@ class VaspMBPTKptsConvWorkChain(WorkChain):
             spec.input( 'ns_kpoints.kDensity.maxValue'           , valid_type=Float , required=False , default=lambda:Float(0.1), help="Maximum value for the k-point density convergence." ) 
             spec.input( 'ns_kpoints.kDensity.step'               , valid_type=Float , required=False , default=lambda:Float(0.05), help="Step size for the k-point density convergence." ) 
 
-            spec.input('ns_opt_converge.converge_G0W0gap' , valid_type=Bool , required=False , default=lambda:Bool(True)  )
-            spec.input('ns_opt_converge.converge_mBSEgap' , valid_type=Bool , required=False , default=lambda:Bool(False) )
             spec.input('ns_opt_converge.use_Gradient'     , valid_type=Bool , required=False , default=lambda:Bool(True)  )
             
             #spec.output( 'final_kDensity' , valid_type= List )
@@ -98,10 +96,9 @@ class VaspMBPTKptsConvWorkChain(WorkChain):
             spec.outline(
                 cls.initialize,
                 while_(cls.monitor_convergence)(
-                     cls.prepare_run_MBPT,
+                     cls.prepare_run_G0W0,
                 ),
-                cls.elaborate_results
-            
+                cls.elaborate_results     
             )
         
     def initialize(self):
@@ -191,9 +188,7 @@ class VaspMBPTKptsConvWorkChain(WorkChain):
         str_log = str_log + ( "\n   > kdensity list: "+str(self.ctx.control['kdensity']) )
         self.report(str_log)
 
-
-
-    def prepare_run_MBPT(self):
+    def prepare_run_G0W0(self):
         # Build inputs for the base workchain
         self.ctx.inputs_G0W0base = AttributeDict()
         self.ctx.inputs_G0W0base.ns_option , self.ctx.inputs_G0W0base.ns_parameters , self.ctx.inputs_G0W0base.ns_reference = AttributeDict() , AttributeDict() , AttributeDict()
@@ -233,30 +228,24 @@ class VaspMBPTKptsConvWorkChain(WorkChain):
         running_G0W0base = self.submit(VaspDFTGWWorkChain , **self.ctx.inputs_G0W0base) 
         return ToContext(WC_MBPT=append_(running_G0W0base))
          
-
-
-    
-    
-    
     def monitor_convergence(self): 
         # #counter starts at -1 and changes BEFORE a calc is launched
         # #1°control: counter starts=-1  -> [conv. check] -> increased to 0 -> launched 1° G0W0/mBSE
         # #2°control: counter starts= 0  -> [conv. check] -> increased to 1 -> launched 2° G0W0/mBSE
         # #3°control: counter starts= 1  -> [conv. check] -> increased to 2 -> launched 3° G0W0/mBSE
 
-
         #Initialize Initialize
         flag_is_converged= False
-                
+        
         str_log =("\n [wkc_KptsConv][monitor_convergence] iteration_counter="+str(self.ctx.control.iteration_counter) + " before launching MBPT calculation num="+str(self.ctx.control.iteration_counter+1)+
-                                "\n  Remember : iteration_counter starts at (i-1)th  -> [conv. check] -> increased to i-th -> launched i-th G0W0/mBSE"
+                  "\n  Remember : iteration_counter starts at (i-1)th  -> [conv. check] -> increased to i-th -> launched i-th G0W0/mBSE"
                                 )
                
         if self.ctx.control['control_way'] == 'kmesh':
             #[K-mesh only Check - 1]  Need two calculations to compare last-two gaps.
             # Consider that the counter is increased BEFORE launching the calculation, and starts at -1; so when counter=0 here we are at the conv.check of the second calculation.
             if self.ctx.control.iteration_counter <= 0:
-                str_log = str_log + ("\n  > Not enough calculations to perform convergence check; launching next k-mesh calculation.");  self.report(str_log)
+                str_log = str_log + ("\n  > Not enough calculations to perform convergence check; launching next k-mesh calculation.\n");  self.report(str_log)
                 self.ctx.control.iteration_counter += 1
                 if self.ctx.control.iteration_counter >= len(self.ctx.control['kmesh']):
                     self.report("\n  > Reached maximum number of k-meshes to be tested; convergence not found.\n")
@@ -304,9 +293,6 @@ class VaspMBPTKptsConvWorkChain(WorkChain):
                     self.report("\n  > Reached maximum number of k-meshes to be tested; convergence not found.")
                     return self.exit_codes.CONVERGENCE_NOT_FOUND
                 return True
-
-
-
 
         if self.ctx.control['control_way'] == 'kdensity':
             # #counter starts at -1 ; it's increased AFTER the convergence check + but BEFORE launching the calculation
@@ -478,11 +464,6 @@ class VaspMBPTKptsConvWorkChain(WorkChain):
             else:
                 return self.exit_codes.CONVERGENCE_NOT_FOUND
 
-
-
-    
-    
-    
             
     def elaborate_results(self):
         kmesh_final = np.array(self.ctx.control['kmesh'][self.ctx.control.iteration_counter], dtype=int)

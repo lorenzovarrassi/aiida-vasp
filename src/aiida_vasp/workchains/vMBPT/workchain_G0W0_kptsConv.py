@@ -1,10 +1,9 @@
 import numpy as np
 from copy import deepcopy
 import itertools
-from aiida import orm
-from aiida.orm import Code, Int, Float, Str, Dict, Bool , List , RemoteData , ArrayData , BandsData , XyData
+from aiida.orm import Int, Float, Dict, Bool , List , RemoteData , KpointsData
 from aiida.plugins import DataFactory, WorkflowFactory
-from aiida.engine  import WorkChain, calcfunction , ToContext , append_ , submit, while_ , if_ , run
+from aiida.engine  import WorkChain, ToContext , append_, submit, while_ 
 from aiida.common.extendeddicts  import AttributeDict
 from sklearn.preprocessing import PolynomialFeatures
 from sklearn.linear_model import LinearRegression
@@ -39,15 +38,15 @@ def _get_kmesh_from_kdensity(latVec , KSPACING , flag_roundInsteadCeil=True ):
         #  For example, for rec_cell_norm = [0.319, 0.319, 0.319] :    
         #  KSPACING = 0.5 -> array([4.0084, 4.0084, 4.0084])
         #  KSPACING = 0.3 -> array([6.6807, 6.6807, 6.6807])
-        Kmesh_ideal_fractional = np.array(rec_cell_norm) * 2*np.pi / KSPACING
+        kmesh_ideal_fractional = np.array(rec_cell_norm) * 2*np.pi / KSPACING
 
-        if flag_roundInsteadCeil:   Kmesh = [ max(1.0,np.round(k)) for k in Kmesh_ideal_fractional ]
-        else:                       Kmesh = np.ceil( Kmesh_ideal_fractional )
-        Kmesh = np.array( Kmesh ).astype(int)
-        return Kmesh
+        if flag_roundInsteadCeil:   kmesh = [ max(1.0,np.round(k)) for k in kmesh_ideal_fractional ]
+        else:                       kmesh = np.ceil( kmesh_ideal_fractional )
+        kmesh = np.array( kmesh ).astype(int)
+        return kmesh
 
 def _get_kspacing_from_kmesh(latVec, kmesh): 
-        #k-mesh = 2pi * |bi|/ k-density  ->
+        #k-mesh = 2pi * |bi|/ k-density  ->DataFactory('core.array.kpoints')
         kmesh_tmp = deepcopy( kmesh )
         latVec = np.array( latVec )
         recLatVec= np.zeros((3,3))
@@ -61,33 +60,30 @@ def _get_kspacing_from_kmesh(latVec, kmesh):
         
 
 
-class VaspMBPTKptsConvWorkChain(WorkChain):
+class VaspG0W0KptsConvWorkChain(WorkChain):
     _next_workchain = WorkflowFactory('vasp.vasp')
 
     @classmethod
     def define(cls, spec):
-            super(VaspMBPTKptsConvWorkChain , cls).define(spec)
+            super(VaspG0W0KptsConvWorkChain , cls).define(spec)
 
             spec.expose_inputs(cls._next_workchain     , exclude=('kpoints','parameters','settings','potential_family','potential_mapping')) 
             spec.expose_inputs(VaspDFTGWWorkChain      , exclude=('kpoints','ns_reference') ) 
              
             spec.input( 'ns_kpoints.convergence_threshold'       , valid_type=Float , required=False , default=lambda:Float(0.1), help="minimum converge value in eV" ) 
-            spec.input( 'ns_kpoints.kMesh.startingValue'         , valid_type=List  , required=False , help="Starting l-mesh for the k-point density convergence If not specified, a k-mesh based on the density kDensity.startingValue will be used" )
-            spec.input( 'ns_kpoints.kMesh.maxValue'              , valid_type=List  , required=False , help="Maximum k-mesh for the k-point density convergence. If not specified, a k-mesh based on the density kDensity.maxValue will be used" ) 
-            spec.input( 'ns_kpoints.kMesh.step'                  , valid_type=List  , required=False , default=lambda:List([1,1,1]), help="Step size for the k-point mesh." ) 
-            spec.input( 'ns_kpoints.kDensity.minimum_constraint' , valid_type=Float , required=False , default=lambda:Float(0.4), help="Constraint on the minimum k-point density - that converged k-mesh must guarantee." )
-            spec.input( 'ns_kpoints.kDensity.startingValue'      , valid_type=Float , required=False , default=lambda:Float(0.4), help="Starting value for the k-point density convergence." ) 
-            spec.input( 'ns_kpoints.kDensity.maxValue'           , valid_type=Float , required=False , default=lambda:Float(0.1), help="Maximum value for the k-point density convergence." ) 
-            spec.input( 'ns_kpoints.kDensity.step'               , valid_type=Float , required=False , default=lambda:Float(0.05), help="Step size for the k-point density convergence." ) 
+            spec.input( 'ns_kpoints.kmesh.starting_mesh'         , valid_type= KpointsData , required=False , help="Starting k-mesh for the k-point density convergence If not specified, a k-mesh based on the density kdensity.starting_density will be used" )
+            spec.input( 'ns_kpoints.kmesh.max_mesh'              , valid_type= KpointsData , required=False , help="Maximum k-mesh for the k-point density convergence. If not specified, a k-mesh based on the density kdensity.max_density will be used" ) 
+            kpoints_step_defaultvalue = DataFactory('core.array.kpoints')() ; kpoints_step_defaultvalue.set_kpoints_mesh([1,1,1])
+            spec.input( 'ns_kpoints.kmesh.step'                  , valid_type= KpointsData , required=False , default=lambda:kpoints_step_defaultvalue, help="Step size for the k-point mesh." ) 
+            spec.input( 'ns_kpoints.kdensity.minimum_constraint' , valid_type=Float , required=False , default=lambda:Float(0.4), help="Constraint on the minimum k-point density - that converged k-mesh must guarantee." )
+            spec.input( 'ns_kpoints.kdensity.starting_density'   , valid_type=Float , required=False , default=lambda:Float(0.4), help="Starting value for the k-point density convergence." ) 
+            spec.input( 'ns_kpoints.kdensity.max_density'        , valid_type=Float , required=False , default=lambda:Float(0.1), help="Maximum value for the k-point density convergence." ) 
+            spec.input( 'ns_kpoints.kdensity.step'               , valid_type=Float , required=False , default=lambda:Float(0.05), help="Step size for the k-point density convergence." ) 
 
             spec.input('ns_opt_converge.use_Gradient'     , valid_type=Bool , required=False , default=lambda:Bool(True)  )
             
-            #spec.output( 'final_kDensity' , valid_type= List )
-            spec.output( 'kmesh_converged'    , valid_type= DataFactory('core.array.kpoints') , required=False)
+            spec.output( 'kmesh_converged' , valid_type= KpointsData , required=True)
             
-            spec.exit_code(402,'UNDEFINED_BEHAVIOUR',message="Something is wrong; the iteration of the k-point convergence returned no calc or internal consistency has been lost.")
-            spec.exit_code(403,'NO_STARTINGDFT_FOR_SP' , message="Spin-Polarized(SP) DFT should start either from NSP or Given DFT.")
-            spec.exit_code(403,'NO_STARTINGDFT_FOR_GW' , message="G0W0 should start either from NSP or SP DFT.") 
             spec.exit_code(404,'CONVERGENCE_NOT_FOUND' , message='Convergence has not been reached; please relax the threshold / increase the range studied / check the calculations.')
             
 
@@ -111,47 +107,43 @@ class VaspMBPTKptsConvWorkChain(WorkChain):
             
         ##[ The Kpoint part ]
         #There are two possible ways to control the convergence:
-        # 1) through the k-mesh : in this case, both the kmesh.startingValue and kmesh.maxValue of kMesh must be specified; only the step is optional (default=1)
-        # 2) through the k-point density : this case is activated only if BOTH kMesh.startingValue and kMesh.maxValue are NOT specified; 
+        # 1) through the k-mesh : in this case, both the kmesh.starting_mesh and kmesh.max_mesh of kmesh must be specified; only the step is optional (default=1)
+        # 2) through the k-point density : this case is activated only if BOTH kmesh.starting_mesh and kmesh.max_mesh are NOT specified; 
         #                                  and is more flexible, as there are no mandatory values, all values have a default values
         #    Two additional notes:
-        #    - if kmesh.startingValue is specified, and not kmesh.maxValue that kmesh is used as starting k-mesh, but the increase of the k-mesh is done through the k-point density 
+        #    - if kmesh.starting_mesh is specified, and not kmesh.max_mesh that kmesh is used as starting k-mesh, but the increase of the k-mesh is done through the k-point density 
         #      and not through the k-mesh step
-        #    - in this second case, the minimum_constraint of kDensity is always considered, i.e. the startingValue of kDensity is automatically increased if it is < minimum_constraint
+        #    - in this second case, the minimum_constraint of kdensity is always considered, i.e. the starting_mesh of kdensity is automatically increased if it is < minimum_constraint
   
         self.ctx.control.iteration_counter = -1
         self.ctx.control['control_way'] = ''  #can be 'kmesh' or 'kdensity' depending on how the convergence is controlled
         self.ctx.control['kmesh']       = [] #List of k-meshes to be tested
         self.ctx.control['kdensity']    = [] #List of kdensities to be tested
-        # self.ctx.control['Delta_k']     = [] #This will contain the difference between two consecutive k-point densities
-        # self.ctx.control['Delta_obj']   = AttributeDict() #obj stands for objective; This will contain the difference between two consecutive objective functions (i.e. G0W0 gap, mBSE gap)
-        # self.ctx.control.Delta_obj      = ( {'SpinUp':[]} if ('magnetic_moment_onsite' in self.inputs['ns_parameters'])   else {'SpinUp':{},'SpinDw':[]} )
-        
         
         ##[1]Now Let's check which of the two ways is used
-        if ('kMesh' in self.inputs.ns_kpoints) and ('startingValue' in self.inputs.ns_kpoints.kMesh) and ('maxValue' in self.inputs.ns_kpoints.kMesh):
+        if ('kmesh' in self.inputs.ns_kpoints) and ('starting_mesh' in self.inputs.ns_kpoints.kmesh) and ('maxValue' in self.inputs.ns_kpoints.kmesh):
             self.ctx.control['control_way'] = 'kmesh'
-            str_log = ("\n [Initializing K-points convergence]"+"\n > Both kmesh.startingValue and kmesh.maxValue are specified"+
+            str_log = ("\n [Initializing K-points convergence]"+"\n > Both kmesh.starting_mesh and kmesh.max_mesh are specified"+
                        "\n   -> Controlling k-point convergence through k-mesh."+
-                       "\n   > kMesh.startingValue: " + str(self.inputs.ns_kpoints.kMesh.startingValue.get_list())+
-                       "\n   > kMesh.maxValue: " + str(self.inputs.ns_kpoints.kMesh.maxValue.get_list()))
+                       "\n   > kmesh.starting_mesh: " + str(self.inputs.ns_kpoints.kmesh.starting_mesh.get_kpoints_mesh()[0] )+
+                       "\n   > kmesh.max_mesh: " + str(self.inputs.ns_kpoints.kmesh.max_mesh.get_kpoints_mesh()[0] ))
         else:
             self.ctx.control['control_way'] = 'kdensity'
-            str_log = ("\n [Initializing K-points convergence]"+"\n > BOTH kmesh.startingValue and kmesh.maxValue are NOT specified"+
+            str_log = ("\n [Initializing K-points convergence]"+"\n > BOTH kmesh.starting_mesh and kmesh.max_mesh are NOT specified"+
                        "\n   -> Controlling k-point convergence through k-point density.")
 
         #[2] Initialize the starting k-mesh
-        if ('kMesh' in self.inputs.ns_kpoints) and ('startingValue' in self.inputs.ns_kpoints.kMesh) :
-            kmesh_start    = self.inputs.ns_kpoints.kMesh.startingValue.get_list()
+        if ('kmesh' in self.inputs.ns_kpoints) and ('starting_mesh' in self.inputs.ns_kpoints.kmesh) :
+            kmesh_start    = self.inputs.ns_kpoints.kmesh.starting_mesh.get_kpoints_mesh()[0]
             kdensity_start = max( _get_kspacing_from_kmesh(self.inputs.structure.cell, kmesh_start) )
-            str_log = ("\n [Initializing K-points convergence]"+"\n > Starting k-mesh is specified by the user ("+str(self.inputs.ns_kpoints.kMesh.startingValue.get_list())+") - using as starting k-mesh")
+            str_log = ("\n [Initializing K-points convergence]"+"\n > Starting k-mesh is specified by the user ("+str(self.inputs.ns_kpoints.kmesh.starting_mesh.get_kpoints_mesh()[0] )+") - using as starting k-mesh")
         else:
-            # If kMesh is not specified, use kDensity.startingValue
-            kdensity_start = max( self.inputs.ns_kpoints.kDensity.minimum_constraint.value , self.inputs.ns_kpoints.kDensity.startingValue.value )
+            # If kmesh is not specified, use kdensity.starting_density
+            kdensity_start = max( self.inputs.ns_kpoints.kdensity.minimum_constraint.value , self.inputs.ns_kpoints.kdensity.starting_density.value )
             kmesh_start    = _get_kmesh_from_kdensity(self.inputs.structure.cell, kdensity_start)
-            str_log = ("\n [Initializing K-points convergence]"+"\n > Starting k-mesh is not specified by the user; using k-mesh corresponding to kDensity.startingValue")
-            str_log = str_log + ("\n   > kDensity.startingValue:      "+str(self.inputs.ns_kpoints.kDensity.startingValue.value)+" A^{-1}"+
-                                 "\n   > kDensity.minimum_constraint: "+str(self.inputs.ns_kpoints.kDensity.minimum_constraint.value)+" A^{-1}"+
+            str_log = ("\n [Initializing K-points convergence]"+"\n > Starting k-mesh is not specified by the user; using k-mesh corresponding to kdensity.starting_density")
+            str_log = str_log + ("\n   > kdensity.starting_density:   "+str(self.inputs.ns_kpoints.kdensity.starting_density.value)+" A^{-1}"+
+                                 "\n   > kdensity.minimum_constraint: "+str(self.inputs.ns_kpoints.kdensity.minimum_constraint.value)+" A^{-1}"+
                                  "\n   > corresponding to k-mesh:     "+np.array2string(kmesh_start , separator=" , ").replace('\n', '') )   
 
         
@@ -161,17 +153,17 @@ class VaspMBPTKptsConvWorkChain(WorkChain):
             self.ctx.control['kmesh'].append(    np.array(kmesh_start    , dtype=int)   )
             self.ctx.control['kdensity'].append( np.array(kdensity_start , dtype=float) )          
             #And generate the first candidate
-            tmp_new_candidate_kmesh =  self.ctx.control['kmesh'][-1] + np.array(self.inputs.ns_kpoints.kMesh.step.get_list() , dtype=int )
+            tmp_new_candidate_kmesh =  self.ctx.control['kmesh'][-1] + np.array(self.inputs.ns_kpoints.kmesh.step.get_kpoints_mesh()[0] , dtype=int )
             #Then check that candidate and generate new candidates
-            while np.any(tmp_new_candidate_kmesh < self.inputs.ns_kpoints.kMesh.maxValue.get_list()):
+            while np.any(tmp_new_candidate_kmesh < self.inputs.ns_kpoints.kmesh.max_mesh.get_kpoints_mesh()[0] ):
                  self.ctx.control['kmesh'].append(    np.array(tmp_new_candidate_kmesh , dtype=int)  )
                  self.ctx.control['kdensity'].append( np.array(_get_kspacing_from_kmesh(self.inputs.structure.cell, tmp_new_candidate_kmesh) , dtype=float) )              
-                 tmp_new_candidate_kmesh =  self.ctx.control['kmesh'][-1] + np.array(self.inputs.ns_kpoints.kMesh.step.get_list() , dtype=int )
+                 tmp_new_candidate_kmesh =  self.ctx.control['kmesh'][-1] + np.array(self.inputs.ns_kpoints.kmesh.step.get_kpoints_mesh()[0] , dtype=int )
                 
         elif self.ctx.control['control_way'] == 'kdensity':
-                 kdensity_step  = max( self.inputs['ns_kpoints']['kDensity']['step'].value , 0.0025)
-                 list_kdensity  = np.arange( min(kdensity_start , self.inputs['ns_kpoints']['kDensity']['maxValue'].value) , 
-                                             max(kdensity_start , self.inputs['ns_kpoints']['kDensity']['maxValue'].value) , 
+                 kdensity_step  = max( self.inputs['ns_kpoints']['kdensity']['step'].value , 0.0025)
+                 list_kdensity  = np.arange( min(kdensity_start , self.inputs['ns_kpoints']['kdensity']['maxValue'].value) , 
+                                             max(kdensity_start , self.inputs['ns_kpoints']['kdensity']['maxValue'].value) , 
                                              kdensity_step )
                  list_kmesh     = [_get_kmesh_from_kdensity(self.inputs.structure.cell , KS) for KS in list_kdensity]   
                  
@@ -234,80 +226,82 @@ class VaspMBPTKptsConvWorkChain(WorkChain):
         # #2°control: counter starts= 0  -> [conv. check] -> increased to 1 -> launched 2° G0W0/mBSE
         # #3°control: counter starts= 1  -> [conv. check] -> increased to 2 -> launched 3° G0W0/mBSE
 
-        #Initialize Initialize
-        flag_is_converged= False
+        #Initialize - Define a AttributeDict which will be used internally for this execution of the monitor_convergence
+        #It's used to group in a single dict the relevant flags/values.
+        self.ctx.monitor = AttributeDict()
+        self.ctx.monitor.flag_is_converged = False
+        self.ctx.monitor.control_way       = deepcopy( self.ctx.control['control_way'] )  # 'kmesh' or 'kdensity' 
+        self.ctx.monitor.total_num_kmesh = len(self.ctx.control['kmesh'])
+        self.ctx.monitor.thr      = self.inputs.ns_kpoints.convergence_threshold.value
+        self.ctx.monitor.gap_type = self.ctx.control.get('G0W0_gapType_toConverge', 'G0W0_Dir')  # default to direct gap
+        #Spin related variables
+        self.ctx.monitor.has_spin      = ('magnetic_moment_onsite' in self.inputs['ns_parameters'])
+        self.ctx.monitor.spin_channels = ['spinUp', 'spinDw'] if self.ctx.monitor.has_spin else ['spinUp']
+        #Define minimum number of calculations required before convergence checks
+        #The convergence based on k-mesh uses only 2 (the gaps from 2 consecutive k-meshes); the one based on k-density 3 for numerical stability.
+        self.ctx.monitor.min_num_calcs_required_for_conv = 2 if self.ctx.monitor.control_way == 'kmesh' else 3
         
-        str_log =("\n [wkc_KptsConv][monitor_convergence] iteration_counter="+str(self.ctx.control.iteration_counter) + " before launching MBPT calculation num="+str(self.ctx.control.iteration_counter+1)+
-                  "\n  Remember : iteration_counter starts at (i-1)th  -> [conv. check] -> increased to i-th -> launched i-th G0W0/mBSE"
-                                )
-               
-        if self.ctx.control['control_way'] == 'kmesh':
-            #[K-mesh only Check - 1]  Need two calculations to compare last-two gaps.
-            # Consider that the counter is increased BEFORE launching the calculation, and starts at -1; so when counter=0 here we are at the conv.check of the second calculation.
-            if self.ctx.control.iteration_counter <= 0:
-                str_log = str_log + ("\n  > Not enough calculations to perform convergence check; launching next k-mesh calculation.\n");  self.report(str_log)
-                self.ctx.control.iteration_counter += 1
-                if self.ctx.control.iteration_counter >= len(self.ctx.control['kmesh']):
-                    self.report("\n  > Reached maximum number of k-meshes to be tested; convergence not found.\n")
-                    return self.exit_codes.CONVERGENCE_NOT_FOUND    
-                return True
-            
-            #Let's define some variables to make the following less verbose
-            thr = self.inputs.ns_kpoints.convergence_threshold.value
-            gap_type = self.ctx.control.get('G0W0_gapType_toConverge', 'G0W0_Dir')  # default to direct gap
-            
-            WF_G0W0_gaps = [ wc.outputs.gaps.get_dict() for wc in self.ctx.WC_MBPT ]
-            WF_G0W0_gaps_toCompare = {} ; delta_gap = {}
-            WF_G0W0_gaps_toCompare['spinUp'] = [ gaps['spinUp'][ gap_type ]  for gaps in WF_G0W0_gaps ]
-            str_log = str_log + ("\n  > G0W0 gaps to be compared - SpinUp: " + str(WF_G0W0_gaps_toCompare["spinUp"]) )
-            if ('magnetic_moment_onsite' in self.inputs['ns_parameters']):  
-                WF_G0W0_gaps_toCompare['spinDw'] = [ gaps['spinDw'][ gap_type ]  for gaps in WF_G0W0_gaps ]
-                str_log = str_log + ("\n  > G0W0 gaps to be  compared - SpinDw: " + str(WF_G0W0_gaps_toCompare["spinDw"]) )
+        #Initialize - Logging header
+        str_log = ( f"\n [wkc_KptsConv][monitor_convergence] iteration_counter={self.ctx.control.iteration_counter}"
+                    f" before launching MBPT calculation num={self.ctx.control.iteration_counter+1}"
+                    "\n  Remember : iteration_counter starts at (i-1)th -> [conv. check] -> increased to i-th -> launched i-th G0W0/mBSE" )
+        
+        
+        ##[DECISION.BLOCK - 1] Early exit if not enough calculations yet
+        #Counter starts at -1 ; it's increased AFTER the convergence check + but BEFORE launching the calculation
+        #The counter increase is the LAST thing done before returning; thus:
+        #  1°control: counter starts=-1  -> [conv. check] -> increased to 0 -> launched 1° G0W0/mBSE
+        #  2°control: counter starts= 0  -> [conv. check] -> increased to 1 -> launched 2° G0W0/mBSE
+        #  3°control: counter starts= 1  -> [conv. check] -> increased to 2 -> launched 3° G0W0/mBSE
+        #  4°control: counter starts= 2  -> convergence is checked; if not changed to 3 -> launched 3° G0W0/mBSE
+        #  [..]
+        #We have N k-density to test:
+        #  N-1° control: counter starts= N-3 -> changed to N-2 -> launched N-1° G0W0/mBSE
+        #  N°   control: counter starts= N-2 -> changed to N-1 -> launched N° G0W0/mBSE
+        #  N+1° control  counter starts= N-1 -> exit with error  
+        #[k-mesh case] Consider that the counter is increased BEFORE launching the calculation, and starts at -1; 
+        #                so when counter=0 here we are at the conv.check of the second iteration, before launching the calculation
+        #                and we have therefore to return True in order to continue and perform the second calculation
+        #                at the beginning of the third iteration, (before the third calculation) self.ctx.control.iteration_counter will be == 1
+        #                and remember that self.ctx.monitor.min_num_calcs_required_for_conv = 2 for the k-mesh
+        if self.ctx.control.iteration_counter < (self.ctx.monitor.min_num_calcs_required_for_conv - 1):
+            str_log += ( f"\n  > Not enough calculations to perform convergence check "
+                         f"(need ≥{self.ctx.monitor.min_num_calcs_required_for_conv}); launching next {self.ctx.monitor.control_way}-based calculation.\n" )
+            self.report(str_log)   
+            self.ctx.control.iteration_counter += 1    
+            if self.ctx.control.iteration_counter >=  self.ctx.monitor.total_num_kmesh:  # Safety: check we have not exhausted available meshes
+                self.report(f"\n  > Reached maximum number of {self.ctx.monitor.control_way} points to be tested; convergence not found.\n")
+                return self.exit_codes.CONVERGENCE_NOT_FOUND
+            return True   # Continue launching next calculation
 
-            delta_gap['spinUp'] = abs( WF_G0W0_gaps_toCompare['spinUp'][-1] - WF_G0W0_gaps_toCompare['spinUp'][-2] )
-            if ('magnetic_moment_onsite' in self.inputs['ns_parameters']):  
-                delta_gap['spinDw'] = abs( WF_G0W0_gaps_toCompare['spinDw'][-1] - WF_G0W0_gaps_toCompare['spinDw'][-2] )
                 
-            if ('magnetic_moment_onsite' in self.inputs['ns_parameters']):  
-                flag_is_converged = ( delta_gap['spinUp'] < thr ) and ( delta_gap['spinDw'] < thr )
-                str_log = str_log + ("\n  > (Delta (SpinUp) among last two data points): " + str( np.round(delta_gap['spinUp'],decimals=4) ) + " - threshold: " + str(thr) )
-                str_log = str_log + ("\n  > (Delta (SpinUp) among last two data points): " + str( np.round(delta_gap['spinDw'],decimals=4) ) + " - threshold: " + str(thr) )
-            else:
-                flag_is_converged = ( delta_gap['spinUp'] < thr )
-                str_log = str_log + ("\n  > (Delta (SpinUp) among last two data points): " + str( np.round(delta_gap['spinUp'],decimals=4) ) + " - threshold: " + str(thr) )
-            str_log = str_log + ("  --> Convergence is reached?: " + str(flag_is_converged) )
-            
-            
-            if flag_is_converged:
-                str_log = str_log + ("\n  --> K-Convergence reached with k-mesh: " + np.array2string( self.ctx.control['kmesh'][self.ctx.control.iteration_counter] , separator=" ").replace('\n', '')+"\n") 
-                self.report(str_log)
-                self.ctx.control['kmesh_converged']   = DataFactory('core.array.kpoints')()
-                self.ctx.control['kmesh_converged'].set_kpoints_mesh(   self.ctx.control['kmesh'][self.ctx.control.iteration_counter] )
+                
+        #[DETERMINING self.ctx.monitor.flag_is_converged FOR THE kmesh control_way]
+        if self.ctx.monitor.control_way == 'kmesh':
+            #WF_G0W0_gaps = Dict with all gaps type, containing all spin orientation and typex (G0W0_Dir , G0W0_Ind , G0W0_Gam)
+            #WF_G0W0_gaps_toCompare = Dict with all spin orientatition BUT only the type we are interested, one among  (G0W0_Dir , G0W0_Ind , G0W0_Gam) and all spin
+            WF_G0W0_gaps_toCompare = {}
+            WF_G0W0_gaps = [wc.outputs.gaps.get_dict() for wc in self.ctx.WC_MBPT] 
+            for spin in self.ctx.monitor.spin_channels:
+                WF_G0W0_gaps_toCompare[spin] = [ gaps[spin][self.ctx.monitor.gap_type] for gaps in WF_G0W0_gaps ]
+                str_log += f"\n  > G0W0 gaps to be compared - {spin}: {WF_G0W0_gaps_toCompare[spin]}"
 
-                return False
+            #delta_gap contains the differences between consecutive values:
+            delta_gap = {spin: abs(values[-1] - values[-2]) for spin, values in WF_G0W0_gaps_toCompare.items()}            
+            
+            if self.ctx.monitor.has_spin:
+                str_log += ( f"\n  > Δ(SpinUp) among last two data points: {np.round(delta_gap['spinUp'],4)} eV  - threshold: {self.ctx.monitor.thr}"
+                             f"\n  > Δ(SpinDw) among last two data points: {np.round(delta_gap['spinDw'],4)} eV  - threshold: {self.ctx.monitor.thr}" )
+                self.ctx.monitor.flag_is_converged = delta_gap['spinUp'] < self.ctx.monitor.thr and delta_gap['spinDw'] < self.ctx.monitor.thr
             else:
-                str_log = str_log + ("\n  > K-point convergence NOT reached; launching next k-mesh calculation.\n")
-                self.report(str_log)
-                self.ctx.control.iteration_counter += 1
-                if self.ctx.control.iteration_counter >= len(self.ctx.control['kmesh']):
-                    self.report("\n  > Reached maximum number of k-meshes to be tested; convergence not found.")
-                    return self.exit_codes.CONVERGENCE_NOT_FOUND
-                return True
+                str_log += ( f"\n  > Δ(SpinUp) among last two data points: {np.round(delta_gap['spinUp'],4)} eV  - threshold: {self.ctx.monitor.thr}" )
+                self.ctx.monitor.flag_is_converged = delta_gap['spinUp'] < self.ctx.monitor.thr
+            # do NOT return here; let your unified final-control block decide: # if not self.ctx.monitor.flag_is_converged: increment + return True
+            # else: store kmesh_converged + return False
 
+
+        #[DETERMINING self.ctx.monitor.flag_is_converged FOR THE kdensity control_way]
         if self.ctx.control['control_way'] == 'kdensity':
-            # #counter starts at -1 ; it's increased AFTER the convergence check + but BEFORE launching the calculation
-            # #The counter increase is the LAST thing done before returgnin
-            # #1°control: counter starts=-1  -> [conv. check] -> increased to 0 -> launched 1° G0W0/mBSE
-            # #2°control: counter starts= 0  -> [conv. check] -> increased to 1 -> launched 2° G0W0/mBSE
-            # #3°control: counter starts= 1  -> [conv. check] -> increased to 2 -> launched 3° G0W0/mBSE
-            # #4°control: counter starts= 2  -> convergence is checked; if not changed to 3 -> launched 3° G0W0/mBSE
-            # #[..]
-            # #we have N k-density to test:
-            # #N-1° control: counter starts= N-3 -> changed to N-2 -> launched N-1° G0W0/mBSE
-            # #N°   control: counter starts= N-2 -> changed to N-1 -> launched N° G0W0/mBSE
-            # #N+1° control  counter starts= N-1 -> exit with error  
-    
-        
             #Let's define two helpers functions that will be used to compute the gradient and the extrapolated value of the GWgap
             def _compute_GWgap_gradient( inputs , control , WC_G0W0 , flag_debug = True):
                 #Initialize stuff
@@ -319,7 +313,7 @@ class VaspMBPTKptsConvWorkChain(WorkChain):
                     Delta_GWgap['spinDw']    = AttributeDict() 
                     Gradient_GWgap['spinDw'] = AttributeDict() 
                 
-                #Determine the Two deltas : on GWgap and on kspacaing
+                #Determine the Two deltas : on GWgap and on kspacing
                 Delta_consecutive_kdensity = np.array(self.ctx.control['kdensity'])[:-1] - np.array(self.ctx.control['kdensity'])[1:]
                 for idx in idx_toIterate:
                     Delta_GWgap[idx[0]][idx[1]]= ( np.array([G0W0istance.outputs.gaps.get_dict()[idx[0]][idx[1]]  for G0W0istance in WC_G0W0 ])[:-1] 
@@ -329,9 +323,9 @@ class VaspMBPTKptsConvWorkChain(WorkChain):
                     Gradient_GWgap[idx[0]][idx[1]] = []
                     for idx_delta in range(len(  Delta_GWgap[idx[0]][idx[1]]  )):
                             
-                        #Quick way would be Gradient_GWgap[idx[0]][idx[1]] = Delta_GWgap[idx[0]][idx[1]][idx_delta] / control.Delta_kDensity[idx_delta , :]
+                        #Quick way would be Gradient_GWgap[idx[0]][idx[1]] = Delta_GWgap[idx[0]][idx[1]][idx_delta] / control.Delta_kdensity[idx_delta , :]
                         #Problem of this expression: if two different (consecutive) k-meshes have same number of division along an axis; it always happens for 2D.
-                        #Thus we iterate over each direction of control.Delta_kDensity[idx_delta , :]; if Delta_kDensity is = 0 on a direction (i.e. same number of division along that direction)
+                        #Thus we iterate over each direction of control.Delta_kdensity[idx_delta , :]; if Delta_kdensity is = 0 on a direction (i.e. same number of division along that direction)
                         #We take care explicitly of that
                                             
                         tmp_Gradient_singleIteration = [0,0,0]
@@ -390,16 +384,8 @@ class VaspMBPTKptsConvWorkChain(WorkChain):
                 return GWgap_Extrapolated , GWgap_Extrapolated_coef
            
                         
-            #[K-Density only Check - 1] check that allows to return ; If we haven’t done ≥2 calcs yet, just advance beacause the checks uses three points for stability
-            if self.ctx.control.iteration_counter <= 1:
-                self.ctx.control.iteration_counter += 1
-                if self.ctx.control.iteration_counter >= len(self.ctx.control['kmesh']):
-                    self.report("\n  > Reached maximum number of k-meshes to be tested; convergence not found.")
-                    return self.exit_codes.CONVERGENCE_NOT_FOUND
-                
-                return True
-           
 
+           
             #This Block determines the flag_is_converged value; does not return anything ---------------------------------
             #Control of convergence starts after completions of first three calcs.
             #remember that the counter is increased as the last thing before returning, and AFTER this check
@@ -407,38 +393,30 @@ class VaspMBPTKptsConvWorkChain(WorkChain):
             GWgap_Gradient         = _compute_GWgap_gradient( self.inputs     , self.ctx.control , self.ctx.WC_MBPT )
             GWgap_Extrapolated , _ = _compute_GWgap_extrapolated( self.inputs , self.ctx.control , self.ctx.WC_MBPT )
             
-     
             ##[Check - 2] for convergence - using gradient
-            thr = self.inputs.ns_kpoints.convergence_threshold.value
-            flag_gapType = self.ctx.control['G0W0_gapType_toConverge']
-            if ('magnetic_moment_onsite' in self.inputs['ns_parameters']):
-                flag_is_converged_gradient = ((  np.all( np.abs( GWgap_Gradient['spinUp'][flag_gapType][-1]) <= thr ) ) and
-                                              (  np.all( np.abs( GWgap_Gradient['spinDw'][flag_gapType][-1]) <= thr ) ) )
+            if self.ctx.monitor.has_spin:
+                flag_is_converged_gradient = (  np.all(np.abs(GWgap_Gradient['spinUp'][self.ctx.monitor.gap_type][-1]) <= self.ctx.monitor.thr) and
+                                                np.all(np.abs(GWgap_Gradient['spinDw'][self.ctx.monitor.gap_type][-1]) <= self.ctx.monitor.thr)   )
             else:
-                flag_is_converged_gradient = np.all( np.abs( GWgap_Gradient['spinUp'][flag_gapType][-1]) <= thr )
-
-
-            ##[Check - 3]  for convergence - using deviation from extrapolation
-            GWgap_DataForExtr  = AttributeDict() 
-            if ('magnetic_moment_onsite' in self.inputs['ns_parameters']):  
-                GWgap_DataForExtr['spinUp'] , GWgap_DataForExtr['spinDw']  = AttributeDict() , AttributeDict() 
-                idx_toIterate = list( itertools.product( ['spinUp','spinDw'] , ['G0W0_Dir', 'G0W0_Ind','G0W0_Gam']) )
-            else: 
-                GWgap_DataForExtr['spinUp'] = AttributeDict() ;
-                idx_toIterate = list( itertools.product( ['spinUp'] , ['G0W0_Dir', 'G0W0_Ind','G0W0_Gam']) )
-            for idx in idx_toIterate:
-                GWgap_DataForExtr[idx[0]][idx[1]] = np.array([G0W0istance.outputs.gaps.get_dict()[idx[0]][idx[1]] for G0W0istance in self.ctx.WC_G0W0]) 
-                
-            if ('magnetic_moment_onsite' in self.inputs['ns_parameters']):
-                flag_is_converged_extr = (np.all(  np.abs( np.array(GWgap_Extrapolated["spinUp"][flag_gapType]) - np.array(GWgap_DataForExtr['spinUp'][flag_gapType][-1]) ) <= thr) and
-                                          np.all(  np.abs( np.array(GWgap_Extrapolated["spinDw"][flag_gapType]) - np.array(GWgap_DataForExtr['spinDw'][flag_gapType][-1]) ) <= thr) )
-            else:
-                flag_is_converged_extr =  np.all(  np.abs( np.array(GWgap_Extrapolated["spinUp"][flag_gapType]) - np.array(GWgap_DataForExtr['spinUp'][flag_gapType][-1]) ) <= thr)
+                flag_is_converged_gradient =    np.all(np.abs(GWgap_Gradient['spinUp'][self.ctx.monitor.gap_type][-1]) <= self.ctx.monitor.thr)
     
-            if self.inputs.ns_opt_converge.use_Gradient: flag_is_converged = flag_is_converged_gradient
-            else:                                        flag_is_converged = flag_is_converged_extr
+    
+            ##[Check - 2]  for convergence - using deviation from extrapolation
+            #Collect GW gaps for all spin/type combinations inside the GWgap_DataForExtr dict.
+            GWgap_DataForExtr  = AttributeDict() 
+            for spin in self.ctx.monitor.spin_channels:
+                GWgap_DataForExtr[spin] = AttributeDict()            
+                for gt in ['G0W0_Dir', 'G0W0_Ind', 'G0W0_Gam']:
+                    GWgap_DataForExtr[spin][gt] = np.array(  [wc.outputs.gaps.get_dict()[spin][gt] for wc in self.ctx.WC_MBPT]  )
+     
+            def _delta(GWgap_Extrapolated , spin , gap_type): 
+                return np.abs(np.array(GWgap_Extrapolated[spin][gap_type]) - np.array(GWgap_DataForExtr[spin][gap_type][-1]))
+            flag_is_converged_extr = all(np.all(_delta(GWgap_Extrapolated , spin , self.ctx.monitor.gap_type) <= self.ctx.monitor.thr) for spin in self.ctx.monitor.spin_channels)
+                
+            if self.inputs.ns_opt_converge.use_Gradient: self.ctx.monitor.flag_is_converged = flag_is_converged_gradient
+            else:                                        self.ctx.monitor.flag_is_converged = flag_is_converged_extr
                
-            self.report("\n [wkc_KptsConv][monitor_convergence"    
+            str_log += ("\n [wkc_KptsConv][monitor_convergence"    
                              +"\n > iteration_counter: " + str(self.ctx.control.iteration_counter)
                              +"\n > kdensity:          " + str(self.ctx.control['kdensity'])
                              +"\n > GWgap_DataForExtr:  " + str(GWgap_DataForExtr)
@@ -449,31 +427,37 @@ class VaspMBPTKptsConvWorkChain(WorkChain):
             ##End of the block that determines the flag_is_converged value; that block does not return anything ----------
 
 
-            #[Check - 4] This block decides whether to return True or False or an exit_code ------------------------------------------
-            # the check on the iteration_counter is repeated here for robustness (it was already done at the beginning as check-1)
-            if (self.ctx.control.iteration_counter <= 1) or flag_is_converged  == False:
-                self.ctx.control.iteration_counter += 1
-                if self.ctx.control.iteration_counter >= len(self.ctx.control['kmesh']):
-                    self.report("\n  > Reached maximum number of k-meshes to be tested; convergence not found.")
-                    return self.exit_codes.CONVERGENCE_NOT_FOUND
-                return True
-            elif flag_is_converged == True:
-                self.ctx.control['kmesh_converged']   = DataFactory('core.array.kpoints')()
-                self.ctx.input_DFTG0W0.kpoints.set_kpoints_mesh(   self.ctx.control['kmesh'][self.ctx.control.iteration_counter] )
-                return False
-            else:
-                return self.exit_codes.CONVERGENCE_NOT_FOUND
+        ##[DECISION.BLOCK - 2] Final control logic --------------------------------------------
+        # Decide whether to continue or stop based on convergence.
+        # The max-number-of-calculations check is already handled in DECISION.BLOCK - 1.
+        if bool(self.ctx.monitor.flag_is_converged) :
+            str_log += (f"\n  --> convergence REACHED at index {self.ctx.control.iteration_counter}\n")
+            self.report(str_log)
+            
+            self.ctx.control['kmesh_converged']   = DataFactory('core.array.kpoints')()
+            self.ctx.control['kmesh_converged'].set_kpoints_mesh(   self.ctx.control['kmesh'][self.ctx.control.iteration_counter] )
+            return False  # stop workflow
+        else:
+            self.ctx.control.iteration_counter += 1
+            str_log += ("\n  --> convergence NOT reached - continuing!")
+            self.report(str_log)              
+            return True
+
+
 
             
     def elaborate_results(self):
         kmesh_final = np.array(self.ctx.control['kmesh'][self.ctx.control.iteration_counter], dtype=int)
+        kmesh_conv = self.ctx.control.get('kmesh_converged', None)
+        
         node_kpoints = DataFactory('core.array.kpoints')()
-        node_kpoints.set_kpoints_mesh(kmesh_final)
+        if kmesh_conv is not None:  node_kpoints = kmesh_conv
+        else:                       node_kpoints.set_kpoints_mesh(kmesh_final)
         node_kpoints.store()
         self.out('kmesh_converged', node_kpoints )
     
         #kdensity = _get_kspacing_from_kmesh(self.inputs.structure.cell, kmesh_final)  # list of 3 floats
-       # self.out('final_kDensity', Float(float(np.mean(kdensity))))
+       # self.out('final_kdensity', Float(float(np.mean(kdensity))))
     
      
        

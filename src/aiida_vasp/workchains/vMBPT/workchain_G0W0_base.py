@@ -52,10 +52,10 @@ class VaspDFTGWWorkChain(WorkChain):
             #If magnetic_moment_onsite  is not passed, the calculation is instead assumed spin non-polarized.
             spec.input('ns_parameters.magnetic_moment_onsite' , valid_type=Dict       , required=False , help='Starting collinear on-site magnetic moment ; Syntax is {ElName:value}')
 
-            spec.input('ns_parameters.nomega'                 , valid_type=Int        , required=False , default=lambda: Int(200) , help='number of frequency points for the chi and sigma calculation in G0W0 runs. Default is 1 (COHSEX).') 
-            spec.input('ns_parameters.nbandsgw'               , valid_type=Int        , required=False , help='number of bands for which QP energies are calculated - nbandsGW variable in VASP')  
-            spec.input('ns_parameters.encut_chi'              , valid_type=Float      , required=False , help='cutoff energy for the response function in eV - encutGW variable in VASP') 
-            spec.input('kpoints'                              , valid_type=DataFactory('core.array.kpoints') , help='K-mesh used for VASP G0W0 and DFT runs; get_kpoints_mesh() must work.' )     
+            spec.input('ns_parameters.nomega'                 , valid_type=Int         , required=False , default=lambda: Int(200) , help='number of frequency points for the chi and sigma calculation in G0W0 runs. Default is 1 (COHSEX).') 
+            spec.input('ns_parameters.nbandsgw'               , valid_type=Int         , required=False , help='number of bands for which QP energies are calculated - nbandsGW variable in VASP')  
+            spec.input('ns_parameters.encut_chi'              , valid_type=Float       , required=False , help='cutoff energy for the response function in eV - encutGW variable in VASP') 
+            spec.input('kpoints'                              , valid_type=KpointsData , help='K-mesh used for VASP G0W0 and DFT runs; get_kpoints_mesh() must work.' )     
 
             spec.input('ns_parallelization.kpar'              , valid_type=Int        , required=False , default=lambda: Int(1)      , help='kpar value to be used in G0W0 calculations')
             spec.input('ns_parallelization.npar'              , valid_type=Int        , required=False , default=lambda: Int(1)      , help='NPAR value to be used in G0W0 calculations')

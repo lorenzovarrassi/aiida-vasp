@@ -708,84 +708,94 @@ class bandsObj_: ##<----------------------------------------------------------->
 
    
 
-## [Interface]
-parser = argparse.ArgumentParser()
-parser.add_argument("-ps"  , "--path_sparse_GW" , type=str , required=True )
-parser.add_argument("-pdr" , "--path_dense_DFT_reference" , type=str , required=True  )
-parser.add_argument("-pdi" , "--path_dense_DFT_toInterp"  , type=str , required=False , default="./")
-parser.add_argument("-ngw" , "--nbandsgw_dense"           , type=int , required=False , default=-1)
+def run_interpolate_and_modifyWAVECAR(path_sparse_GW, path_dense_DFT_reference, path_dense_DFT_toInterp="./", nbandsgw_dense=-1):
+    input = {"path_sparse_GW":           path_sparse_GW,
+             "path_dense_DFT_reference": path_dense_DFT_reference,
+             "path_dense_DFT_toInterp":  path_dense_DFT_toInterp if path_dense_DFT_toInterp else "./",
+             "nbandsgw_dense":           nbandsgw_dense if nbandsgw_dense is not None else -1,       }
 
-input = {} ; args = parser.parse_args()
-if args.path_sparse_GW is not None: input["path_sparse_GW"] = args.path_sparse_GW
-if args.path_dense_DFT_reference is not None: input["path_dense_DFT_reference"] = args.path_dense_DFT_reference
-if args.path_dense_DFT_toInterp is not None:  input["path_dense_DFT_toInterp"] = args.path_dense_DFT_toInterp
-else: input["path_dense_DFT_toInterp"] = "./"
-if args.nbandsgw_dense is not None: input["nbandsgw_dense"] = args.nbandsgw_dense
-else: input["nbandsgw_dense"] = -1
+    bObj_SPARSE_OUTCAR = bandsObj_() ;                  bObj_SPARSE_OUTCAR.read_file_OUTCAR_spinUnpol( path_sparse_GW , setGWDataAsprimary='QPc' )
+    bObj_DENSE_VASPRUN_reference = bandsObj_() ;        bObj_DENSE_VASPRUN_reference.read_file_VASPRUN( path_dense_DFT_reference )
+    bObj_DENSE_WAVECAR_toReceiveInterp = bandsObj_()  ; bObj_DENSE_WAVECAR_toReceiveInterp.read_file_WAVECAR(  path_dense_DFT_toInterp  )
 
 
+    NBANDS_DENSE_DFT_toRecInt = np.shape( bObj_DENSE_WAVECAR_toReceiveInterp.eigenval[Spin.up] )[1]
+    NBANDS_DENSE_DFT_REF      = np.shape( bObj_DENSE_VASPRUN_reference.eigenval[Spin.up] )[1]
+    NBANDS_SPARSE_GW = np.shape( bObj_SPARSE_OUTCAR.eigenval_GW[Spin.up] )[1]
+    if input["nbandsgw_dense"] <=0 :
+        NBANDSGW_DENSE = min( NBANDS_DENSE_DFT_REF , NBANDS_SPARSE_GW , NBANDS_DENSE_DFT_toRecInt )
+    else:
+        NBANDSGW_DENSE = min( input["nbandsgw_dense"] , NBANDS_DENSE_DFT_REF , NBANDS_SPARSE_GW , NBANDS_DENSE_DFT_REF )
+    print("\n\n{<Used arguments for script>} <-------------------->")
+    print("  Inputs - path_sparse_GW: ", path_sparse_GW)
+    print("  Inputs - path_dense_DFT_reference: ", path_dense_DFT_reference)
+    print("  Inputs - path_dense_DFT_toInterp: " , path_dense_DFT_toInterp)
+    print("  Inputs - nbandsgw_dense: ", input["nbandsgw_dense"])
+    print("  Actual - nbandsgw_dense: ", NBANDSGW_DENSE)
+    print("{<End Used arguments for script>} <-------------->\n")
 
-
-
-path_sparse_GW           = os.path.join(input["path_sparse_GW"]  , 'OUTCAR.3')
-path_dense_DFT_reference =  os.path.join(input["path_dense_DFT_reference"] ,'vasprun.xml')
-path_dense_DFT_toInterp  = os.path.join(input["path_dense_DFT_toInterp"]   ,'WAVECAR')
-
-bObj_SPARSE_OUTCAR = bandsObj_() ;                  bObj_SPARSE_OUTCAR.read_file_OUTCAR_spinUnpol( path_sparse_GW , setGWDataAsprimary='QPc' )
-bObj_DENSE_VASPRUN_reference = bandsObj_() ;        bObj_DENSE_VASPRUN_reference.read_file_VASPRUN( path_dense_DFT_reference )
-bObj_DENSE_WAVECAR_toReceiveInterp = bandsObj_()  ; bObj_DENSE_WAVECAR_toReceiveInterp.read_file_WAVECAR(  path_dense_DFT_toInterp  )
-
-
-NBANDS_DENSE_DFT_toRecInt = np.shape( bObj_DENSE_WAVECAR_toReceiveInterp.eigenval[Spin.up] )[1]
-NBANDS_DENSE_DFT_REF      = np.shape( bObj_DENSE_VASPRUN_reference.eigenval[Spin.up] )[1]
-NBANDS_SPARSE_GW = np.shape( bObj_SPARSE_OUTCAR.eigenval_GW[Spin.up] )[1]
-if input["nbandsgw_dense"] <=0 :
-    NBANDSGW_DENSE = min( NBANDS_DENSE_DFT_REF , NBANDS_SPARSE_GW , NBANDS_DENSE_DFT_toRecInt )
-else:
-    NBANDSGW_DENSE = min( input["nbandsgw_dense"] , NBANDS_DENSE_DFT_REF , NBANDS_SPARSE_GW , NBANDS_DENSE_DFT_REF )
-print("\n\n{<Used arguments for script>} <-------------------->")
-print("  Inputs - path_sparse_GW: ", path_sparse_GW)
-print("  Inputs - path_dense_DFT_reference: ", path_dense_DFT_reference)
-print("  Inputs - path_dense_DFT_toInterp: " , path_dense_DFT_toInterp)
-print("  Inputs - nbandsgw_dense: ", input["nbandsgw_dense"])
-print("  Actual - nbandsgw_dense: ", NBANDSGW_DENSE)
-print("{<End Used arguments for script>} <-------------->\n")
-
-print("\n{<Debug: Gamma.kpt pre interp.QPc & reference ----->")
-np.set_printoptions(linewidth=np.inf , precision=4)  # prevent line wrapping when printing numpy array
-print( bObj_DENSE_VASPRUN_reference.eigenval[Spin.up][0,:NBANDSGW_DENSE,0])
-print( bObj_DENSE_WAVECAR_toReceiveInterp.eigenval[Spin.up][0,:NBANDSGW_DENSE,0])
-print("{<End Gamma.kpt pre interp.QPc & reference -------->\n\n")
+    print("\n{<Debug: Gamma.kpt pre interp.QPc & reference ----->")
+    np.set_printoptions(linewidth=np.inf , precision=4)  # prevent line wrapping when printing numpy array
+    print( bObj_DENSE_VASPRUN_reference.eigenval[Spin.up][0,:NBANDSGW_DENSE,0])
+    print( bObj_DENSE_WAVECAR_toReceiveInterp.eigenval[Spin.up][0,:NBANDSGW_DENSE,0])
+    print("{<End Gamma.kpt pre interp.QPc & reference -------->\n\n")
 
 
 
-bands_DENSE_GWinterp = bandsObj_.interpolation_UsingEdgedBZ(  bandsObj_coarsegrid = bObj_SPARSE_OUTCAR,
-                                                              finegrid_kpts_list  = bObj_DENSE_VASPRUN_reference.kpts_list  ,
-                                                              finegrid_kpts_mesh  = bObj_DENSE_VASPRUN_reference.kpts_mesh  ,
-                                                              finegrid_kpts_shift = bObj_DENSE_VASPRUN_reference.kpts_shift ,
-                                                              finegrid_spglib_structure  = bObj_DENSE_VASPRUN_reference.spglib_structure  ,
-                                                              finegrid_is_spin_polarized = bObj_DENSE_VASPRUN_reference.is_spin_polarized ,
-                                                              interp_method='linear'  )
-print("\n\n{<QPc Interpolated values>} <-----------..--------->")
-# Print header (column indices starting from 1) + # Print each row with 4 decimals
-arr = bands_DENSE_GWinterp[Spin.up][:,:NBANDSGW_DENSE]
-header = " kpt" + " ".join([f"{i:10d}" for i in range(1, arr.shape[1] + 1)])
-print(header)
-for kpt_idx , kpt_bands in enumerate( arr ):
-    print(f"{kpt_idx:4}"+ " : " + " ".join([f"{val:10.4f}" for val in kpt_bands]))
-print("\n")
-for kpt_idx , kpt in enumerate( bObj_DENSE_VASPRUN_reference.kpts_list ):
-    print(f"{kpt_idx:4}"+ " : " + "".join(str(kpt)))
-print("{<End QPc Interpolated values>} <------------------>\n\n")
+    bands_DENSE_GWinterp = bandsObj_.interpolation_UsingEdgedBZ(  bandsObj_coarsegrid = bObj_SPARSE_OUTCAR,
+                                                                  finegrid_kpts_list  = bObj_DENSE_VASPRUN_reference.kpts_list  ,
+                                                                  finegrid_kpts_mesh  = bObj_DENSE_VASPRUN_reference.kpts_mesh  ,
+                                                                  finegrid_kpts_shift = bObj_DENSE_VASPRUN_reference.kpts_shift ,
+                                                                  finegrid_spglib_structure  = bObj_DENSE_VASPRUN_reference.spglib_structure  ,
+                                                                  finegrid_is_spin_polarized = bObj_DENSE_VASPRUN_reference.is_spin_polarized ,
+                                                                  interp_method='linear'  )
+    print("\n\n{<QPc Interpolated values>} <-----------..--------->")
+    # Print header (column indices starting from 1) + # Print each row with 4 decimals
+    arr = bands_DENSE_GWinterp[Spin.up][:,:NBANDSGW_DENSE]
+    header = " kpt" + " ".join([f"{i:10d}" for i in range(1, arr.shape[1] + 1)])
+    print(header)
+    for kpt_idx , kpt_bands in enumerate( arr ):
+        print(f"{kpt_idx:4}"+ " : " + " ".join([f"{val:10.4f}" for val in kpt_bands]))
+    print("\n")
+    for kpt_idx , kpt in enumerate( bObj_DENSE_VASPRUN_reference.kpts_list ):
+        print(f"{kpt_idx:4}"+ " : " + "".join(str(kpt)))
+    print("{<End QPc Interpolated values>} <------------------>\n\n")
+
+    bObj_DENSE_WAVECAR_toReceiveInterp.eigenval[Spin.up][:,:NBANDSGW_DENSE,0] = bObj_DENSE_WAVECAR_toReceiveInterp.eigenval[Spin.up][:,:NBANDSGW_DENSE,0] + bands_DENSE_GWinterp[Spin.up][:,:NBANDSGW_DENSE]
+    print("{<Debug: Gamma.kpt post interp.QPc & reference ----->")
+    print( bObj_DENSE_VASPRUN_reference.eigenval[Spin.up][0,:NBANDSGW_DENSE,0])
+    print( bObj_DENSE_WAVECAR_toReceiveInterp.eigenval[Spin.up][0,:NBANDSGW_DENSE,0])
 
 
 
-
-bObj_DENSE_WAVECAR_toReceiveInterp.eigenval[Spin.up][:,:NBANDSGW_DENSE,0] = bObj_DENSE_WAVECAR_toReceiveInterp.eigenval[Spin.up][:,:NBANDSGW_DENSE,0] + bands_DENSE_GWinterp[Spin.up][:,:NBANDSGW_DENSE]
-print("{<Debug: Gamma.kpt post interp.QPc & reference ----->")
-print( bObj_DENSE_VASPRUN_reference.eigenval[Spin.up][0,:NBANDSGW_DENSE,0])
-print( bObj_DENSE_WAVECAR_toReceiveInterp.eigenval[Spin.up][0,:NBANDSGW_DENSE,0])
+    bObj_DENSE_WAVECAR_toReceiveInterp.write_file_WAVECAR( path_dense_DFT_toInterp  )
 
 
 
-bObj_DENSE_WAVECAR_toReceiveInterp.write_file_WAVECAR( path_dense_DFT_toInterp  )
+if __name__ == "__main__":
+    ## [Interface]
+    parser = argparse.ArgumentParser()
+    parser.add_argument("-ps"  , "--path_sparse_GW" , type=str , required=True )
+    parser.add_argument("-pdr" , "--path_dense_DFT_reference" , type=str , required=True  )
+    parser.add_argument("-pdi" , "--path_dense_DFT_toInterp"  , type=str , required=False , default="./")
+    parser.add_argument("-ngw" , "--nbandsgw_dense"           , type=int , required=False , default=-1)
+
+    input = {} ; args = parser.parse_args()
+    if args.path_sparse_GW is not None:           input["path_sparse_GW"] = args.path_sparse_GW
+    if args.path_dense_DFT_reference is not None: input["path_dense_DFT_reference"] = args.path_dense_DFT_reference
+    if args.path_dense_DFT_toInterp is not None:  input["path_dense_DFT_toInterp"] = args.path_dense_DFT_toInterp
+    else: input["path_dense_DFT_toInterp"] = "./"
+    if args.nbandsgw_dense is not None: input["nbandsgw_dense"] = args.nbandsgw_dense
+    else: input["nbandsgw_dense"] = -1
+
+    path_sparse_GW           = os.path.join(input["path_sparse_GW"]  , 'OUTCAR.3')
+    path_dense_DFT_reference = os.path.join(input["path_dense_DFT_reference"] ,'vasprun.xml')
+    path_dense_DFT_toInterp  = os.path.join(input["path_dense_DFT_toInterp"]   ,'WAVECAR')
+
+    run_interpolate_and_modifyWAVECAR(
+        path_sparse_GW=args.path_sparse_GW,
+        path_dense_DFT_reference=args.path_dense_DFT_reference,
+        path_dense_DFT_toInterp=args.path_dense_DFT_toInterp,
+        nbandsgw_dense=args.nbandsgw_dense,
+    )
+

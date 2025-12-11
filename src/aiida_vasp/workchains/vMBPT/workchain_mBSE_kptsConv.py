@@ -145,6 +145,92 @@ def _detect_energy_of_diel_onset( imdiel , egrid , thr_for_considering_offset = 
     if len(idx) == 0: return egrid[0]  # fallback: no onset detected
     return egrid[idx[0]]
 
+def _summary_list_kmesh_gap_diel(wc_list , window_size , diel_metric):
+    """ Return a formatted string summarizing:
+        idx | kmesh | optical gap | dielectric distance vs previous
+        Additionally returns the lists of Δ(optical gap) and Δ(diel) for external use.
+        using the records in wc_list = wc_MBPT_successful_sorted_elaborated.     
+
+        wc_list : list of records with fields:
+                  kmesh - optgap - imdiel - imdiel_onset - energygrid       """   
+        
+        
+
+    #[1] header
+    out = "\n  > [conv-summary] Completed mBSE nodes:"
+    if len(wc_list) == 0:
+        out += "    (none yet)"
+        return out, [], []
+    
+
+    #[2] Compute dielectric distances wrt previous iteration and accumulate in the list
+    opt_diffs = []
+    diel_diffs = []
+    for i in range(len(wc_list)):
+        if i == 0:
+            opt_diffs.append(None)
+            diel_diffs.append(None)
+            continue
+
+        prev = wc_list[i - 1]
+        last = wc_list[i]
+
+
+        #[2.1] Optical gap difference
+        if prev["optgap"] is not None and last["optgap"] is not None:
+            opt_diffs.append(abs(last["optgap"] - prev["optgap"]))
+        else:
+            opt_diffs.append(None)
+            
+        #[2.2] Dielectric difference 
+        #      Starty by skipping if imdiel is absent
+        if prev["imdiel"] is None or last["imdiel"] is None:
+            diel_diffs.append(None)
+            continue
+
+        #[2.3] Define energy window
+        onset = min(prev["imdiel_onset"], last["imdiel_onset"])
+        E_min = max(onset, last["energygrid"][0])
+        E_max = min(onset + window_size, last["energygrid"][-1])
+        energy_window = (E_min, E_max)
+
+
+        #[2.4] Compute dielectric Δ (no threshold, just raw distance)
+        _, diel_distance = _check_dielectric_convergence(
+            prev["imdiel"], last["imdiel"] ,
+            energy_grid      = last["energygrid"],
+            energy_window    = energy_window,
+            method           = diel_metric ,
+            channels         = (0,1,2)     ,
+            threshold        = 100         )   # irrelevant, we only want distance
+        diel_diffs.append(diel_distance)
+
+
+    # Pretty print each entry
+    out += "\n      idx   kmesh          optgap[eV]         Δopt       Δdiel(prev)"
+    out += "\n      ---------------------------------------------------------------"
+
+    for idx, rec in enumerate(wc_list):
+        km = rec["kmesh"]
+        kmesh_str = f"[{km[0]}, {km[1]}, {km[2]}]"
+
+        # optical gap
+        if rec["optgap"] is not None: gap_str = f"{rec['optgap']:.4f}"
+        else:                         gap_str = "--"
+        # Δoptgap from previous
+        dop = opt_diffs[idx]
+        dop_str = "--" if dop is None else f"{dop:.4f}"
+        # dielectric Δ
+        d = diel_diffs[idx]
+        d_str = "--" if d is None else f"{d:.4e}"
+        out += ( f"\n      [{idx:2d}]  "
+                 f"{kmesh_str:<12}  "
+                 f"{gap_str:<12}  "
+                 f"{dop_str:<8}  "
+                 f"{d_str}"        )
+    return out, opt_diffs, diel_diffs
+
+
 
 
 class VaspmBSEKptsConvWorkChain(WorkChain):
@@ -167,6 +253,7 @@ class VaspmBSEKptsConvWorkChain(WorkChain):
             spec.input('ns_converge.opticalgap_convergence'     , valid_type=Bool  , required=False , default=lambda:Bool(False) , help="Enable/disable convergence check based on the optical gap." )
             spec.input("ns_converge.dielfunction_distance"      , valid_type=Str   , required=False , default=lambda:Str("L2_distance") , help="Distance metric for dielectric-function convergence: 'L2_distance' - 'L1_distance' - 'Wasserstein'.")
             spec.input("ns_converge.dielfunction_window"        , valid_type=Float , required=False , default=lambda:Float(3.5)  , help="Energy window (in eV) starting from onset of the imaginary diel.function - Used for dielectric-function convergence evaluation.")
+            spec.input('ns_converge.convergence_dynamic_control', valid_type=Bool  , required=False , default=lambda: Bool(False), help="Enable adaptive k-mesh step refinement.")
 
         
             #Optional pass-through (kept for symmetry with G0W0; currently not consumed explicitly by the base chain)
@@ -183,6 +270,13 @@ class VaspmBSEKptsConvWorkChain(WorkChain):
                                 message=( "The selected dielectric-function convergence metric "
                                           "ns_converge.dielfunction_distance is not supported. "
                                           "Allowed: 'L2_distance', 'L1_distance', 'Wasserstein'."                                ))
+            spec.exit_code( 411, 'TWO_CONSECUTIVE_MBSE_FAILURES',
+                               message='Two consecutive mBSE calculations failed — aborting convergence loop.'  )
+
+
+
+
+
 
             
             
@@ -197,10 +291,16 @@ class VaspmBSEKptsConvWorkChain(WorkChain):
     def initialize(self):
         self.ctx.control = AttributeDict() ; 
         self.ctx.control['convergence'] = []
-        self.ctx.control['kmesh_converged']    = None ; 
-        self.ctx.control['kdensity_converged'] = None ; 
+        self.ctx.control['kmesh_converged']      = None 
+        self.ctx.control['kdensity_converged']   = None 
+        self.ctx.control["dynamic_step_refined"] = False
+        self.ctx.control['fail_counter'] = 0
         self.ctx.WC_MBPT = []
 
+        ##[1][ Checking if metric value passed makes sense ]
+        allowed_metrics = ["L2_distance", "L1_distance", "Wasserstein"]
+        if self.inputs.ns_converge.dielfunction_distance.value not in allowed_metrics: 
+            return self.exit_codes.UNSUPPORTED_DIELFUNCTION_METRIC
             
         ##[ The Kpoint part ]
         #There are two possible ways to control the convergence:
@@ -212,43 +312,34 @@ class VaspmBSEKptsConvWorkChain(WorkChain):
         #      and not through the k-mesh step
         #    - in this second case, the minimum_constraint of kdensity is always considered, i.e. the starting_mesh of kdensity is automatically increased if it is < minimum_constraint
   
-        self.ctx.control.iteration_counter = -1
-        self.ctx.control['control_way'] = ''  #can be 'kmesh' or 'kdensity' depending on how the convergence is controlled
-        self.ctx.control['kmesh']       = [] #List of k-meshes to be tested
-
+        #[1] Determine control mode ---------------------------------------------
+        if ('kmesh' in self.inputs.ns_kpoints and
+           'starting_mesh' in self.inputs.ns_kpoints.kmesh and
+           'max_mesh' in self.inputs.ns_kpoints.kmesh):
+    
+           self.ctx.control['control_way'] = 'kmesh'
+  
+           # Extract integer arrays
+           kmesh_start = np.array(  self.inputs.ns_kpoints.kmesh.starting_mesh.get_kpoints_mesh()[0], dtype=int   )
+           kmesh_max   = np.array(  self.inputs.ns_kpoints.kmesh.max_mesh.get_kpoints_mesh()[0], dtype=int )
+           step_vec    = np.array(  self.inputs.ns_kpoints.kmesh.step.get_kpoints_mesh()[0], dtype=int     )
+          
+           self.ctx.control.iteration_counter = -1
+           self.ctx.control.start_kmesh   = kmesh_start
+           self.ctx.control.current_kmesh = kmesh_start
+           self.ctx.control.max_kmesh  = kmesh_max
+           self.ctx.control.step_kmesh = step_vec
+           self.ctx.control.step_kmesh_BASE = deepcopy( step_vec )  #used to reference the initial value
+                                                                    #because we could modify the .step_mesh one
+           
+           str_log = ( "\n [Initializing K-points convergence]"
+                        "\n > Controlling convergence via k-mesh."
+                       f"\n   Starting k-mesh    : {kmesh_start}"
+                       f"\n   Maximum k-mesh     : {kmesh_max}"
+                       f"\n   Step (initial)     : {step_vec}" )
         
-        ##[1]Now Let's check which of the two ways is used
-        if ('kmesh' in self.inputs.ns_kpoints) and ('starting_mesh' in self.inputs.ns_kpoints.kmesh) and ('max_mesh' in self.inputs.ns_kpoints.kmesh):
-            self.ctx.control['control_way'] = 'kmesh'
-            str_log = ("\n [Initializing K-points convergence]"+"\n > Both kmesh.starting_mesh and kmesh.max_mesh are specified"+
-                       "\n   -> Controlling k-point convergence through k-mesh."+
-                       "\n   > kmesh.starting_mesh: " + str(self.inputs.ns_kpoints.kmesh.starting_mesh.get_kpoints_mesh()[0] )+
-                       "\n   > kmesh.max_mesh: " + str(self.inputs.ns_kpoints.kmesh.max_mesh.get_kpoints_mesh()[0] ))
-            
-            
-        #[2] Initialize the starting k-mesh
-        if ('kmesh' in self.inputs.ns_kpoints) and ('starting_mesh' in self.inputs.ns_kpoints.kmesh) :
-            kmesh_start    = self.inputs.ns_kpoints.kmesh.starting_mesh.get_kpoints_mesh()[0]
-            str_log = ("\n [Initializing K-points convergence]"+"\n > Starting k-mesh is specified by the user ("+str(self.inputs.ns_kpoints.kmesh.starting_mesh.get_kpoints_mesh()[0] )+") - using as starting k-mesh")
-
-        
-        ##[2.1] Generate the other k-meshes to be tested 
-        if self.ctx.control['control_way'] == 'kmesh':
-            #Create two lists for the optical gaps variables which will be checked:
-            self.ctx.control['optgap_trans_energies'] , self.ctx.control['optgap_trans_oscstr'] = [] , []
-            #First append the starting one:
-            self.ctx.control['kmesh'].append(    np.array(kmesh_start    , dtype=int)   )
-            #And generate the first candidate:
-            tmp_new_candidate_kmesh =  self.ctx.control['kmesh'][-1] + np.array(self.inputs.ns_kpoints.kmesh.step.get_kpoints_mesh()[0] , dtype=int )
-            #Then check that candidate and generate new candidates
-            while np.any(tmp_new_candidate_kmesh < self.inputs.ns_kpoints.kmesh.max_mesh.get_kpoints_mesh()[0] ):
-                 self.ctx.control['kmesh'].append(    np.array(tmp_new_candidate_kmesh , dtype=int)  )
-                 tmp_new_candidate_kmesh =  self.ctx.control['kmesh'][-1] + np.array(self.inputs.ns_kpoints.kmesh.step.get_kpoints_mesh()[0] , dtype=int )
-            str_log = str_log + ( "\n   > kmesh list:    "+str(self.ctx.control['kmesh'])    )
-            
-        if self.ctx.control['control_way'] != 'kmesh':
+        else:
             return self.exit_codes.NOT_IMPLEMENTED           
-            
         self.report(str_log)
 
     def prepare_run_mBSE(self):
@@ -277,6 +368,7 @@ class VaspmBSEKptsConvWorkChain(WorkChain):
             self.ctx.inputs_mBSEbase.ns_parameters.ibse = Int(2)
         else:
             self.ctx.inputs_mBSEbase.ns_parameters.ibse = Int(1)
+        self.ctx.inputs_mBSEbase.ns_parameters.nbseeig = Int(0)
         
         #https://vasp.at/wiki/Best_practices_for_Bethe-Salpeter_calculations
         #In internal tests PRECFOCK reduces computational cost of the setting-up the BSE matrix of almost 40%
@@ -290,7 +382,8 @@ class VaspmBSEKptsConvWorkChain(WorkChain):
         self.ctx.inputs_mBSEbase.potential_mapping = self.inputs.potential_mapping
          
         self.ctx.inputs_mBSEbase.kpoints = DataFactory('core.array.kpoints')()
-        self.ctx.inputs_mBSEbase.kpoints.set_kpoints_mesh(  self.ctx.control['kmesh'][self.ctx.control.iteration_counter] )
+        self.ctx.inputs_mBSEbase.kpoints.set_kpoints_mesh( self.ctx.control.current_kmesh )
+
 
         #[3] Not currently used - for future   
         # Reference WAVECAR/CHGCAR if user provided (optional)
@@ -299,7 +392,7 @@ class VaspmBSEKptsConvWorkChain(WorkChain):
             pass  # kept for symmetry; not altering the base workchain behavior
                      
         self.report("\n [wkc_KptsConv][DFT+mBSE calc - NonSpinPolarized - From scratch]\n  > Lauching DFT+mBSE(NonSpinPolarized) using VaspmBSEInitScriptWorkChain on k-mesh "
-                            +np.array2string(   self.ctx.control['kmesh'][self.ctx.control.iteration_counter] , separator=" , ").replace('\n', '')+"\n")  
+                            +np.array2string(   self.ctx.control.current_kmesh , separator=" , ").replace('\n', '')+"\n")  
         running_mBSEbase = self.submit(VaspmBSEInitScriptWorkChain , **self.ctx.inputs_mBSEbase) 
         return ToContext(WC_MBPT=append_(running_mBSEbase))
          
@@ -323,7 +416,6 @@ class VaspmBSEKptsConvWorkChain(WorkChain):
         self.ctx.monitor.flag_is_optgap_converged = None       
         self.ctx.monitor.flag_is_diel_converged   = None 
         self.ctx.monitor.control_way       = deepcopy( self.ctx.control['control_way'] )  # 'kmesh' or 'kdensity' 
-        self.ctx.monitor.total_num_kmesh = len(self.ctx.control['kmesh'])
         self.ctx.monitor.thr      = self.inputs.ns_kpoints.convergence_threshold.value
         #Spin related variables
         self.ctx.monitor.has_spin      = ('magnetic_moment_onsite' in self.inputs['ns_parameters'])
@@ -332,15 +424,16 @@ class VaspmBSEKptsConvWorkChain(WorkChain):
         #The convergence based on k-mesh uses only 2 (the gaps from 2 consecutive k-meshes); the one based on k-density 3 for numerical stability.
         self.ctx.monitor.min_num_calcs_required_for_conv = 2
         
-        self.ctx.control['wc_MBPT_successful_sorted'] = []
-        self.ctx.control['wc_MBPT_successful_sorted_elaborated'] = []
+
         #Initialize - Logging header
         str_log = ( f"\n [wkc_KptsConv][monitor_convergence] iteration_counter={self.ctx.control.iteration_counter}"
                      "\n  > Remember : iteration_counter starts at (i-1)th -> [conv. check] -> increased to i-th -> launched i-th G0W0/mBSE" 
                     f"\n    In monitor_convergence before launching MBPT calculation idx={self.ctx.control.iteration_counter+1}"                     )
         
 
-        #Initialize - construct arrays of successful      
+        #Initialize - construct arrays of all successful mBSE children
+        self.ctx.control['wc_MBPT_successful_sorted'] = []
+        self.ctx.control['wc_MBPT_successful_sorted_elaborated'] = []
         if len(self.ctx.WC_MBPT) >= 1:
             #WC_MBPT stores the mBSE workchainNodes, but it's not guaranteed it has all successfully finished nodes 
             #or nodes are ordered (AiiDA may return them in whatever order they completed).
@@ -386,6 +479,7 @@ class VaspmBSEKptsConvWorkChain(WorkChain):
                 else:
                     record["imdiel"] = None ; record["energygrid"] = None ; record["imdiel_onset"] = None
                 self.ctx.control['wc_MBPT_successful_sorted_elaborated'].append(record)
+                self.ctx.control['convergence'].append(record) #: also store the record for final output
     
         
         #Initialize - Print optical.gaps of all finished children workchain
@@ -401,7 +495,21 @@ class VaspmBSEKptsConvWorkChain(WorkChain):
                 else: str_log += f"\n      [{idx}]\t(no opticaltransitions output)"
         
         
-        ##[DECISION.BLOCK - 1] Early exit if not enough calculations yet ##-----------------------------------------
+        ##[DECISION.BLOCK - 1] If two mBSE calcs fails in a row, Error ##-------------------------------------------
+        # Determine whether last child succeeded
+        if len(self.ctx.WC_MBPT) > 0:
+            last_wc = self.ctx.WC_MBPT[-1]     # last child node
+            if last_wc not in self.ctx.control['wc_MBPT_successful_sorted']:
+                self.ctx.control['fail_counter'] += 1   # last child FAILED
+            else:
+                self.ctx.control['fail_counter'] = 0    # last child succeeded, reset counter
+        if self.ctx.control['fail_counter'] >= 2:
+           str_log += ( "\n   > ERROR: Two consecutive mBSE calculations failed."
+                        "\n     Aborting convergence loop. Life is hard, sorry."     )
+           self.report(str_log)
+           return self.exit_codes.TWO_CONSECUTIVE_MBSE_FAILURE
+        
+        ##[DECISION.BLOCK - 2] Early exit if not enough calculations yet ##-----------------------------------------
         #Counter starts at -1 ; it's increased AFTER the convergence check + but BEFORE launching the calculation
         #The counter increase is the LAST thing done before returning; thus:
         #  1°control: counter starts=-1  -> [conv. check] -> increased to 0 -> launched 1° G0W0/mBSE
@@ -418,67 +526,68 @@ class VaspmBSEKptsConvWorkChain(WorkChain):
         #                and we have therefore to return True in order to continue and perform the second calculation
         #                at the beginning of the third iteration, (before the third calculation) self.ctx.control.iteration_counter will be == 1
         #                and remember that self.ctx.monitor.min_num_calcs_required_for_conv = 2 for the k-mesh
-        if self.ctx.control.iteration_counter < (self.ctx.monitor.min_num_calcs_required_for_conv - 1):
-            str_log += ( f"\n  > [conv. check] Not enough calculations to determine convergence  "
-                           f"    (need ≥{self.ctx.monitor.min_num_calcs_required_for_conv}); launching next {self.ctx.monitor.control_way}-based calculation.\n" )
-            self.report(str_log)   
-            self.ctx.control.iteration_counter += 1    
-            if self.ctx.control.iteration_counter >=  self.ctx.monitor.total_num_kmesh:  # Safety: check we have not exhausted available meshes
-                self.report(f"\n   > [conv. check] Reached maximum number of {self.ctx.monitor.control_way} points to be tested; convergence not found.\n")
-                return self.exit_codes.CONVERGENCE_NOT_FOUND
-            return True   # Continue launching next calculation
-
-
-
-        #[ELABORATION BLOCK][Determining if self.ctx.monitor.flag_is_converged FOR THE kmesh control_way]
-        if (len(self.ctx.control['wc_MBPT_successful_sorted_elaborated']) >= 2)  :
-            prev = self.ctx.control['wc_MBPT_successful_sorted_elaborated'][-2]
-            last = self.ctx.control['wc_MBPT_successful_sorted_elaborated'][-1]
-           
-            #[First convergence check : the optical gap]
-            if  (prev["optgap"] is not None) and (last["optgap"] is not None) :
-                    delta    = abs(last["optgap"] - prev["optgap"])
-                    thr_on_optgap = self.inputs.ns_kpoints.convergence_threshold.value
-                    self.ctx.monitor.flag_is_optgap_converged = (delta < thr_on_optgap)
-                    str_log += (    f"\n   > [optgap-conv] prev={prev['optgap']:.4f} eV "
-                                    f"last={last['optgap']:.4f} eV "
-                                    f"delta={delta:.4f} (thr={thr_on_optgap}) "
-                                    f"conv={self.ctx.monitor.flag_is_optgap_converged}"                     )
-
-            #[Second convergence check : the dielectric function]  
-            if (prev["imdiel"] is not None) and (last["imdiel"] is not None):
-
-                # ensure same energy grid
-                if not np.allclose( prev['energygrid'] , last['energygrid'], rtol=1e-6, atol=1e-8):
-                    self.report("\n    [diel-conv] WARNING: energy grids differ between iterations.")
-                diel_energygrid = last['energygrid']
-
-                # define energy window for convergence from (the window size requested by the user) starting at the onset
-                onset = min( prev['imdiel_onset'] , last['imdiel_onset'] )
-                window_size = float(self.inputs.ns_converge.dielfunction_window.value)
-                E_min = onset ;                E_min = max(E_min, last["energygrid"][0])
-                E_max = onset + window_size ;  E_max = min(E_max, last["energygrid"][-1])             
-                diel_energy_window = (E_min, E_max)
-                str_log += ( f"\n    [diel-conv] onset={onset:.3f} eV, "
-                             f"window=[{E_min:.3f}, {E_max:.3f}] (Δ={window_size:.2f} eV)" )
-
-                thr_on_dielfun = self.inputs.ns_kpoints.convergence_threshold.value
-                allowed_metrics = ["L2_distance", "L1_distance", "Wasserstein"]
-                diel_metric = self.inputs.ns_converge.dielfunction_distance.value
-                if diel_metric not in allowed_metrics: return self.exit_codes.UNSUPPORTED_DIELFUNCTION_METRIC
-                
-                # compute convergence
-                diel_converged, diel_distance = _check_dielectric_convergence(
-                    prev['imdiel'], last['imdiel'],
-                    energy_grid      = diel_energygrid,
-                    energy_window    = diel_energy_window,
-                    method           = diel_metric,
-                    channels=(0,1,2),     # xx, yy, zz diagonal only 
-                    threshold        = thr_on_dielfun                      )   
-                self.ctx.monitor.flag_is_diel_converged = diel_converged
-                str_log += (f"\n   > [diel-conv] method={diel_metric}, thr={thr_on_dielfun}, "
-                            f"distance={diel_distance:.4e} → is converged={diel_converged}")
         
+        num_finished_successfully = len(self.ctx.control['wc_MBPT_successful_sorted_elaborated'])
+        if num_finished_successfully < (self.ctx.monitor.min_num_calcs_required_for_conv ):
+            str_log += ( f"\n  > Not enough successful BSE calculations "
+                         f"({num_finished_successfully}/{self.ctx.monitor.min_num_calcs_required_for_conv})."
+                         "\n    → Launch next calculation.\n"  )
+            self.report(str_log)   
+            self.ctx.monitor.flag_is_converged = False
+
+
+        #[ELABORATION BLOCK - 1][Determining if self.ctx.monitor.flag_is_converged FOR THE kmesh control_way]
+        if num_finished_successfully >= (self.ctx.monitor.min_num_calcs_required_for_conv ) :
+            
+            #the function outputs: summary_str is the log of all previous dist and optgap values
+            #                      wc_diffs_optgap is the list of differences between opt.gap of consecutive gaps
+            #                      wc_diffs_dieldist is the list of distance based on the metric based on 
+            #                      consecutive mBSE calculations
+            summary_str , wc_diffs_optgap ,  wc_diffs_dieldist = _summary_list_kmesh_gap_diel(
+                    wc_list     = self.ctx.control['wc_MBPT_successful_sorted_elaborated'] , 
+                    window_size = float(self.inputs.ns_converge.dielfunction_window.value) , 
+                    diel_metric = self.inputs.ns_converge.dielfunction_distance.value      )
+            str_log += summary_str
+            
+            #[First convergence check : on Optical-gap convergence (use the precomputed Δopt) ]
+            delta_opt = wc_diffs_optgap[-1]
+            if delta_opt is not None:
+                thr_on_optgap = self.inputs.ns_kpoints.convergence_threshold.value
+                self.ctx.monitor.flag_is_optgap_converged = (delta_opt < thr_on_optgap)
+                str_log += ( f"\n   > [optgap-conv] Δopt={delta_opt:.4f}  (thr={thr_on_optgap}) "
+                             f"→ conv={self.ctx.monitor.flag_is_optgap_converged}"              )
+          
+            #[Second convergence check : the dielectric function (using precomputed diel.distance using the metric)
+            delta_diel = wc_diffs_dieldist[-1]
+            if delta_diel is not None:
+                thr_on_dielfun = self.inputs.ns_kpoints.convergence_threshold.value
+                self.ctx.monitor.flag_is_diel_converged = (delta_diel < thr_on_dielfun)
+                str_log += ( f"\n  > [diel-conv] Δdiel={delta_diel:.4e}  (thr={thr_on_dielfun}) "
+                             f"→ conv={self.ctx.monitor.flag_is_diel_converged}"           )
+                
+            
+        #[ELABORATION BLOCK - 2][Dynamic k-mesh step refinement (based on Δdiel only)]
+        #If last diel.distance is > 4*thr_on_dielfun, we ASSUME we are far from convergence
+        #Thus we change the step to double initial step to speed up and skip superfluos calcs
+            if self.inputs.ns_converge.convergence_dynamic_control.value:
+                # the threshold used for dielectric convergence
+                thr_on_dielfun = self.inputs.ns_kpoints.convergence_threshold.value
+              
+                # Only act if Δdiel is available
+                if delta_diel is not None:
+                    # Condition: Δdiel >> thr (and we consider the >> as > 4*)→ we are far from convergence
+                    if (delta_diel > 4.0 * thr_on_dielfun):
+                        # read the current step
+                        self.ctx.control.step_kmesh = 2 * self.ctx.control.step_kmesh_BASE
+                        self.ctx.control["dynamic_step_refined"] = True
+                        str_log += (  f"\n  > [dynamic-step] Large Δdiel={delta_diel:.3e} → "
+                                      f"using doubled base-step: {self.ctx.control.step_kmesh}")  
+                    else:  
+                        # reset to original step
+                        self.ctx.control.step_kmesh = deepcopy( self.ctx.control.step_kmesh_BASE )
+                        self.ctx.control["dynamic_step_refined"] = False
+
+ 
             #[Updating self.ctx.monitor.flag_is_converged ]
             use_diel  = self.inputs.ns_converge.dielfunction_convergence.value
             use_gap   = self.inputs.ns_converge.opticalgap_convergence.value
@@ -488,64 +597,80 @@ class VaspmBSEKptsConvWorkChain(WorkChain):
                 # check flag_gap / flag_diel because if convergence check fails the value is None
                 if (flag_gap is True) and (flag_diel is True):
                     final_flag = True
-                    str_log += ( f"\n    [final-conv] Both criteria active → "
+                    str_log += ( f"\n  > [final-conv] Both criteria active → "
                                  f"optgap={flag_gap}, diel conv={flag_diel} → final conv={final_flag}"  )
                 else:
                     final_flag = False
-                    str_log += ( f"\n    [final-conv] Both criteria active → "
+                    str_log += ( f"\n  > [final-conv] Both criteria active → "
                                  f"optgap={flag_gap}, diel conv={flag_diel} → final conv={final_flag}"  )
             elif use_gap and not use_diel: #Case 2: ONLY optical gap convergence
-                final_flag = (flag_gap is True)
-                str_log += ( f"\n    [final-conv] Using optical-gap convergence only → "
+                #final_flag = True if (flag_gap == True) else False
+                final_flag = flag_gap
+                str_log += ( f"\n  > [final-conv] Using optical-gap convergence only → "
                              f"optgap={flag_gap} → final conv={final_flag}"           )
             
             elif use_diel and not use_gap: #Case 3: ONLY dielectric-function convergence
-                final_flag = (flag_diel is True)
-                str_log += ( f"\n    [final-conv] Using dielectric-function convergence only → "
+                #final_flag = (flag_diel == True)
+                final_flag = flag_diel
+                str_log += ( f"\n  > [final-conv] Using dielectric-function convergence only → "
                              f"diel conv={flag_diel} → final conv={final_flag}"            )
             else: #Case 4: user disabled both (should never happen, but safe fallback)
                 final_flag = False
-                str_log += ( f"\n    [final-conv] WARNING: Both convergence metrics disabled → "
+                str_log += ( f"\n  > [final-conv] WARNING: Both convergence metrics disabled → "
                              f"forcing NOT converged."          )
             self.ctx.monitor.flag_is_converged = final_flag
         
 
-        ##[DECISION.BLOCK - 2] Final control logic --------------------------------------------------------------
+        ##[DECISION.BLOCK - 3] Final control logic --------------------------------------------------------------
         # Decide whether to continue or stop based on convergence.
         # The max-number-of-calculations check is already handled in DECISION.BLOCK - 1.
         if bool(self.ctx.monitor.flag_is_converged) :
-            str_log += (f"\n                   --> convergence REACHED at index {self.ctx.control.iteration_counter}\n")
+            str_log += (  f"\n   --> convergence REACHED at iteration {self.ctx.control.iteration_counter}"
+                          f"\n       Converged k-mesh = {self.ctx.control.current_kmesh}"                 )
             self.report(str_log)
             
+            # store converged kmesh
             self.ctx.control['kmesh_converged'] = DataFactory('core.array.kpoints')()
-            self.ctx.control['kmesh_converged'].set_kpoints_mesh(   self.ctx.control['kmesh'][self.ctx.control.iteration_counter] )
+            self.ctx.control['kmesh_converged'].set_kpoints_mesh(   self.ctx.control.current_kmesh )
             return False  # stop workflow
         else:
+            # update kmesh
             self.ctx.control.iteration_counter += 1
-            str_log += ("\n                    --> convergence NOT reached - continuing!")
-            self.report(str_log)              
-            return True
+            self.ctx.control.current_kmesh = ( self.ctx.control.current_kmesh + self.ctx.control.step_kmesh )
+
+            # safety: check bounds
+            if np.any(self.ctx.control.current_kmesh > self.ctx.control.max_kmesh):
+                str_log += (  f"\n   --> convergence NOT reached and maximum kmesh exceeded:"
+                              f"      next kmesh would be {self.ctx.control.current_kmesh}"
+                              f"\n   --> aborting"     )
+                self.report(str_log)
+                return self.exit_codes.CONVERGENCE_NOT_FOUND
+
+            str_log += ( f"\n   --> convergence NOT reached - continuing"
+                         f"\n       next kmesh = {self.ctx.control.current_kmesh}" )
+            self.report(str_log)
+
+            return True   # continue workflow
 
 
 
-            
-    def elaborate_results(self):
-        kmesh_final = np.array(self.ctx.control['kmesh'][self.ctx.control.iteration_counter], dtype=int)
-        kmesh_conv = self.ctx.control.get('kmesh_converged', None)   
-        node_kpoints = DataFactory('core.array.kpoints')()
-        if kmesh_conv is not None:  node_kpoints = kmesh_conv
-        else:                       node_kpoints.set_kpoints_mesh(kmesh_final)
-        node_kpoints.store()
-        self.out('kmesh_converged', node_kpoints )
-    
-        if self.ctx.control['convergence'] and self.ctx.control['convergence'][-1]['optgap'] is not None:
-            optgap = Float(self.ctx.control['convergence'][-1]['optgap'])
-            self.out('optical_gap', optgap)
 
 
-     
        
-
-
-
-
+    def elaborate_results(self):
+        # Determine final k-mesh
+        if 'kmesh_converged' in self.ctx.control and self.ctx.control['kmesh_converged'] is not None:
+            # already stored as KpointsData
+            node_kpoints = self.ctx.control['kmesh_converged']
+            node_kpoints.store()
+            self.out('kmesh_converged', node_kpoints)
+    
+        # Output optical gap if available
+        if ( self.ctx.control['convergence'] 
+             and self.ctx.control['convergence'][-1].get('optgap') is not None  ):
+            optgap_value = self.ctx.control['convergence'][-1]['optgap']
+            self.out('optical_gap', Float(optgap_value))
+    
+    
+    
+    

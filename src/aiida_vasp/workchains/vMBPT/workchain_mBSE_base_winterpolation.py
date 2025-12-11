@@ -148,8 +148,10 @@ class VaspmBSEInitScriptWorkChain(WorkChain):
             spec.input('ns_parameters.encut'                  , valid_type=Float , required=False , help='Cutoff energy for the wavefunction in eV. ENCUT variable in VASP.')  #ns stands for namespace
             spec.input('ns_parameters.nbands'                 , valid_type=Int   , required=False , help='Total number of bands included in the DFT and G0W0 runs. NBANDS variable in VASP.'  )   
             spec.input('ns_parameters.magnetic_moment_onsite' , valid_type=Dict  , required=False , help='Starting collinear on-site magnetic moment ; Syntax is {ElName:value}')
-            spec.input("ns_parameters.ibse"                   , valid_type=Int   , required=False , default=lambda: Int(2), help="Controls the BSE integration scheme. See https://vasp.at/wiki/IBSE")
-            spec.input('ns_parameters.kpar'                   , valid_type=Int   , required=False , default=lambda: Int(1), help="Parallelization across k-points. Defaults = number of GPUs if available.")          
+            spec.input("ns_parameters.ibse"                   , valid_type=Int   , required=False , default=lambda: Int(2),  help="Controls the BSE integration scheme. See https://vasp.at/wiki/IBSE")
+            spec.input('ns_parameters.kpar'                   , valid_type=Int   , required=False , default=lambda: Int(1),  help="Parallelization across k-points. Defaults = number of GPUs if available.")          
+            spec.input('ns_parameters.nbseeig'                , valid_type=Int   , required=False , default=lambda: Int(50), help="Number of BSE eigenvectors written to BSEFATBAND.")          
+
             spec.input("options" , valid_type=Dict)
             spec.input("copy_result_locally" , valid_type=Bool, required=False, default=lambda:Bool(True) )
 
@@ -209,8 +211,8 @@ class VaspmBSEInitScriptWorkChain(WorkChain):
 
             ##[Part 3][Defining INCAR]
             input_params = {'incar': {'ediff':1E-7 ,  'algo':"Normal" , 'ismear':0 , 'sigma':0.02 , 'prec':'Accurate' , 'nelm':200 , 'lmaxmix':4 , 'loptics':'.TRUE.'}}
-            if ('encut'  in self.inputs['ns_parameters']):  input_params['incar']['encut']  = self.inputs.ns_parameters.encut
-            if ('nbands' in self.inputs['ns_parameters']):  input_params['incar']['nbands'] = self.inputs.ns_parameters.nbands
+            if ('encut'  in self.inputs['ns_parameters']):  input_params['incar']['encut']  = self.inputs.ns_parameters.encut.value
+            if ('nbands' in self.inputs['ns_parameters']):  input_params['incar']['nbands'] = self.inputs.ns_parameters.nbands.value
             if ('magnetic_moment_onsite' in self.inputs['ns_parameters']):
                 _ , input_params['incar']['magmom'] = input_magnetic_moment_tomagmom(self.inputs.structure , self.inputs['ns_parameters']['magnetic_moment_onsite'].get_dict())
                 input_params['incar']['ispin']  = 2
@@ -423,7 +425,9 @@ class VaspmBSEInitScriptWorkChain(WorkChain):
             if ('encut'                  in self.inputs['ns_parameters']):  incar['incar']['encut'] = self.inputs.ns_parameters.encut.value
             if ('magnetic_moment_onsite' in self.inputs['ns_parameters']):  incar['incar']['ispin'] = 2
             else:   incar['incar']['ispin'] = 1
-
+            if ('nbseeig'  in self.inputs['ns_parameters']):  incar['incar']['nbseeig']  = self.inputs.ns_parameters.nbseeig.value
+            else:  incar['incar']['nbseeig']  = 20
+            
             ##[Determine model-BSE flags : starting from the screening parameters]
             incar['incar']['aexx']     = self.inputs.ns_BSE.static_inverse_diel.value
             incar['incar']['hfscreen'] = self.inputs.ns_BSE.screening_parameter.value
@@ -506,7 +510,8 @@ class VaspmBSEInitScriptWorkChain(WorkChain):
             #[2][Final logging before submission]
             # ------------------------------------------------------------------
 
-            str_log_final = "\n [BSE Job Configuration Summary] Explicityl defined parameters:\n"
+            str_log_final =  "\n [BSE Job Configuration Summary] Explicitly defined parameters (before submitting VaspInitScriptWorkChain):"
+            str_log_final += "\n Remind: VaspmBSEInitScriptWorkChain -> calls VaspInitScriptWorkChain -> runs Vasp2wInitScriptCalculation\n"    
             kmesh = self.inputs.kpoints.get_kpoints_mesh()[0]
             str_log_final +=     f"   KPOINTS mesh      : {kmesh}\n"            
             if "encut" in self.inputs.ns_parameters:

@@ -315,6 +315,91 @@ class BandsState_IO :
                 eigenval=bs_eigenval , occupation=bs_occupation , spin_keys=bs_spin_keys       ,
                 structure = bs_structure , kpoints=bs_kpoints,                                 )
     
+
+
+
+   def parse_bands_from_WAVECAR_NEW(path: str | Path,
+                             poscar_path: str | Path | None = None,
+                             flag_verbose: bool = True) -> BandsState:
+    """
+    Parse bands from WAVECAR using pymatgen.Wavecar (robust, version-safe).
+    Returns a fully populated BandsState with the same structure as
+    parse_outcar_spinUnpol() and parse_bands_from_vasprun().
+    """
+
+    from pymatgen.io.vasp.outputs import Wavecar
+
+    path = Path(path)
+    if not path.exists():
+        raise FileNotFoundError(f"WAVECAR not found at {path}")
+
+    if flag_verbose:
+        print(f"[pymatgen] Reading eigenvalues from WAVECAR: {path}")
+
+
+    #1] Load WAVECAR
+    w = Wavecar(str(path))
+
+    #2] constants
+    nspin   = w.nspin
+    nkpts   = w.nkpts
+    nbands  = w.nbands
+    kpts    = np.array(w.kpoints)
+    eigs    = w.eigs          # shape (nspin, nkpts, nbands)
+    occs    = w.occupancies   # shape (nspin, nkpts, nbands)
+    if flag_verbose:
+        print(f"  spin components : {nspin}")
+        print(f"  k-points        : {nkpts}")
+        print(f"  bands           : {nbands}")
+        print(f"  fermi energy    : {w.efermi}")
+
+
+    #3] Build BandsState fields
+    # spin keys
+    bs_spin_keys = (Spin.up, Spin.down) if nspin == 2 else (Spin.up,)
+
+    # eigenvalues & occupations dictionaries
+    bs_eigenval   = {spin: eigs[i] for i, spin in enumerate(bs_spin_keys)}
+    bs_occupation = {spin: occs[i] for i, spin in enumerate(bs_spin_keys)}
+
+    # kpoints
+    bs_kpoints = KpointsData(
+        kpts=kpts,
+        mesh=None,     # a WAVECAR does NOT store the mesh, only explicit kpts
+        shift=None
+    )
+
+    # 4] Optional structure
+    if poscar_path is not None and Path(poscar_path).exists():
+        if flag_verbose:
+            print(f"[pymatgen] Loading structure from POSCAR: {poscar_path}")
+        bs_structure = Structure.from_file(poscar_path)
+    else:
+        bs_structure = None
+
+    # 5] Construct BandsState
+    bs = BandsState(
+        history=InstanceHistory( imestamp_loaded=datetime.now(),
+                                 path_loaded=path,
+                                 comment="Data from parsed WAVECAR via pymatgen" ),
+        kpoints=bs_kpoints,
+        structure=bs_structure,
+        eigenval=bs_eigenval,
+        occupation=bs_occupation,
+        spin_keys=bs_spin_keys,
+        misc={}   # WAVECAR has no GW/DFT auxiliary sets     )
+    return bs
+
+
+
+
+
+
+
+
+
+
+
     def write_bands_to_WAVECAR(state: BandsState, path: str | Path, flag_verbose: bool = True):
         """
         Write eigenvalues and occupations from a BandsState object back into an existing WAVECAR.

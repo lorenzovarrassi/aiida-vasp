@@ -65,7 +65,7 @@ def determine_BSE_parameters( bandsdata: orm.BandsData,
     b_band = bandsdata.get_array("bands")
     b_occ  = bandsdata.get_array("occupations")
     n_kpts, n_bands = b_band.shape
-    log    = [ f"[info] n_kpts = {n_kpts} , n_bands = {n_bands}\n" ]
+    log    = [ f"\n[info] n_kpts = {n_kpts} , n_bands = {n_bands}\n" ]
     output = {}
     #[SAFE-CHECK] Check that occupancy values are in [0, 1]
     if np.any(b_occ < -1e-3) or np.any(b_occ > 1.001):

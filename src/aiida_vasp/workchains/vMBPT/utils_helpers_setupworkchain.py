@@ -227,17 +227,17 @@ class Helpers_setup_Workchain :
     # -------------------------------------------------------------------------
     #[5] Build POTCAR mapping (element → POTCAR label)
     @staticmethod
-    def _build_potential_mapping( potential_family : str , pymatgen_structure,
-                                  flag_prefer_GW: bool = True     ) -> dict[str, str]:
+    def _build_potential_mapping(potential_family: str, pymatgen_structure,
+                                  flag_prefer_GW: bool = True) -> tuple:
         """
         Construct a POTCAR mapping dictionary {element: potcar_name} based on
         the elements in the given structure and the available POTCARs in the family.
     
         Priority rules:
           - If flag_prefer_GW = True:
-              prefer _GW  >  _sv_GW  >  _d_GW  >  plain _GW  >  _sv  >  _d  >  plain
+              prefer _sv_GW > _d_GW > _GW_new > _h_GW > _GW > _sv > _d > plain
           - If flag_prefer_GW = False:
-              prefer _sv  >  _d  >  plain  >  _sv_GW  >  _d_GW  >  _GW
+              prefer _sv > _d > plain > _sv_GW > _d_GW > _GW_new > _h_GW > _GW
     
         Parameters
         ----------
@@ -250,55 +250,93 @@ class Helpers_setup_Workchain :
     
         Returns
         -------
-        dict[str, str]
-            Mapping between element symbol and POTCAR name.
+        tuple
+            (Str(potential_family), Dict(potential_mapping))
+            where potential_mapping is a dict[str, str] mapping element symbol to POTCAR name.
         """
+        from aiida.orm import Str, Dict
+        import aiida_vasp.data.potcar
     
         # Load POTCAR family
-        import aiida_vasp.data.potcar
         potcar_group = aiida_vasp.data.potcar.PotcarGroup.collection.get(label=potential_family)
-        potcar_dict = {node.element: node.full_name for node in potcar_group.nodes}
     
-        # Build mapping
+        # element → list of variants
+        potcar_dict = {}
+        for node in potcar_group.nodes:
+            potcar_dict.setdefault(node.element, []).append(node.full_name)
+    
+        print("[INFO] POTCARs available in family:")
+        for el, variants in potcar_dict.items():
+            print(f"    {el}: {variants}")
+    
+        # Priority order
+        if flag_prefer_GW:
+            priority = ["_sv_GW", "_d_GW", "_GW_new", "_h_GW", "_GW", "_sv", "_d"]
+            print("[INFO] Priority (GW-preferred):", priority)
+        else:
+            priority = ["_sv", "_d", "_sv_GW", "_d_GW", "_GW_new", "_h_GW", "_GW"]
+            print("[INFO] Priority (non-GW preferred):", priority)
+    
         potential_mapping = {}
+    
+        print("\n[INFO] Building element → POTCAR mapping")
         for el in pymatgen_structure.elements:
             elname = str(el)
+            candidates = potcar_dict.get(elname, [])
     
-            # Collect all potcars for this element (some families contain variants)
-            candidates = [name for elem, name in potcar_dict.items() if elem == elname]
+            print(f"\n  Element {elname}")
+            print(f"    Candidates: {candidates}")
+    
             if not candidates:
-                raise ValueError(f"No POTCAR found for element {elname} in {potential_family}")
+                raise ValueError(f"No POTCAR found for element {elname} in family {potential_family}")
     
-            # Sorting priority
-            if flag_prefer_GW:
-                # prioritize GW variants
-                priority = ["_sv_GW", "_d_GW", "_GW", "_sv", "_d", f"{elname}"]
-            else:
-                # prioritize non-GW
-                priority = ["_sv", "_d", f"{elname}", "_sv_GW", "_d_GW", "_GW"]
-    
-            # Pick best match based on substring occurrence
             selected = None
+    
+            # 1) Priority-based matching: "_sv_GW", "_d_GW", ...
+            print("    Trying priority suffix matching...")
             for key in priority:
                 for cand in candidates:
-                    if key == elname:
-                        # plain element match (no suffix)
-                        if cand.endswith(f" {elname}"):
-                            selected = cand
-                            break
-                    elif key in cand:
+                    if key in cand:
                         selected = cand
+                        print(f"    → Selected by priority '{key}': {selected}")
                         break
                 if selected:
                     break
     
+            # 2) Exact match for plain element (e.g., "O", "Ti", "Si")
             if selected is None:
-                selected = candidates[0]  # fallback
-                print(f"[WARN] No preferred variant found for {elname}, using {selected}")
+                print("    Trying exact match for plain element...")
+                for cand in candidates:
+                    if cand == elname:
+                        selected = cand
+                        print(f"    → Exact match selected: {selected}")
+                        break
     
-            potential_mapping[elname] = selected.split()[-1]  # full_name e.g. "Cd_sv_GW"
+            # 3) Match plain prefix: "O", "Ti", "Si" (as fallback)
+            if selected is None:
+                print("    Trying plain element prefix match...")
+                for cand in candidates:
+                    if cand.split("_")[0] == elname:
+                        selected = cand
+                        print(f"    → Prefix match selected: {selected}")
+                        break
     
-        return Str( potential_family ) , Dict( potential_mapping )
+            # 4) Deterministic fallback
+            if selected is None:
+                selected = sorted(candidates)[0]
+                print(f"    [WARN] No preferred match; deterministic fallback: {selected}")
+    
+            # Clean name is just full_name (AiiDA-VASP format)
+            potcar_clean_name = selected
+            print(f"    → Final selection: {potcar_clean_name}")
+    
+            potential_mapping[elname] = potcar_clean_name
+    
+        print("\n[INFO] Final POTCAR mapping:")
+        for el, pot in potential_mapping.items():
+            print(f"    {el}: {pot}")
+    
+        return Str(potential_family), Dict(potential_mapping)
     
     # -------------------------------------------------------------------------
     #[6] Build interpolation input namespace (ns_interpolation)
@@ -489,5 +527,6 @@ class Helpers_setup_Workchain :
     
         return "\n".join(lines)
     
+
 
 

@@ -225,7 +225,7 @@ class BandsState_IO :
             spin_keys=bs_spin_keys, eigenval=bs_eigenval, occupation=bs_occupation     ,
             structure=bs_structure , kpoints=bs_kpts,                                  )
 
-    def parse_bands_from_WAVECAR(path: str | Path , poscar_path: str | Path | None = None , flag_verbose: bool = True  ) -> BandsState:
+    def parse_bands_from_WAVECAR(path: str | Path , poscar_path: str | Path | None = None , flag_verbose: bool = True , prefix="  ") -> BandsState:
         """
         Parse a VASP WAVECAR manually (functional version, no py4vasp).
         Reads eigenvalues and occupations directly from binary records.
@@ -250,9 +250,10 @@ class BandsState_IO :
             c_latvec      = np.fromfile(f, dtype=np.float64, count=9).reshape((3, 3))
             c_efermi      = np.fromfile(f, dtype=np.float64, count=1)[0]
             if flag_verbose:
-                print("-constants read from WAVECAR prolog:\n  spin comp ",c_nspin,"\n  num kpts  ",c_numk,"\n  num bands ",c_numb,"\n  encut (eV)",c_encut)
-                print("  efermi    ",c_efermi)
-                print("  lattice vec",c_latvec[0,:],"\n             ",c_latvec[1,:],"\n             ",c_latvec[2,:],"\n")
+                print((prefix+"<constants read from WAVECAR prolog:<\n"+
+                       prefix+"spin comp "+str(c_nspin)+"\n  num kpts  "+str(c_numk)+"\n  num bands "+str(c_numb)+"\n  encut (eV)"+str(c_encut)))
+                print(prefix+"  efermi    ",c_efermi)
+                print(prefix+"  lattice vec",c_latvec[0,:],"\n             ",c_latvec[1,:],"\n             ",c_latvec[2,:],"\n")
     
             #[3]Padding to end of record REC=2 / beginning of record REC=3
             # c_reclen -13 because we have read 13 element from REC=1 start
@@ -262,9 +263,9 @@ class BandsState_IO :
             eigenvalues= np.zeros([c_nspin , c_numk , c_numb , 2] , dtype=np.float64) #[spin,nk,nb,0]=eigenvalues - [spin,nk,nb,1]=occupation
             kpts_list  = []
             for idx_spin in range(c_nspin):
-                if flag_verbose: print("-outer level loop: spin component {}".format(idx_spin))
+                if flag_verbose: print(prefix+f"-outer level loop: spin component {idx_spin}")
                 for idx_kpt in range(c_numk):
-                      if flag_verbose: print("--1° level loop: kpt {}".format(idx_kpt))
+                      if flag_verbose: print(prefix+f"--1° level loop: kpt {idx_kpt}")
     
                       #Read the number of plane waves for this specific kpts for this spin channel
                       num_pw = int(np.fromfile(f, dtype=np.float64, count=1)[0])
@@ -275,7 +276,7 @@ class BandsState_IO :
                       kpoint = np.fromfile(f, dtype=np.float64, count=3)
                       kpoint[abs(kpoint) < 1E-10] = 0
                       kpts_list.append(list(kpoint))
-                      if flag_verbose: print("  kpoint {} with {: 3} plane waves".format(kpoint,num_pw))
+                      if flag_verbose: print(prefix+"  kpoint {} with {: 3} plane waves".format(kpoint,num_pw))
     
                       #Vasp writes REAL(W%CELTOT(I,K,ISP),q) AIMAG(W%CELTOT(I,K,ISP)) =W%FERTOT(I,K,ISP)
                       #Where CELTOT=eigenvalues FERTOT=occupation; we are not interested in imaginary part.
@@ -315,92 +316,73 @@ class BandsState_IO :
                 eigenval=bs_eigenval , occupation=bs_occupation , spin_keys=bs_spin_keys       ,
                 structure = bs_structure , kpoints=bs_kpoints,                                 )
     
+ 
 
 
-
-   def parse_bands_from_WAVECAR_NEW(path: str | Path,
+    def parse_bands_from_WAVECAR_NEW(path: str | Path,
                              poscar_path: str | Path | None = None,
-                             flag_verbose: bool = True) -> BandsState:
-    """
-    Parse bands from WAVECAR using pymatgen.Wavecar (robust, version-safe).
-    Returns a fully populated BandsState with the same structure as
-    parse_outcar_spinUnpol() and parse_bands_from_vasprun().
-    """
+                             flag_verbose: bool = True, prefix="  ") -> BandsState:
+        """ Parse bands from WAVECAR using pymatgen.Wavecar (robust, version-safe).
+        Returns a fully populated BandsState with the same structure as
+        parse_outcar_spinUnpol() and parse_bands_from_vasprun(). """
+        from pymatgen.io.vasp.outputs import Wavecar
+        path = Path(path)
+        if not path.exists():
+            raise FileNotFoundError(f"WAVECAR not found at {path}")
 
-    from pymatgen.io.vasp.outputs import Wavecar
-
-    path = Path(path)
-    if not path.exists():
-        raise FileNotFoundError(f"WAVECAR not found at {path}")
-
-    if flag_verbose:
-        print(f"[pymatgen] Reading eigenvalues from WAVECAR: {path}")
-
-
-    #1] Load WAVECAR
-    w = Wavecar(str(path))
-
-    #2] constants
-    nspin   = w.nspin
-    nkpts   = w.nkpts
-    nbands  = w.nbands
-    kpts    = np.array(w.kpoints)
-    eigs    = w.eigs          # shape (nspin, nkpts, nbands)
-    occs    = w.occupancies   # shape (nspin, nkpts, nbands)
-    if flag_verbose:
-        print(f"  spin components : {nspin}")
-        print(f"  k-points        : {nkpts}")
-        print(f"  bands           : {nbands}")
-        print(f"  fermi energy    : {w.efermi}")
-
-
-    #3] Build BandsState fields
-    # spin keys
-    bs_spin_keys = (Spin.up, Spin.down) if nspin == 2 else (Spin.up,)
-
-    # eigenvalues & occupations dictionaries
-    bs_eigenval   = {spin: eigs[i] for i, spin in enumerate(bs_spin_keys)}
-    bs_occupation = {spin: occs[i] for i, spin in enumerate(bs_spin_keys)}
-
-    # kpoints
-    bs_kpoints = KpointsData(
-        kpts=kpts,
-        mesh=None,     # a WAVECAR does NOT store the mesh, only explicit kpts
-        shift=None
-    )
-
-    # 4] Optional structure
-    if poscar_path is not None and Path(poscar_path).exists():
         if flag_verbose:
-            print(f"[pymatgen] Loading structure from POSCAR: {poscar_path}")
-        bs_structure = Structure.from_file(poscar_path)
-    else:
-        bs_structure = None
+            print(prefix+f"[pymatgen] Reading eigenvalues from WAVECAR: {path}")
+            
+        #1] Load WAVECAR
+        w = Wavecar(str(path))
 
-    # 5] Construct BandsState
-    bs = BandsState(
-        history=InstanceHistory( imestamp_loaded=datetime.now(),
-                                 path_loaded=path,
-                                 comment="Data from parsed WAVECAR via pymatgen" ),
-        kpoints=bs_kpoints,
-        structure=bs_structure,
-        eigenval=bs_eigenval,
-        occupation=bs_occupation,
-        spin_keys=bs_spin_keys,
-        misc={}   # WAVECAR has no GW/DFT auxiliary sets     )
-    return bs
+        #2] constants
+        nspin   = w.nspin
+        nkpts   = w.nkpts
+        nbands  = w.nbands
+        kpts    = np.array(w.kpoints)
+        eigs    = w.eigs          # shape (nspin, nkpts, nbands)
+        occs    = w.occupancies   # shape (nspin, nkpts, nbands)
+        if flag_verbose:
+            print(prefix+f"  spin components : {nspin}")
+            print(prefix+f"  k-points        : {nkpts}")
+            print(prefix+f"  bands           : {nbands}")
+            print(prefix+f"  fermi energy    : {w.efermi}")
 
+        #3] Build BandsState fields
+        # spin keys
+        bs_spin_keys = (Spin.up, Spin.down) if nspin == 2 else (Spin.up,)
 
+        # eigenvalues & occupations dictionaries
+        bs_eigenval   = {spin: eigs[i] for i, spin in enumerate(bs_spin_keys)}
+        bs_occupation = {spin: occs[i] for i, spin in enumerate(bs_spin_keys)}
 
+        # kpoints
+        bs_kpoints = KpointsData(
+            kpts=kpts,
+            mesh=None,     # a WAVECAR does NOT store the mesh, only explicit kpts
+            shift=None
+        )
 
+        # 4] Optional structure
+        if poscar_path is not None and Path(poscar_path).exists():
+            if flag_verbose:
+                print(prefix+f"[pymatgen] Loading structure from POSCAR: {poscar_path}")
+            bs_structure = Structure.from_file(poscar_path)
+        else:
+            bs_structure = None
 
+        # 5] Construct BandsState
+        bs = BandsState(
+            history=InstanceHistory( imestamp_loaded=datetime.now(),
+                                     path_loaded=path,
+                                     comment="Data from parsed WAVECAR via pymatgen" ),
+            structure=bs_structure, kpoints=bs_kpoints  ,
+            spin_keys=bs_spin_keys, eigenval=bs_eigenval,   occupation=bs_occupation,
+            misc={})   # WAVECAR has no GW/DFT auxiliary sets     )
+        return bs
 
-
-
-
-
-
-    def write_bands_to_WAVECAR(state: BandsState, path: str | Path, flag_verbose: bool = True):
+    def write_bands_to_WAVECAR(state: BandsState, path: str | Path, flag_verbose: bool = True , prefix="  "):
         """
         Write eigenvalues and occupations from a BandsState object back into an existing WAVECAR.
         Keeps binary format intact, only overwriting the eigenvalue+occupation blocks.
@@ -410,7 +392,7 @@ class BandsState_IO :
         c_numKpts = np.shape(state.eigenval[Spin.up])[0]
         c_numNbnd = np.shape(state.eigenval[Spin.up])[1]
     
-        if flag_verbose: print(f"write_file_WAVECAR: writing eigenvalues+occupations { [c_numSpin, c_numKpts, c_numNbnd, 2] } to {path}")
+        if flag_verbose: print(prefix+f"[write_file_WAVECAR] writing eigenvalues+occupations { [c_numSpin, c_numKpts, c_numNbnd, 2] } to {path}")
     
         #[Preparatory-2]Pack into [spin, k, band, 2] array for easier indexing
         eigenvalues = np.zeros([c_numSpin, c_numKpts, c_numNbnd, 2], dtype=np.float64)
@@ -437,24 +419,24 @@ class BandsState_IO :
             c_efermi      = np.fromfile(f, dtype=np.float64, count=1)[0]
             
             if flag_verbose:
-                print("<Constants read from WAVECAR prolog:\n  spin comp ",c_nspin,"\n  num kpts  ",c_numk,"\n  num bands ",c_numb,"\n  encut (eV)",c_encut)
-                print("  efermi    ",c_efermi)
-                print("  lattice vec",c_latvec[0,:],"\n             ",c_latvec[1,:],"\n             ",c_latvec[2,:],"\n")
-                print("<Costants from BandsState whose eigenvalues will replaces ones in WAVECAR\n  spin comp ",np.shape(eigenvalues)[0],"\n  num kpts  ",np.shape(eigenvalues)[1],"\n  num bands ",np.shape(eigenvalues)[2])
+                print(prefix+"<Constants read from WAVECAR prolog:\n  spin comp ",c_nspin,"\n  num kpts  ",c_numk,"\n  num bands ",c_numb,"\n  encut (eV)",c_encut)
+                print(prefix+"  efermi    ",c_efermi)
+                print(prefix+"  lattice vec",c_latvec[0,:],"\n             ",c_latvec[1,:],"\n             ",c_latvec[2,:],)
+                print(prefix+"<Costants from BandsState whose eigenvalues will replaces ones in WAVECAR\n  spin comp ",np.shape(eigenvalues)[0],"\n  num kpts  ",np.shape(eigenvalues)[1],"\n  num bands ",np.shape(eigenvalues)[2])
             if [c_nspin , c_numk , c_numb] != [ np.shape(eigenvalues)[0] ,  np.shape(eigenvalues)[1] ,  np.shape(eigenvalues)[2] ]:
                 raise ValueError("spin number and/or kpts number and/or band number of input eigenvalue variable does NOT match WAVECAR internal dimensions.")
-    
+            print()
             #Padding to end of record REC=2 / beginning of record REC=3
             #c_reclen -13 because we have read 13 element from REC=1 start
             np.fromfile(f, dtype=np.float64, count=(c_reclen - 13) )
             for idx_spin in range(c_nspin):
-                    if flag_verbose: print("-outer level loop: spin component {}".format(idx_spin))
+                    if flag_verbose: print(prefix+"-outer level loop: spin component {}".format(idx_spin))
                     for idx_kpt in range(c_numk):
-                        if flag_verbose: print("--1° level loop: kpt {}".format(idx_kpt))
+                        if flag_verbose: print(prefix+"--1° level loop: kpt {}".format(idx_kpt))
                         
                         num_pw = int(np.fromfile(f, dtype=np.float64, count=1)[0])
                         kpoint =     np.fromfile(f, dtype=np.float64, count=3)
-                        if flag_verbose: print("  kpoint {} with {: 3} plane waves".format(kpoint,num_pw))            
+                        if flag_verbose: print(prefix+"  kpoint {} with {: 3} plane waves".format(kpoint,num_pw))            
                         
                         # Vasp writes REAL(W%CELTOT(I,K,ISP),q) AIMAG(W%CELTOT(I,K,ISP)) =W%FERTOT(I,K,ISP)
                         # Where CELTOT=eigenvalues FERTOT=occupation; we are not interested in imaginary part.
@@ -535,7 +517,7 @@ class BandsState_InterpOp :
         nb_apply_nbands        = nb_apply_last_clipped - nb_apply_first  # how many bands we will actually apply
 
         if flag_verbose:
-            print( "[apply_QP_correction] "
+            print( "  [apply_QP_correction] "
                     f"nb_dft_last={nb_dft_last}, nb_interp_last={nb_interp_last}, "
                     f"apply: DFT[{nb_apply_first}:{nb_apply_last_clipped}) <- QP[0:{nb_apply_nbands})"    )
             if nb_apply_last > nb_apply_last_clipped:
@@ -1068,11 +1050,11 @@ class BandsState_InterpOp :
         """
     
         ##-----------------------------------------------------------------------------------------------------------
-        ##[PRELIMINARY-1] Parse all three inputs ------------------------------
+        ##[PRELIMINARY-1] Parse all three inputs ------------------------------------------------
         # If a BandsState is passed directly use it; if a Path object is passed,
         # construct an BandState object frim it 
-        if flag_verbose: print("\n{<Step 1: Parsing input files>}")
-        # [1.1] Sparse GW object
+        print("\n{<Step 1: Parsing input files>}")
+        # [1.1] Sparse GW object [The single source for GW eigenvals and QPcorrections]
         if isinstance(obj_sparse_GW, BandsState):
             BS_sparse_QPc = obj_sparse_GW
         elif isinstance(obj_sparse_GW, (str, Path)):
@@ -1081,7 +1063,8 @@ class BandsState_InterpOp :
                                                                   poscar_path=path_poscar_sparse , 
                                                                   setGWDataAsprimary="QPC"       )
         else: raise TypeError("obj_sparse_GW must be a BandsState or a Path to an OUTCAR file.")
-        #[1.2] Dense WAVECAR object
+        #[1.2] Dense WAVECAR object [Which will receive the interpolation]-----------------------
+        #                           [i.e. its EIGENVAL will be OVERWRITTEN with the corrected ones]
         if isinstance(obj_dense_fromWAVECAR_toReceiveInterp, BandsState):
             BS_dense_WAVECAR_toReceiveInterp = obj_dense_fromWAVECAR_toReceiveInterp
         elif isinstance(obj_dense_fromWAVECAR_toReceiveInterp, (str, Path)):
@@ -1100,7 +1083,7 @@ class BandsState_InterpOp :
         else: raise TypeError("obj_dense_DFT_ref must be a BandsState, Path, or None.")
 
 
-        ##[PRELIMINARY-2] Determine constants and number of bands -------------------
+        ##[PRELIMINARY-2] Determine constants and number of bands -------------------------------
         # Determine how many bands will be included in the interpolation and comparison.
         # The number is limited to the smallest band count among the sparse GW data,
         # dense DFT reference, and dense WAVECAR (unless manually specified).
@@ -1111,45 +1094,60 @@ class BandsState_InterpOp :
         if nbandsgw_dense <= 0: NBANDSGW_DENSE = min(c_NBANDS_dense_DFT_ref, c_NBANDS_dense_WAVECAR , c_NBANDS_sparse_GW)
         else:                   NBANDSGW_DENSE = min(nbandsgw_dense, c_NBANDS_dense_DFT_ref, c_NBANDS_dense_WAVECAR , c_NBANDS_sparse_GW)
 
-        ##[PRELIMINARY-3] Check if BS_dense_WAVECAR_toReceiveInterp actually --
-        #                 from a WAYECAR --------------------------------------
+        ##[PRELIMINARY-3] Check if BS_dense_WAVECAR_toReceiveInterp actually --------------------
+        #                 from a WAYECAR --------------------------------------------------------
         if BS_dense_WAVECAR_toReceiveInterp.history.path_loaded is not None:
             path_check = Path(BS_dense_WAVECAR_toReceiveInterp.history.path_loaded)
             if "WAVECAR" not in path_check.name:
                 warnings.warn(f"Target BandsState does not appear to originate from a WAVECAR: {path_check.name}")
           
+        ##[PRELIMINARY-4] Brief intermezzo: the prints ------------------------------------------
+        if flag_verbose: 
+            print( "\n{<Report - Read Files - Pre interpolation>}\n"
+                     " [Used arguments]\n"
+                     "  sparse_GW:" +str(Path(BS_sparse_QPc.history.path_loaded).absolute())+"\n"
+                     "  dense_WAVECAR:"+str(Path(BS_dense_WAVECAR_toReceiveInterp.history.path_loaded).absolute())+"\n"
+                     "  dense_DFT_ref:"+str(Path(BS_dense_DFT_ref.history.path_loaded).absolute())+"\n"
+                     "  nbandsgw_dense (requested): "+str(nbandsgw_dense)+"\n"
+                     "  nbandsgw_dense (used): " +str(NBANDSGW_DENSE)+"\n" )
         
-        ##[PRELIMINARY-4] Check consistency of dense grids and energies -------
-        # 4.1] Ensure that the k-point meshes of the dense reference and the dense WAVECAR
-        # correspond exactly. If they differ, the interpolation and application steps
-        # may produce inconsistent results.
-        if BS_dense_DFT_ref is not None:
-           if not np.allclose( BS_dense_WAVECAR_toReceiveInterp.kpoints.kpts ,
+        ##[CONSISTENCY CONTROL-1] Check consistency of dense grids and energies -----------------
+        # c.1] On k-points between BS_dense_WAVECAR_toReceiveInterp - BS_dense_DFT_ref
+        #      Ensure that the k-point meshes of the dense reference (where we take the DFT eigenvalues)
+        #      and the dense WAVECAR (where we overwrite the eigenval with the corrected values)
+        #      correspond exactly. 
+        #      If they differ, the interpolation and application steps will produce inconsistent results.
+        if not np.allclose( BS_dense_WAVECAR_toReceiveInterp.kpoints.kpts ,
                                BS_dense_DFT_ref.kpoints.kpts, atol=1e-6,     ):
-               warnings.warn( "The k-point grids of BS_dense_WAVECAR_toReceiveInterp and "
-                               "BS_dense_DFT_ref differ. Interpolation results may be inconsistent."  )
-        # 4.2] Check DFT eigenvalue similarity within the selected band window
-           try:
-                eig_dft_ref = BS_dense_DFT_ref.eigenval[Spin.up][:, :NBANDSGW_DENSE]
-                eig_wavecar = BS_dense_WAVECAR_toReceiveInterp.eigenval[Spin.up][:, :NBANDSGW_DENSE]
-                if eig_dft_ref.shape == eig_wavecar.shape: diff_matrix = np.abs(eig_dft_ref - eig_wavecar)
-                if np.any(diff_matrix > 1e-3): warnings.warn("Detected difference > 1e-3 eV between the dense grid eigenvalues provided!")
-           except Exception as err:  warnings.warn( f"Could not verify DFT eigenvalue consistency between reference and WAVECAR: {err}" )
-    
-        ##[PRELIMINARY-5] Brief intermezzo: the prints
-        if flag_verbose: print( "\n{{<Used arguments>}}\n"
-                                " sparse_GW:" +str(Path(BS_sparse_QPc.history.path_loaded).absolute())+"\n"
-                                " dense_WAVECAR:"+str(Path(BS_dense_WAVECAR_toReceiveInterp.history.path_loaded).absolute())+"\n"
-                                " dense_DFT_ref:"+str(Path(BS_dense_DFT_ref.history.path_loaded).absolute())+"\n"
-                                " nbandsgw_dense (requested): "+str(nbandsgw_dense)+"\n"
-                                " nbandsgw_dense (used): " +str(NBANDSGW_DENSE)+"\n"
-                                "{{<End arguments>}}\n" )
- 
-    
+            warnings.warn( "The k-point grids of BS_dense_WAVECAR_toReceiveInterp and "
+                           "BS_dense_DFT_ref differ. Interpolation results may be inconsistent."  )
+        # c.2] on eigenval between BS_dense_WAVECAR_toReceiveInterp - BS_dense_DFT_ref
+        #      Ensure that the eigenvals of the dense reference (where we take the DFT eigenvalues)
+        #      and the dense WAVECAR (where we overwrite the eigenval with the corrected values)
+        #      correspond within he selected band window
+        try:
+            ctr_eig_dft_ref = BS_dense_DFT_ref.eigenval[Spin.up][:, :NBANDSGW_DENSE]
+            ctr_eig_wavecar = BS_dense_WAVECAR_toReceiveInterp.eigenval[Spin.up][:, :NBANDSGW_DENSE]
+            if ctr_eig_dft_ref.shape == ctr_eig_wavecar.shape: ctr_diff_matrix = np.abs(ctr_eig_dft_ref - ctr_eig_wavecar)
+            if np.any(ctr_diff_matrix > 1e-3): warnings.warn("Detected difference > 1e-3 eV between the dense grid eigenvalues provided!")
+        except Exception as err:  warnings.warn( f"Could not verify DFT eigenvalue consistency between reference and WAVECAR: {err}" )
+        # c.3] on DFT eigenval between BS_sparse_QPc - BS_dense_DFT_ref 
+        #      within he selected band window
+        ctl_nb  = NBANDSGW_DENSE ; ctl_kidx = 0
+        ctl_dft_OUTCARGW_Gamma = BS_sparse_QPc.misc['DFT'][Spin.up][ctl_kidx, :ctl_nb]
+        ctr_eig_dft_ref_Gamma  = BS_dense_DFT_ref.eigenval[Spin.up][ctl_kidx, :ctl_nb]
+        ctr_diff_gamma = ctl_dft_OUTCARGW_Gamma - ctr_eig_dft_ref_Gamma
+        if flag_verbose:
+            fmt = lambda x: f"{x:+8.3f}"
+            print((f" [Gamma DFT eigenvalues at kpt idx={ctl_kidx}]"+
+                  "\n  BS_dense_DFT_ref:"+np.array2string(ctr_eig_dft_ref_Gamma, sign="+", formatter={'float_kind':fmt}).replace("\n","")  +
+                  "\n  BS_sparse_QPc:   "+np.array2string(ctl_dft_OUTCARGW_Gamma, sign="+", formatter={'float_kind':fmt}).replace("\n","") +
+                  "\n  -> Differences:  "+np.array2string(ctr_diff_gamma, sign="+", formatter={'float_kind':fmt}).replace("\n","")         ))
+            print("{<Report - Read Files>}\n" )   
         ##-----------------------------------------------------------------------------------------------------------
         #[1] Interpolate GW corrections from sparse to dense k-mesh -----------
-        if flag_verbose:
-            print("\n{<Step 2: Interpolating GW corrections>}")
+        
+        print("{<Step 2: Interpolating GW corrections>}")
         BS_dense_interpolatedQP = BandsState_InterpOp.interpolate_BandsState_fromCoarseToFineKmesh(
                                                             coarsegrid_BS_QP = BS_sparse_QPc,
                                                             finegrid_BS_toReceiveQP = BS_dense_DFT_ref ,
@@ -1159,9 +1157,7 @@ class BandsState_InterpOp :
         
         
         #[2] Make interpolatedQP internally consistent, then resize to WAVECAR NBANDS
-        if flag_verbose:
-            print("\n{<Step 2b: Resizing interpolated QP corrections to match WAVECAR NBANDS>}")
-
+        print("\n{<Step 2b: Resizing interpolated QP corrections to match WAVECAR NBANDS>}")
         nb_interp = BS_dense_interpolatedQP.eigenval[Spin.up].shape[1]
         nb_target = BS_dense_WAVECAR_toReceiveInterp.eigenval[Spin.up].shape[1]
 
@@ -1173,7 +1169,7 @@ class BandsState_InterpOp :
                                         update_history=True          )
             
         #[2] Apply interpolated corrections to target WAVECAR bands -----------
-        if flag_verbose: print("\n{<Step 3: Applying interpolated GW corrections to WAVECAR>}")
+        print("\n{<Step 3: Applying interpolated GW corrections to WAVECAR>}")
         corrected_BS_WAVECAR = BandsState_InterpOp.apply_QP_correction(
                                                 dft_BS  =  BS_dense_WAVECAR_toReceiveInterp,
                                                 interpolatedQP_BS  =  BS_dense_interpolatedQP,
@@ -1182,7 +1178,7 @@ class BandsState_InterpOp :
     
         #[4] Write modified WAVECAR -------------------------------------------
         if flag_applyQP_toWAVECAR:
-            if flag_verbose: print("\n{<Step 4: Writing modified WAVECAR>}")
+            print("\n{<Step 4: Writing modified WAVECAR>}")
             if BS_dense_WAVECAR_toReceiveInterp.history.path_loaded is not None:
                 path_wavecar = BS_dense_WAVECAR_toReceiveInterp.history.path_loaded
                 BandsState_IO.write_bands_to_WAVECAR(corrected_BS_WAVECAR, path_wavecar)
@@ -1191,31 +1187,27 @@ class BandsState_InterpOp :
 
         ##-----------------------------------------------------------------------------------------------------------
         #[DEBUG-1] Diagnostic print of Γ-point eigenvalues --------------------
+        
         if flag_verbose:
+            print( "\n{<Report - Read Files - Post interpolation>}\n")
             print("\n{<Debug: Γ-point eigenvalues summary>}")
-            np.set_printoptions(linewidth=np.inf, precision=4, suppress=True)
-            idx_gamma = 5
-            if BS_dense_DFT_ref is not None :
-                print("> [test-1 : should be equal ]")
-                print("> [fine mesh] DFT Reference eigenvalues at Γ:")
-                print("  ", BS_dense_DFT_ref.eigenval[Spin.up][idx_gamma, :NBANDSGW_DENSE])
-            print("> [fine mesh] DFT WAVECAR eigenvalues at Γ:")
-            print("  ", BS_dense_WAVECAR_toReceiveInterp.eigenval[Spin.up][idx_gamma, :NBANDSGW_DENSE])
-            print("\n> [test-2 : should be equal ]")
-            print("> [fine mesh] Interpolated GW QP corrections at Γ:")
-            print("  ", BS_dense_interpolatedQP.eigenval[Spin.up][idx_gamma, :NBANDSGW_DENSE])
-            print("> [sparse mesh] QPc correction at Γ:")
-            print("  ", BS_sparse_QPc.eigenval[Spin.up][idx_gamma, :NBANDSGW_DENSE])
+            #np.set_printoptions(linewidth=np.inf, precision=4, suppress=True)
+            ctl_QPc_dense_interp = BS_dense_interpolatedQP.eigenval[Spin.up][ctl_kidx, :ctl_nb]
+            ctl_QPC_sparse = BS_sparse_QPc.eigenval[Spin.up][ctl_kidx, :ctl_nb]
+            print((f" [QP corrections at kpt idx={ctl_kidx}]"+
+                  "\n  BS_dense_interpolatedQP:"+np.array2string( ctl_QPc_dense_interp, sign="+", formatter={'float_kind':fmt}).replace("\n","")  +
+                  "\n  BS_sparse_QPc:          "+np.array2string( ctl_QPC_sparse, sign="+", formatter={'float_kind':fmt}).replace("\n","") +
+                  "\n  -> Differences:         "+np.array2string( ctl_QPc_dense_interp - ctl_QPC_sparse, sign="+", formatter={'float_kind':fmt}).replace("\n","")  
+                  ))
+            ctl_G0W0_corrected_w_interp = corrected_BS_WAVECAR.eigenval[Spin.up][ctl_kidx, :ctl_nb]
+            ctl_G0W0_sparse = BS_sparse_QPc.misc['GW'][Spin.up][ctl_kidx, :ctl_nb]
+            print((f" [G0W0 eigenvals at kpt idx={ctl_kidx}]"+
+                 "\n  corrected_BS_WAVECAR:   "+np.array2string( ctl_G0W0_corrected_w_interp, sign="+", formatter={'float_kind':fmt}).replace("\n","")  +
+                 "\n  BS_sparse_QPc:          "+np.array2string( ctl_G0W0_sparse, sign="+", formatter={'float_kind':fmt}).replace("\n","") +
+                 "\n  -> Differences:         "+np.array2string( ctl_G0W0_corrected_w_interp - ctl_G0W0_sparse, sign="+", formatter={'float_kind':fmt}).replace("\n","")   
+                 ))
 
-            print("\n> [test-3 : should be equal ]")
-            print("> [fine mesh] Corrected DFT+QP eigenvalues at Γ:")
-            print("  ", corrected_BS_WAVECAR.eigenval[Spin.up][idx_gamma, :NBANDSGW_DENSE])
-            print("> [sparse mesh] G0W0 eigenvalues at Γ:")
-            print("  ", BS_sparse_QPc.misc['GW'][Spin.up][idx_gamma, :NBANDSGW_DENSE])
-
-
-            print("{<End Debug>}\n")
-        if flag_verbose: print("{<Done>} <----------------------------------------------->\n")
+        print("{<Done>} <----------------------------------------------->\n")
         return corrected_BS_WAVECAR
 
 
@@ -1365,41 +1357,52 @@ class BandsState_InterpOp :
 
 if __name__ == "__main__":
     ## [Interface]
-    parser = argparse.ArgumentParser()
-    parser.add_argument("-ps"  , "--path_sparse_GW"           , type=str , required=True  , 
-                        help="Path to the sparse (aka on the coarse k-mesh) G0W0 calculation folder."   )
-    parser.add_argument("-sf"  , "--sparse_GW_filename"       , type=str , required=False , default="OUTCAR.3",
-                        help="GW output filename (INSIDE the sparse GW folder) used to parse the QPcorrection that will be interpolated.")
+    if False:
+        parser = argparse.ArgumentParser()
+        parser.add_argument("-ps"  , "--path_sparse_GW"           , type=str , required=True  , 
+                            help="Path to the sparse (aka on the coarse k-mesh) G0W0 calculation folder."   )
+        parser.add_argument("-sf"  , "--sparse_GW_filename"       , type=str , required=False , default="OUTCAR.3",
+                            help="GW output filename (INSIDE the sparse GW folder) used to parse the QPcorrection that will be interpolated.")
 
-    parser.add_argument("-pdi" , "--path_dense_DFT_toInterp"  , type=str , required=True  , default="./",
-                        help="Path to the dense DFT calculation whose WAVECAR will receive the interpolation.") 
-    parser.add_argument("-pdr" , "--path_dense_DFT_reference" , type=str , required=False , default=None,
-                        help="Optional reference DFT folder used to determine the DFT a (vasprun.xml will be used if present).")
-    parser.add_argument("-ngw" , "--nbandsgw_dense"           , type=int , required=False , default=-1)
+        parser.add_argument("-pdi" , "--path_dense_DFT_toInterp"  , type=str , required=True  , default="./",
+                            help="Path to the dense DFT calculation whose WAVECAR will receive the interpolation.") 
+        parser.add_argument("-pdr" , "--path_dense_DFT_reference" , type=str , required=False , default=None,
+                            help="Optional reference DFT folder used to determine the DFT a (vasprun.xml will be used if present).")
+        parser.add_argument("-ngw" , "--nbandsgw_dense"           , type=int , required=False , default=-1)
 
-    #Parsing arguments
-    input = {} ; args = parser.parse_args()
-    if args.path_sparse_GW is not None:           input["path_sparse_GW"] = args.path_sparse_GW
-    if args.sparse_GW_filename is not None:       input["sparse_GW_filename"] = args.sparse_GW_filename
-    if args.path_dense_DFT_toInterp is not None:  input["path_dense_DFT_toInterp"]  = args.path_dense_DFT_toInterp
-    if args.path_dense_DFT_reference is not None: input["path_dense_DFT_reference"] = args.path_dense_DFT_reference
-    if args.nbandsgw_dense is not None:           input["nbandsgw_dense"] = args.nbandsgw_dense
-    else: input["nbandsgw_dense"] = -1
-    
-    #path_sparse_GW           = os.path.join(input["path_sparse_GW"]  , 'OUTCAR.3')
-    input["path_sparse_GW_fullPath"]           = os.path.join(input["path_sparse_GW"], input["sparse_GW_filename"])
-    input["path_dense_DFT_toInterp_fullPath"]  = os.path.join(input["path_dense_DFT_toInterp"]   ,'WAVECAR')
-    if "path_dense_DFT_reference" in input:
-        input["path_dense_DFT_reference_fullPath"] =  os.path.join(input["path_dense_DFT_reference"], "vasprun.xml")
-    else:
-        input["path_dense_DFT_reference_fullPath"] = None  
+        #Parsing arguments
+        input = {} ; args = parser.parse_args()
+        if args.path_sparse_GW is not None:           input["path_sparse_GW"] = args.path_sparse_GW
+        if args.sparse_GW_filename is not None:       input["sparse_GW_filename"] = args.sparse_GW_filename
+        if args.path_dense_DFT_toInterp is not None:  input["path_dense_DFT_toInterp"]  = args.path_dense_DFT_toInterp
+        if args.path_dense_DFT_reference is not None: input["path_dense_DFT_reference"] = args.path_dense_DFT_reference
+        if args.nbandsgw_dense is not None:           input["nbandsgw_dense"] = args.nbandsgw_dense
+        else: input["nbandsgw_dense"] = -1 
+        
+        #path_sparse_GW           = os.path.join(input["path_sparse_GW"]  , 'OUTCAR.3')
+        input["path_sparse_GW_fullPath"]           = os.path.join(input["path_sparse_GW"], input["sparse_GW_filename"])
+        input["path_dense_DFT_toInterp_fullPath"]  = os.path.join(input["path_dense_DFT_toInterp"]   ,'WAVECAR')
+        if "path_dense_DFT_reference" in input:
+            input["path_dense_DFT_reference_fullPath"] =  os.path.join(input["path_dense_DFT_reference"], "vasprun.xml")
+        else:
+            input["path_dense_DFT_reference_fullPath"] = None  
+            
+
+    input = {}
+    input['path_sparse_GW_fullPath']           = "./CopiedFromLocal_OUTCAR_3"
+    input['path_dense_DFT_toInterp_fullPath']  = "./WAVECAR"
+    input['path_dense_DFT_reference_fullPath'] = None
+    input['nbandsgw_dense'] = -1
+    input['flag_interp_method'] = "linear"
         
     print("=== [Interpolation Parameters] ===")
     print(f"path_sparse_GW           : {input['path_sparse_GW_fullPath']}")
     print(f"path_dense_DFT_toInterp  : {input['path_dense_DFT_toInterp_fullPath']}")
     print(f"path_dense_DFT_reference : {input['path_dense_DFT_reference_fullPath']}")
     print(f"nbandsgw_dense           : {input['nbandsgw_dense']}")
+    print(f"interpolation method     : {input['flag_interp_method']}")    
     print("==================================\n")    
+        
         
         
         
@@ -1407,7 +1410,7 @@ if __name__ == "__main__":
                                                 obj_sparse_GW     = input['path_sparse_GW_fullPath'] , 
                                                 obj_dense_fromWAVECAR_toReceiveInterp = input["path_dense_DFT_toInterp_fullPath"]   , 
     #                                           #obj_dense_DFT_ref = input["path_dense_DFT_reference_fullPath"] ,
-                                                flag_interp_method = "rbf:gaussian"  ,
+                                                flag_interp_method = input['flag_interp_method']  ,
                                                 flag_applyQP_toWAVECAR = True        ,
                                                 flag_apply_delta_correction = True   )
     print("Interpolation completed successfully.")                         

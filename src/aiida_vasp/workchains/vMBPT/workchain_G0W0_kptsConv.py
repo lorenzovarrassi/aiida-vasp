@@ -14,50 +14,53 @@ from .workchain_G0W0_base import VaspDFTGWWorkChain
 from aiida import load_profile
 load_profile()
 
-#Miscellaneous utils functions
-def _get_kmesh_from_kdensity(latVec , KSPACING , flag_roundInsteadCeil=True ):
-        """
-        Calculate the k-point mesh dimensions for a given lattice and k-point spacing.
-        Args:
-          - latVec (array-like): A 3x3 array representing the lattice vectors of the unit cell.
-          - KSPACING (in Angstrom^{-1}) represents the smallest allowed spacking between k-points in the BZ; SMALLER values produce DENSER meshes;
-            Conversely, The output number of divisions Ni is chosen as the maximum integer that satisfies |b_i| / Ni <= KSPACING
-        """
+#HELPER functions
+class helper_kptsConv_G0W0:
+    @staticmethod
+    def _get_kmesh_from_kdensity(latVec , KSPACING , flag_roundInsteadCeil=True ):
+            """
+            Calculate the k-point mesh dimensions for a given lattice and k-point spacing.
+            Args:
+              - latVec (array-like): A 3x3 array representing the lattice vectors of the unit cell.
+              - KSPACING (in Angstrom^{-1}) represents the smallest allowed spacking between k-points in the BZ; SMALLER values produce DENSER meshes;
+                Conversely, The output number of divisions Ni is chosen as the maximum integer that satisfies |b_i| / Ni <= KSPACING
+            """
+    
+            latVec = np.array( latVec )
+            recLatVec= np.zeros((3,3))
+            Vol= np.abs( np.dot(latVec[0,:] , np.cross(latVec[1,:],latVec[2,:])) )
+            recLatVec[0,:]= np.cross(latVec[1,:],latVec[2,:])  /Vol
+            recLatVec[1,:]= np.cross(latVec[2,:],latVec[0,:])  /Vol
+            recLatVec[2,:]= np.cross(latVec[0,:],latVec[1,:])  /Vol
+    
+            # List of dim=3 with dimensions of the 3 rec.vectors.
+            rec_cell_norm = np.array( [np.linalg.norm( recLatVec[x,:]) for x in range(3)] )
+            
+            #Exact (and thus fractional) K-mesh corresponding to the EXACT KSPACING
+            #  For example, for rec_cell_norm = [0.319, 0.319, 0.319] :    
+            #  KSPACING = 0.5 -> array([4.0084, 4.0084, 4.0084])
+            #  KSPACING = 0.3 -> array([6.6807, 6.6807, 6.6807])
+            kmesh_ideal_fractional = np.array(rec_cell_norm) * 2*np.pi / KSPACING
+    
+            if flag_roundInsteadCeil:   kmesh = [ max(1.0,np.round(k)) for k in kmesh_ideal_fractional ]
+            else:                       kmesh = np.ceil( kmesh_ideal_fractional )
+            kmesh = np.array( kmesh ).astype(int)
+            return kmesh
 
-        latVec = np.array( latVec )
-        recLatVec= np.zeros((3,3))
-        Vol= np.abs( np.dot(latVec[0,:] , np.cross(latVec[1,:],latVec[2,:])) )
-        recLatVec[0,:]= np.cross(latVec[1,:],latVec[2,:])  /Vol
-        recLatVec[1,:]= np.cross(latVec[2,:],latVec[0,:])  /Vol
-        recLatVec[2,:]= np.cross(latVec[0,:],latVec[1,:])  /Vol
-
-        # List of dim=3 with dimensions of the 3 rec.vectors.
-        rec_cell_norm = np.array( [np.linalg.norm( recLatVec[x,:]) for x in range(3)] )
-        
-        #Exact (and thus fractional) K-mesh corresponding to the EXACT KSPACING
-        #  For example, for rec_cell_norm = [0.319, 0.319, 0.319] :    
-        #  KSPACING = 0.5 -> array([4.0084, 4.0084, 4.0084])
-        #  KSPACING = 0.3 -> array([6.6807, 6.6807, 6.6807])
-        kmesh_ideal_fractional = np.array(rec_cell_norm) * 2*np.pi / KSPACING
-
-        if flag_roundInsteadCeil:   kmesh = [ max(1.0,np.round(k)) for k in kmesh_ideal_fractional ]
-        else:                       kmesh = np.ceil( kmesh_ideal_fractional )
-        kmesh = np.array( kmesh ).astype(int)
-        return kmesh
-
-def _get_kspacing_from_kmesh(latVec, kmesh): 
-        #k-mesh = 2pi * |bi|/ k-density  ->DataFactory('core.array.kpoints')
-        kmesh_tmp = deepcopy( kmesh )
-        latVec = np.array( latVec )
-        recLatVec= np.zeros((3,3))
-        Vol= np.abs( np.dot(latVec[0,:] , np.cross(latVec[1,:],latVec[2,:])) )
-        recLatVec[0,:]= np.cross(latVec[1,:],latVec[2,:])  /Vol
-        recLatVec[1,:]= np.cross(latVec[2,:],latVec[0,:])  /Vol
-        recLatVec[2,:]= np.cross(latVec[0,:],latVec[1,:])  /Vol
-
-        rec_cell_norm = [np.linalg.norm( recLatVec[x,:]) for x in range(3)]    
-        return [2*np.pi * rec_cell_norm[idx] / kmesh_tmp[idx] for idx in range(len(rec_cell_norm)) ]
-        
+    @staticmethod
+    def _get_kspacing_from_kmesh(latVec, kmesh): 
+            #k-mesh = 2pi * |bi|/ k-density  ->DataFactory('core.array.kpoints')
+            kmesh_tmp = deepcopy( kmesh )
+            latVec = np.array( latVec )
+            recLatVec= np.zeros((3,3))
+            Vol= np.abs( np.dot(latVec[0,:] , np.cross(latVec[1,:],latVec[2,:])) )
+            recLatVec[0,:]= np.cross(latVec[1,:],latVec[2,:])  /Vol
+            recLatVec[1,:]= np.cross(latVec[2,:],latVec[0,:])  /Vol
+            recLatVec[2,:]= np.cross(latVec[0,:],latVec[1,:])  /Vol
+    
+            rec_cell_norm = [np.linalg.norm( recLatVec[x,:]) for x in range(3)]    
+            return [2*np.pi * rec_cell_norm[idx] / kmesh_tmp[idx] for idx in range(len(rec_cell_norm)) ]
+            
 
 
 class VaspG0W0KptsConvWorkChain(WorkChain):
@@ -135,12 +138,12 @@ class VaspG0W0KptsConvWorkChain(WorkChain):
         #[2] Initialize the starting k-mesh
         if ('kmesh' in self.inputs.ns_kpoints) and ('starting_mesh' in self.inputs.ns_kpoints.kmesh) :
             kmesh_start    = self.inputs.ns_kpoints.kmesh.starting_mesh.get_kpoints_mesh()[0]
-            kdensity_start = max( _get_kspacing_from_kmesh(self.inputs.structure.cell, kmesh_start) )
+            kdensity_start = max( helper_kptsConv_G0W0._get_kspacing_from_kmesh(self.inputs.structure.cell, kmesh_start) )
             str_log = ("\n [Initializing K-points convergence]"+"\n > Starting k-mesh is specified by the user ("+str(self.inputs.ns_kpoints.kmesh.starting_mesh.get_kpoints_mesh()[0] )+") - using as starting k-mesh")
         else:
             # If kmesh is not specified, use kdensity.starting_density
             kdensity_start = max( self.inputs.ns_kpoints.kdensity.minimum_constraint.value , self.inputs.ns_kpoints.kdensity.starting_density.value )
-            kmesh_start    = _get_kmesh_from_kdensity(self.inputs.structure.cell, kdensity_start)
+            kmesh_start    = helper_kptsConv_G0W0._get_kmesh_from_kdensity(self.inputs.structure.cell, kdensity_start)
             str_log = ("\n [Initializing K-points convergence]"+"\n > Starting k-mesh is not specified by the user; using k-mesh corresponding to kdensity.starting_density")
             str_log = str_log + ("\n   > kdensity.starting_density:   "+str(self.inputs.ns_kpoints.kdensity.starting_density.value)+" A^{-1}"+
                                  "\n   > kdensity.minimum_constraint: "+str(self.inputs.ns_kpoints.kdensity.minimum_constraint.value)+" A^{-1}"+
@@ -157,7 +160,7 @@ class VaspG0W0KptsConvWorkChain(WorkChain):
             #Then check that candidate and generate new candidates
             while np.any(tmp_new_candidate_kmesh < self.inputs.ns_kpoints.kmesh.max_mesh.get_kpoints_mesh()[0] ):
                  self.ctx.control['kmesh'].append(    np.array(tmp_new_candidate_kmesh , dtype=int)  )
-                 self.ctx.control['kdensity'].append( np.array(_get_kspacing_from_kmesh(self.inputs.structure.cell, tmp_new_candidate_kmesh) , dtype=float) )              
+                 self.ctx.control['kdensity'].append( np.array(helper_kptsConv_G0W0._get_kspacing_from_kmesh(self.inputs.structure.cell, tmp_new_candidate_kmesh) , dtype=float) )              
                  tmp_new_candidate_kmesh =  self.ctx.control['kmesh'][-1] + np.array(self.inputs.ns_kpoints.kmesh.step.get_kpoints_mesh()[0] , dtype=int )
                 
         elif self.ctx.control['control_way'] == 'kdensity':
@@ -165,7 +168,7 @@ class VaspG0W0KptsConvWorkChain(WorkChain):
                  list_kdensity  = np.arange( min(kdensity_start , self.inputs['ns_kpoints']['kdensity']['maxValue'].value) , 
                                              max(kdensity_start , self.inputs['ns_kpoints']['kdensity']['maxValue'].value) , 
                                              kdensity_step )
-                 list_kmesh     = [_get_kmesh_from_kdensity(self.inputs.structure.cell , KS) for KS in list_kdensity]   
+                 list_kmesh     = [helper_kptsConv_G0W0._get_kmesh_from_kdensity(self.inputs.structure.cell , KS) for KS in list_kdensity]   
                  
                  #A kmesh is composed by integers, therefore it's density does not exactly corresponds to the values list_kdensity; it's defined as the kmesh with the closest density to the ones in list_kdensity
                  #Therefore if kdensity is very small, there could be identical entries in list_kmesh; these duplicates correspond to different kdensity values which round to the same kmesh
@@ -173,7 +176,7 @@ class VaspG0W0KptsConvWorkChain(WorkChain):
                  self.ctx.control['kmesh'] , _ = np.unique( list_kmesh , axis=0 , return_index=True ) 
                  #np.unique returns an array a lists; we want a list of arrays, thus
                  self.ctx.control['kmesh']     = [np.array(kmesh) for kmesh in self.ctx.control['kmesh'] ]
-                 self.ctx.control['kdensity']  = [ np.array(_get_kspacing_from_kmesh(self.inputs.structure.cell, kmesh) , dtype=float) for kmesh in self.ctx.control['kmesh'] ]
+                 self.ctx.control['kdensity']  = [ np.array(helper_kptsConv_G0W0._get_kspacing_from_kmesh(self.inputs.structure.cell, kmesh) , dtype=float) for kmesh in self.ctx.control['kmesh'] ]
                  self.ctx.control['kdensity_notRounded'] = list_kdensity
                  str_log = str_log + ( "\n   > kdensity_step:               "+str(kdensity_step) )
         str_log = str_log + ( "\n   > kmesh list:    "+str(self.ctx.control['kmesh'])    )
@@ -197,9 +200,9 @@ class VaspG0W0KptsConvWorkChain(WorkChain):
         self.ctx.inputs_G0W0base.kpoints.set_kpoints_mesh(  self.ctx.control['kmesh'][self.ctx.control.iteration_counter] )
            
         # Reference WAVECAR/CHGCAR if user provided (optional)
-        if ('ns_reference' in self.inputs) and ('DFTgr_RemoteData' in self.inputs['ns_reference']):
+        if ('ns_reference' in self.inputs) and ('starting_RemoteData' in self.inputs['ns_reference']):
             self.ctx.inputs_G0W0base.ns_reference = AttributeDict()
-            self.ctx.inputs_G0W0base.ns_reference.DFTgr_RemoteData = self.inputs.ns_reference.DFTgr_RemoteData
+            self.ctx.inputs_G0W0base.ns_reference.starting_RemoteData = self.inputs.ns_reference.starting_RemoteData
 
 
         # ns_parameters (copy through what you use)
@@ -303,7 +306,7 @@ class VaspG0W0KptsConvWorkChain(WorkChain):
         #[DETERMINING self.ctx.monitor.flag_is_converged FOR THE kdensity control_way]
         if self.ctx.control['control_way'] == 'kdensity':
             #Let's define two helpers functions that will be used to compute the gradient and the extrapolated value of the GWgap
-            def _compute_GWgap_gradient( inputs , control , WC_G0W0 , flag_debug = True):
+            def __compute_GWgap_gradient( inputs , control , WC_G0W0 , flag_debug = True):
                 #Initialize stuff
                 Delta_GWgap  = AttributeDict()   ;  Delta_GWgap['spinUp']    = AttributeDict() ; 
                 Gradient_GWgap = AttributeDict() ;  Gradient_GWgap['spinUp'] = AttributeDict() ;
@@ -335,7 +338,7 @@ class VaspG0W0KptsConvWorkChain(WorkChain):
                         Gradient_GWgap[idx[0]][idx[1]].append( tmp_Gradient_singleIteration )           #QUI HO UN DUBBIO - MA GIA HO CONTROLLATO
                 return Gradient_GWgap  
     
-            def _compute_GWgap_extrapolated( inputs , control , WC_G0W0 , flag_debug = True , fit_poly_degree=1 , fit_number_calc_usedForExtr = 3):
+            def __compute_GWgap_extrapolated( inputs , control , WC_G0W0 , flag_debug = True , fit_poly_degree=1 , fit_number_calc_usedForExtr = 3):
                 #[Part 1]Initialize stuff
                 idx_toIterate = list( itertools.product( ['spinUp'] , ['G0W0_Dir', 'G0W0_Ind','G0W0_Gam']) )
                 GWgap_Extrapolated = AttributeDict()      ;  GWgap_Extrapolated['spinUp']      = AttributeDict() ;
@@ -390,8 +393,8 @@ class VaspG0W0KptsConvWorkChain(WorkChain):
             #Control of convergence starts after completions of first three calcs.
             #remember that the counter is increased as the last thing before returning, and AFTER this check
             #thus before the conv.check of the 3° iteration of the cycle is=1; and after the 3°run is =2
-            GWgap_Gradient         = _compute_GWgap_gradient( self.inputs     , self.ctx.control , self.ctx.WC_MBPT )
-            GWgap_Extrapolated , _ = _compute_GWgap_extrapolated( self.inputs , self.ctx.control , self.ctx.WC_MBPT )
+            GWgap_Gradient         = __compute_GWgap_gradient( self.inputs     , self.ctx.control , self.ctx.WC_MBPT )
+            GWgap_Extrapolated , _ = __compute_GWgap_extrapolated( self.inputs , self.ctx.control , self.ctx.WC_MBPT )
             
             ##[Check - 2] for convergence - using gradient
             if self.ctx.monitor.has_spin:

@@ -475,6 +475,13 @@ class VaspParser(Parser):
         if 'vasprun.xml' in quantities_each:
             deigen = quantities_each['vasprun.xml']['eigenvalues']
             docc = quantities_each['vasprun.xml']['occupancies']
+            
+            # If VASP didn’t produce eigenvalues/occupancies (e.g. interrupted run, for example a failure in a MPI call),
+            # and bands are requestes, deigen is None, and the check 'total' in deigen raises a TypeError -> which is
+            # not controlled; Resolve this
+            if (deigen is None) or (docc is None):
+                raise QuantityMissingError('Missing eigenvalues and/or occupancies in vasprun.xml; cannot compose BandsData.') 
+             
             if 'total' in deigen:
                 eigenvalues = np.array(deigen['total'])
                 occupancies = np.array(docc['total'])

@@ -337,7 +337,7 @@ class Helpers_setup_Workchain :
             print(f"    {el}: {pot}")
     
         return Str(potential_family), Dict(potential_mapping)
-    
+
     # -------------------------------------------------------------------------
     #[6] Build interpolation input namespace (ns_interpolation)
     @staticmethod
@@ -527,6 +527,28 @@ class Helpers_setup_Workchain :
     
         return "\n".join(lines)
     
+    @staticmethod
+    def _outcar_potcar_map(outcar_path: str) -> dict[str, str]:
+        """Return the AiiDA-Ready potcar mapping (es: {'Ag': 'Ag_GW', 'Cl': 'Cl_GW'})
+        parsed from SHA256/POTCAR labels present in an OUTCAR or POTCAR files ."""
+        import re
+        from pathlib import Path
 
+        # Prefer SHA256 lines:  SHA256 = <hash>  Ag_GW/POTCAR
+        re_sha = re.compile(r"^\s*SHA256\s*=\s*[0-9a-f]{64}\s+(?P<label>[^/\s]+)/POTCAR\s*$", re.I)
+        # Fallback: POTCAR:    PAW_PBE Ag_GW 06Mar2008
+        re_hdr = re.compile(r"^\s*POTCAR:\s+\S+\s+(?P<label>\S+)\s+\S+.*$", re.I)
 
+        mapping, seen_labels = {}, set()
+        for line in Path(outcar_path).read_text(errors="replace").splitlines():
+            m = re_sha.match(line) or re_hdr.match(line)
+            if not m:
+                continue
+            label = m.group("label").strip()           # e.g. Ag_GW
+            if label in seen_labels:
+                continue
+            seen_labels.add(label)
+            elem = label.split("_", 1)[0]              # e.g. Ag from Ag_GW / Ag_sv_GW / Ag_pv
+            mapping[elem] = label
+        return mapping
 

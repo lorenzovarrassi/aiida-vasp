@@ -88,12 +88,12 @@ class VaspmBSECompleteWorkChain(WorkChain):
 
 
         
-        spec.expose_inputs(cls._mbse_base_wc,   exclude=('kpoints',)        )
+        spec.expose_inputs(cls._mbse_base_wc,   exclude=('kpoints','ns_reference')        )
         kpoints_step_defaultvalue = KpointsData(); kpoints_step_defaultvalue.set_kpoints_mesh([1, 1, 1])
         kpoints_step_maxvalue = KpointsData();     kpoints_step_maxvalue.set_kpoints_mesh([20, 20, 20])
-        spec.input('ns_kpoints.kmesh.starting_mesh',   valid_type=KpointsData, required=True,   help="Starting k-mesh for the k-point convergence."         )
-        spec.input('ns_kpoints.kmesh.max_mesh',        valid_type=KpointsData, required=True,   default=lambda: kpoints_step_maxvalue,     help="Maximum k-mesh to be tested in the convergence."         )
-        spec.input('ns_kpoints.kmesh.step',            valid_type=KpointsData, required=False,  default=lambda: kpoints_step_defaultvalue, help="Step size for the k-point mesh."   )
+        spec.input('ns_kpoints.starting_mesh',   valid_type=KpointsData, required=True,   help="Starting k-mesh for the k-point convergence."         )
+        spec.input('ns_kpoints.max_mesh',        valid_type=KpointsData, required=False,  default=lambda: kpoints_step_maxvalue,     help="Maximum k-mesh to be tested in the convergence."         )
+        spec.input('ns_kpoints.step',            valid_type=KpointsData, required=False,  default=lambda: kpoints_step_defaultvalue, help="Step size for the k-point mesh."   )
         spec.input('ns_kpoints.convergence_threshold', valid_type=Float,       required=False,  default=lambda: Float(0.1), help="Convergence threshold on the optical gap in eV."  )
 
         spec.output('kmesh_converged',  valid_type=KpointsData)
@@ -125,13 +125,12 @@ class VaspmBSECompleteWorkChain(WorkChain):
         inputs_kconv.ns_BSE.NBANDSV = Int(2)
         inputs_kconv.ns_BSE.NBANDSO = Int(2)
 
-
         # Add ns_kpoints namespace as expected by VaspmBSEKptsConvWorkChain
         inputs_kconv.ns_kpoints = AttributeDict()
         inputs_kconv.ns_kpoints.kmesh = AttributeDict()
-        inputs_kconv.ns_kpoints.kmesh.starting_mesh   = self.inputs.ns_kpoints.kmesh.starting_mesh
-        inputs_kconv.ns_kpoints.kmesh.max_mesh        = self.inputs.ns_kpoints.kmesh.max_mesh
-        inputs_kconv.ns_kpoints.kmesh.step            = self.inputs.ns_kpoints.kmesh.step
+        inputs_kconv.ns_kpoints.kmesh.starting_mesh   = self.inputs.ns_kpoints.starting_mesh
+        inputs_kconv.ns_kpoints.kmesh.max_mesh        = self.inputs.ns_kpoints.max_mesh
+        inputs_kconv.ns_kpoints.kmesh.step            = self.inputs.ns_kpoints.step
         inputs_kconv.ns_kpoints.convergence_threshold = self.inputs.ns_kpoints.convergence_threshold
 
         running = self.submit(self._mbse_kptsconv_wc, **inputs_kconv)

@@ -13,9 +13,8 @@ from aiida.orm import Code, Bool, Str, Int, Dict, Float , KpointsData , RemoteDa
 
 
 
-def apply_scissor(bandsdata: orm.BandsData, scissor_value: float) -> orm.BandsData:
-    """
-    Apply a rigid scissor correction to conduction bands in a BandsData object.
+def _apply_scissor(bandsdata: orm.BandsData, scissor_value: float) -> orm.BandsData:
+    """ Apply a rigid scissor correction to conduction bands in a BandsData object.
     The correction is applied to all bands above the highest occupied state.
 
     Parameters
@@ -42,13 +41,13 @@ def apply_scissor(bandsdata: orm.BandsData, scissor_value: float) -> orm.BandsDa
     return new_bandsdata
 
 
-def determine_BSE_parameters( bandsdata: orm.BandsData,
+def _determine_BSE_parameters( bandsdata: orm.BandsData,
                               G0W0_gap: float,
                               energy_window_goal: float = 3,
-                              num_bands_included: int   = 20,                                   
+                              num_bands_included: int   = 20,         
+                              num_bands_used_for_transition_matrix: float = 10
                               ) -> tuple[int, int, float, float, float, str]:
-    """
-    Determine NBANDSV, NBANDSO, and OMEGAMAX for BSE calculations
+    """ Determine NBANDSV, NBANDSO, and OMEGAMAX for BSE calculations
     from DFT (or scissor-corrected) bands.
 
     Parameters
@@ -56,7 +55,8 @@ def determine_BSE_parameters( bandsdata: orm.BandsData,
     bandsdata : aiida.orm.BandsData         The band structure used as reference.
     energy_window_goal : float              Target optical window (in eV).
     G0W0_gap : float                        GW gap (in eV). used to determine Scissor correction 
-    max_bands_in_matrix : int               Safety upper bound for valence/conduction bands to scan.
+    num_bands_included : int                Safety upper bound for valence/conduction bands to scan.
+                                              (for example, the number of bands for which QP corrections are defined)
 
     Returns
     -------
@@ -65,7 +65,8 @@ def determine_BSE_parameters( bandsdata: orm.BandsData,
     b_band = bandsdata.get_array("bands")
     b_occ  = bandsdata.get_array("occupations")
     n_kpts, n_bands = b_band.shape
-    log    = [ f"\n[info] n_kpts = {n_kpts} , n_bands = {n_bands}\n" ]
+    log    = [ f"\n [1] Input BandsData (pk={bandsdata.pk})\n"]
+    log.append(f"  > n_kpts = {n_kpts} , n_bands = {n_bands}\n" )
     output = {}
     #[SAFE-CHECK] Check that occupancy values are in [0, 1]
     if np.any(b_occ < -1e-3) or np.any(b_occ > 1.001):
@@ -82,7 +83,7 @@ def determine_BSE_parameters( bandsdata: orm.BandsData,
          warnings.warn('BIG-WARNING : Highest occupied band is not the same for all k-points. Using the first k-point index as reference.')
          log.append("[BIG-WARNING] Highest occupied band differs among k-points.\n")
          idx_HO = idx_HO_forDifferentKpts[0]
-    log.append(f"[info] idx_HO = {idx_HO}\n")
+    log.append(f"  > idx_HO = {idx_HO}   (starting from 0, i.e. Python indexing)\n")
     #OLD ROUTINE
     ## Build valence/conduction band windows
     #bval_eachb_max = [ np.max(b_band[:, i]) for i in range(idx_HO - max_bands_in_matrix + 1, idx_HO + 1) ][::-1]
@@ -91,10 +92,11 @@ def determine_BSE_parameters( bandsdata: orm.BandsData,
     #cval_eachb_min_delta = np.array(cval_eachb_min) - bcon_lu
     
     #[2] Adjust number of valence/conduction bands included in the check
-    n_valence_available    = idx_HO + 1
+    n_valence_available    = idx_HO + 1             #+1 because 0 is indexed and should be included
     n_conduction_available = n_bands - (idx_HO + 1)
-    n_valence_used    = min(num_bands_included, n_valence_available )
-    n_conduction_used = min(num_bands_included, n_conduction_available )
+    num_bands_available = min(num_bands_included , n_bands) 
+    n_valence_used      = min(num_bands_included, n_valence_available )
+    n_conduction_used   = min(num_bands_included, n_conduction_available )
 
     #[3] E_VBM =max( array of the values of the band w/ index idx_HO for all k-points )
     #    E_CBM =min( array of the values of the band w/ index idx_HO+1 for all k-points )
@@ -103,7 +105,10 @@ def determine_BSE_parameters( bandsdata: orm.BandsData,
     E_VBM = np.max(b_band[:, idx_HO])
     E_CBM = np.min(b_band[:, idx_HO + 1])
     E_gap_DFT = E_CBM - E_VBM
-    log.append(f"[gap] E_VBM = {E_VBM:.4f} eV , E_CBM = {E_CBM:.4f} eV , DFT gap = {E_gap_DFT:.4f} eV\n")
+    log.append( "  [2] Determining distances from VBM and CBM in BandsData:")
+    log.append(f"   > num_bands_included = {num_bands_included}\n")
+    log.append(f"   > n_valence_used = {n_valence_used} , n_conduction_used = {n_conduction_used}\n")
+    log.append(f"   > E_VBM = {E_VBM:.4f} eV , E_CBM = {E_CBM:.4f} eV -> DFT = {E_gap_DFT:.4f} eV\n")
     
     #[4] Extract valence/conduction band edges for the chosen number of bands ---
     # Each band index corresponds to a single band across all k-points.
@@ -130,14 +135,14 @@ def determine_BSE_parameters( bandsdata: orm.BandsData,
     DeltaE_valb_fromVBM = E_VBM - np.array(E_valbands_max)    # distance of each valence band top below VBM
     DeltaE_conb_fromCBM  = np.array(E_conbands_min) - E_CBM     # distance of each conduction band bottom above CBM
     # VALENCE (v00 = VBM, v01 = one band below, ...)
-    log.append("\n[ΔE_valb_from_VBM] (eV):\n")
-    log.append("  ".join(f"v{iv:02d}" for iv in range(n_valence_used)) + "\n")
-    log.append("  ".join(f"{v:7.4f}"  for v in DeltaE_valb_fromVBM) + "\n")
+    log.append("  > ΔE_valb_from_VBM (eV):\n")
+    log.append("    "+"     ".join(f"v{iv:02d}" for iv in range(n_valence_used)) + "\n")
+    log.append("   "+" ".join(f"{v:7.4f}"  for v in DeltaE_valb_fromVBM) + "\n")
 
     # CONDUCTION (c00 = CBM, c01 = one band above, ...)
-    log.append("[ΔE_conb_from_CBM] (eV):\n")
-    log.append(" "+"        ".join(f"c{ic:02d}" for ic in range(n_conduction_used)) + "\n")
-    log.append(" "+"        ".join(f"{c:7.4f}"  for c in DeltaE_conb_fromCBM) + "\n")
+    log.append("  > ΔE_conb_from_CBM] (eV):\n")
+    log.append("  "+"    ".join(f"c{ic:02d}" for ic in range(n_conduction_used)) + "\n")
+    log.append("   "+" ".join(f"{c:7.4f}"  for c in DeltaE_conb_fromCBM) + "\n")
     if np.any(DeltaE_conb_fromCBM < 0) or np.any(DeltaE_valb_fromVBM < 0):
         warnings.warn("BIG-WARNING : Negative DeltaEn detected; check band ordering or occupations.")
 
@@ -145,10 +150,11 @@ def determine_BSE_parameters( bandsdata: orm.BandsData,
     SCISSOR = 0.0
     if G0W0_gap is not None:
         SCISSOR = float(G0W0_gap) - float(E_gap_DFT)
-        log.append(f"DFT gap = {E_gap_DFT:.3f} eV, G0W0 gap = {G0W0_gap:.3f} eV, scissor = {SCISSOR:.3f} eV")
+        log.append( f"\n [2] Input G0W0 :\n")
+        log.append(f"  > G0W0.gap = {G0W0_gap:.3f} eV  --[DFT gap = {E_gap_DFT:.3f} eV]--> scissor = {SCISSOR:.3f} eV")
         if SCISSOR < -1e-3: warnings.warn("BIG-WARNING : Computed scissor shift is negative")
     else:
-        log.append(f"Using DFT gap only (no G0W0 correction). DFT gap = {E_gap_DFT:.3f} eV")
+        log.append(f"  > Using DFT gap only (no G0W0 correction). DFT gap = {E_gap_DFT:.3f} eV")
 
     #[7] Determine all possible transitions energies (valence × conduction)    #
     # Build a full 2D matrix of single-particle transition energies between
@@ -163,6 +169,9 @@ def determine_BSE_parameters( bandsdata: orm.BandsData,
     #   - ΔE_con(ic) : energy offset of the conduction band bottom above CBM
     # Which is an Indipendent.Particle.Approximation transition
     # as BSE contributions lower the transition from IPA starting value, this is a safe bet.
+    if energy_window_goal is not None: spectra_energy_window_aboveGap = energy_window_goal
+    else: spectra_energy_window_aboveGap = 3.5
+    
     transitions_matrix = np.zeros((n_valence_used, n_conduction_used))
     for iv in range(n_valence_used):
         for ic in range(n_conduction_used):
@@ -170,16 +179,19 @@ def determine_BSE_parameters( bandsdata: orm.BandsData,
                                            + DeltaE_valb_fromVBM[iv]
                                            + DeltaE_conb_fromCBM[ic]  )
     # Pretty-print the small transition matrix (max 10×10)
-    log.append("\n[transition_matrix - truncated to 10] (eV):\n")
+    log.append("\n"+" [3] max.transitions between pairs of bands (eV)"
+               "\n"+"  > including SCISSOR correction."
+               "\n"+f"  > used to determine the smallest combination which contains all transitions under {spectra_energy_window_aboveGap} above the gap"
+               "\n"+"  > only the first {num_bands_used_for_transition_matrix} cond/val bands, if available, are included in the matrix") 
     max_display_v = min(10, n_valence_used)
     max_display_c = min(10, n_conduction_used)
     # Conduction band header: c00, c01, ...
-    header = "      " + "      ".join(f"c{ic:02d}" for ic in range(max_display_c))
+    header = "\n      " + "      ".join(f"c{ic:02d}" for ic in range(max_display_c))
     log.append(header + "\n")
     # Rows: v00, v01, v02 = VBM, VBM-1, VBM-2, ...
     for iv in range(max_display_v):
         row = "  ".join(f"{transitions_matrix[iv, ic]:7.3f}" for ic in range(max_display_c))
-        log.append(f"v{iv:02d}: {row}\n")
+        log.append(f"    v{iv:02d}: {row}\n")
     
     # Create a boolean mask of all transitions lying within the target optical window.
     # 'energyWindow_goal' is the width of the desired spectral window (e.g. 3 eV);
@@ -189,14 +201,12 @@ def determine_BSE_parameters( bandsdata: orm.BandsData,
     #   - if ANY transition from a given valence band is within the window,
     #     that valence band must be included → count over axis=1
     #   - same for conduction bands → count over axis=0
-    if energy_window_goal is not None: spectra_energy_window_aboveGap = energy_window_goal
-    else: spectra_energy_window_aboveGap = 3.5
-    
     mask = transitions_matrix < E_gap_DFT + SCISSOR + spectra_energy_window_aboveGap
+    output['HOMO_band_idx'] = idx_HO
     output['gap_DFT']  = E_gap_DFT
     output['SCISSOR']  = SCISSOR
-    output['NBANDSV']  = np.sum( np.any(mask, axis=1) )
-    output['NBANDSO']  = np.sum( np.any(mask, axis=0) )
+    output['NBANDSO']  = np.sum( np.any(mask, axis=1) )
+    output['NBANDSV']  = np.sum( np.any(mask, axis=0) )
     output['OMEGAMAX'] =  E_gap_DFT + SCISSOR + spectra_energy_window_aboveGap
     #                     #Note that SCISSOR is defined   
     #                     #SCISSOR = float(G0W0_gap) - float(E_gap_DFT)  if G0W0_gap is not None else 0

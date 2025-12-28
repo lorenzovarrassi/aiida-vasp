@@ -14,221 +14,225 @@ from aiida import load_profile
 load_profile()
 
 #Miscellaneous utils functions
-def _get_kmesh_from_kdensity(latVec , KSPACING , flag_roundInsteadCeil=True ):
-        """
-        Calculate the k-point mesh dimensions for a given lattice and k-point spacing.
-        Args:
-          - latVec (array-like): A 3x3 array representing the lattice vectors of the unit cell.
-          - KSPACING (in Angstrom^{-1}) represents the smallest allowed spacking between k-points in the BZ; SMALLER values produce DENSER meshes;
-            Conversely, The output number of divisions Ni is chosen as the maximum integer that satisfies |b_i| / Ni <= KSPACING
-        """
-
-        latVec = np.array( latVec )
-        recLatVec= np.zeros((3,3))
-        Vol= np.abs( np.dot(latVec[0,:] , np.cross(latVec[1,:],latVec[2,:])) )
-        recLatVec[0,:]= np.cross(latVec[1,:],latVec[2,:])  /Vol
-        recLatVec[1,:]= np.cross(latVec[2,:],latVec[0,:])  /Vol
-        recLatVec[2,:]= np.cross(latVec[0,:],latVec[1,:])  /Vol
-
-        # List of dim=3 with dimensions of the 3 rec.vectors.
-        rec_cell_norm = np.array( [np.linalg.norm( recLatVec[x,:]) for x in range(3)] )
-        
-        #Exact (and thus fractional) K-mesh corresponding to the EXACT KSPACING
-        #  For example, for rec_cell_norm = [0.319, 0.319, 0.319] :    
-        #  KSPACING = 0.5 -> array([4.0084, 4.0084, 4.0084])
-        #  KSPACING = 0.3 -> array([6.6807, 6.6807, 6.6807])
-        kmesh_ideal_fractional = np.array(rec_cell_norm) * 2*np.pi / KSPACING
-
-        if flag_roundInsteadCeil:   kmesh = [ max(1.0,np.round(k)) for k in kmesh_ideal_fractional ]
-        else:                       kmesh = np.ceil( kmesh_ideal_fractional )
-        kmesh = np.array( kmesh ).astype(int)
-        return kmesh
-
-def _get_kspacing_from_kmesh(latVec, kmesh): 
-        #k-mesh = 2pi * |bi|/ k-density  ->DataFactory('core.array.kpoints')
-        kmesh_tmp = deepcopy( kmesh )
-        latVec = np.array( latVec )
-        recLatVec= np.zeros((3,3))
-        Vol= np.abs( np.dot(latVec[0,:] , np.cross(latVec[1,:],latVec[2,:])) )
-        recLatVec[0,:]= np.cross(latVec[1,:],latVec[2,:])  /Vol
-        recLatVec[1,:]= np.cross(latVec[2,:],latVec[0,:])  /Vol
-        recLatVec[2,:]= np.cross(latVec[0,:],latVec[1,:])  /Vol
-
-        rec_cell_norm = [np.linalg.norm( recLatVec[x,:]) for x in range(3)]    
-        return [2*np.pi * rec_cell_norm[idx] / kmesh_tmp[idx] for idx in range(len(rec_cell_norm)) ]
-        
-def _check_dielectric_convergence(idiel_1, 
-                                  idiel_2,
-                                 energy_grid,
-                                 energy_window,
-                                 method="L2_distance",
-                                 threshold=1e-3,
-                                 channels=(0,1,2)  # xx, yy, zz only
-                                 ):
-    """ Compare two imaginary dielectric functions (N_energy x N_channels)
-        using a specified metric, restricted to selected diagonal channels
-        and within (E_min, E_max) energy window.
-    Returns:   (bool converged, float distance)
-    """
-    from scipy.stats import wasserstein_distance
-
-    #[1] Apply energy window filter
-    E_min, E_max = energy_window
-    mask = (energy_grid >= E_min) & (energy_grid <= E_max)
-
-    egrid = energy_grid[mask]
-
-    # filter dielectric arrays & channels
-    #id1 = idiel_1[np.ix_(mask, channels)]   # shape (Nwin, 3)
-    #id2 = idiel_2[np.ix_(mask, channels)]   # shape (Nwin, 3)
-    id1 = idiel_1[mask][:, channels]
-    id2 = idiel_2[mask][:, channels]
-
-    #[2] Internal metric definitions
-    #[2.1] L2 norm over ω and channels
-    def _L2(a, b, e):
-        diff_sq = (a - b)**2   # shape: (Nwin, 3)
-        f = np.mean(diff_sq, axis=1)   # average over xx,yy,zz
-        return np.sqrt(np.trapz(f, e))
-
-    #[2.2] L1 norm
-    def _L1(a, b, e):
-        diff = np.abs(a - b)
-        f = np.mean(diff, axis=1)
-        return np.trapz(f, e)
-
-    #[2.3] Wasserstein (Earth-Mover) distance
-    def _Wasserstein(a, b, e):
-        """
-        Uses the mean value across xx,yy,zz channels.
-        Both curves must be normalized to form valid PDFs.
-        """
-        f1 = np.mean(a, axis=1)
-        f2 = np.mean(b, axis=1)
-
-        # ensure non-negative
-        f1 = np.clip(f1, 0, None)
-        f2 = np.clip(f2, 0, None)
-
-        # normalize to sum to 1 (become distributions)
-        if np.sum(f1) > 0:
-            f1 = f1 / np.sum(f1)
-        if np.sum(f2) > 0:
-            f2 = f2 / np.sum(f2)
-
-        return wasserstein_distance(e, e, f1, f2)
-
-    #[3] Constructing Dict with all methods and dealing with errors
-    metric_map = { "L2_distance": _L2,
-                   "L1_distance": _L1,
-                   "Wasserstein": _Wasserstein,     }
-    if method not in metric_map:
-        raise ValueError(f"Unknown method '{method}'. "
-                         f"Choose from: {list(metric_map.keys())}")
-
-    #[4] compute metric AND determine convergence flag
-    distance = metric_map[method](id1, id2, egrid)
-    converged = distance < threshold
-
-    return converged, distance
-
-def _detect_energy_of_diel_onset( imdiel , egrid , thr_for_considering_offset = 0.1):
-    """  Detect the onset of the imaginary dielectric function ε₂(ω).
-    Returns the first energy where average of diagonal component (xx,yy,zz)  exceeds 'eps'.
-    Parameters: imdie : (N_energy x 6) ndarray - suppsed ordering is (xx,yy,zz,..non-diag.components..)
-                egrid : (N_energy,) energy array
-                eps   : small threshold to avoid picking numerical noise
-    Returns:    float : onset energy """                                 
-    diag = imdiel[:, :3]  # consider only xx, yy, zz : thus shape (N, 3)
-    diag_mean = np.mean(diag, axis=1)
-    idx = np.where(diag_mean > thr_for_considering_offset)[0]
-    if len(idx) == 0: return egrid[0]  # fallback: no onset detected
-    return egrid[idx[0]]
-
-def _summary_list_kmesh_gap_diel(wc_list , window_size , diel_metric):
-    """ Return a formatted string summarizing:
-        idx | kmesh | optical gap | dielectric distance vs previous
-        Additionally returns the lists of Δ(optical gap) and Δ(diel) for external use.
-        using the records in wc_list = wc_MBPT_successful_sorted_elaborated.     
-
-        wc_list : list of records with fields:
-                  kmesh - optgap - imdiel - imdiel_onset - energygrid       """   
-        
-        
-
-    #[1] header
-    out = "\n  > [conv-summary] Completed mBSE nodes:"
-    if len(wc_list) == 0:
-        out += "    (none yet)"
-        return out, [], []
+class helper_kptsConv_mBSE:
+    @staticmethod
+    def _get_kmesh_from_kdensity(latVec , KSPACING , flag_roundInsteadCeil=True ):
+            """
+            Calculate the k-point mesh dimensions for a given lattice and k-point spacing.
+            Args:
+              - latVec (array-like): A 3x3 array representing the lattice vectors of the unit cell.
+              - KSPACING (in Angstrom^{-1}) represents the smallest allowed spacking between k-points in the BZ; SMALLER values produce DENSER meshes;
+                Conversely, The output number of divisions Ni is chosen as the maximum integer that satisfies |b_i| / Ni <= KSPACING
+            """
     
-
-    #[2] Compute dielectric distances wrt previous iteration and accumulate in the list
-    opt_diffs = []
-    diel_diffs = []
-    for i in range(len(wc_list)):
-        if i == 0:
-            opt_diffs.append(None)
-            diel_diffs.append(None)
-            continue
-
-        prev = wc_list[i - 1]
-        last = wc_list[i]
-
-
-        #[2.1] Optical gap difference
-        if prev["optgap"] is not None and last["optgap"] is not None:
-            opt_diffs.append(abs(last["optgap"] - prev["optgap"]))
-        else:
-            opt_diffs.append(None)
+            latVec = np.array( latVec )
+            recLatVec= np.zeros((3,3))
+            Vol= np.abs( np.dot(latVec[0,:] , np.cross(latVec[1,:],latVec[2,:])) )
+            recLatVec[0,:]= np.cross(latVec[1,:],latVec[2,:])  /Vol
+            recLatVec[1,:]= np.cross(latVec[2,:],latVec[0,:])  /Vol
+            recLatVec[2,:]= np.cross(latVec[0,:],latVec[1,:])  /Vol
+    
+            # List of dim=3 with dimensions of the 3 rec.vectors.
+            rec_cell_norm = np.array( [np.linalg.norm( recLatVec[x,:]) for x in range(3)] )
             
-        #[2.2] Dielectric difference 
-        #      Starty by skipping if imdiel is absent
-        if prev["imdiel"] is None or last["imdiel"] is None:
-            diel_diffs.append(None)
-            continue
+            #Exact (and thus fractional) K-mesh corresponding to the EXACT KSPACING
+            #  For example, for rec_cell_norm = [0.319, 0.319, 0.319] :    
+            #  KSPACING = 0.5 -> array([4.0084, 4.0084, 4.0084])
+            #  KSPACING = 0.3 -> array([6.6807, 6.6807, 6.6807])
+            kmesh_ideal_fractional = np.array(rec_cell_norm) * 2*np.pi / KSPACING
+    
+            if flag_roundInsteadCeil:   kmesh = [ max(1.0,np.round(k)) for k in kmesh_ideal_fractional ]
+            else:                       kmesh = np.ceil( kmesh_ideal_fractional )
+            kmesh = np.array( kmesh ).astype(int)
+            return kmesh
 
-        #[2.3] Define energy window
-        onset = min(prev["imdiel_onset"], last["imdiel_onset"])
-        E_min = max(onset, last["energygrid"][0])
-        E_max = min(onset + window_size, last["energygrid"][-1])
-        energy_window = (E_min, E_max)
+    @staticmethod    
+    def _get_kspacing_from_kmesh(latVec, kmesh): 
+            #k-mesh = 2pi * |bi|/ k-density  ->DataFactory('core.array.kpoints')
+            kmesh_tmp = deepcopy( kmesh )
+            latVec = np.array( latVec )
+            recLatVec= np.zeros((3,3))
+            Vol= np.abs( np.dot(latVec[0,:] , np.cross(latVec[1,:],latVec[2,:])) )
+            recLatVec[0,:]= np.cross(latVec[1,:],latVec[2,:])  /Vol
+            recLatVec[1,:]= np.cross(latVec[2,:],latVec[0,:])  /Vol
+            recLatVec[2,:]= np.cross(latVec[0,:],latVec[1,:])  /Vol
+    
+            rec_cell_norm = [np.linalg.norm( recLatVec[x,:]) for x in range(3)]    
+            return [2*np.pi * rec_cell_norm[idx] / kmesh_tmp[idx] for idx in range(len(rec_cell_norm)) ]
 
+    @staticmethod
+    def _check_dielectric_convergence(idiel_1, 
+                                      idiel_2,
+                                     energy_grid,
+                                     energy_window,
+                                     method="L2_distance",
+                                     threshold=1e-3,
+                                     channels=(0,1,2)  # xx, yy, zz only
+                                     ):
+        """ Compare two imaginary dielectric functions (N_energy x N_channels)
+            using a specified metric, restricted to selected diagonal channels
+            and within (E_min, E_max) energy window.
+        Returns:   (bool converged, float distance)
+        """
+        from scipy.stats import wasserstein_distance
+    
+        #[1] Apply energy window filter
+        E_min, E_max = energy_window
+        mask = (energy_grid >= E_min) & (energy_grid <= E_max)
+    
+        egrid = energy_grid[mask]
+    
+        # filter dielectric arrays & channels
+        #id1 = idiel_1[np.ix_(mask, channels)]   # shape (Nwin, 3)
+        #id2 = idiel_2[np.ix_(mask, channels)]   # shape (Nwin, 3)
+        id1 = idiel_1[mask][:, channels]
+        id2 = idiel_2[mask][:, channels]
+    
+        #[2] Internal metric definitions
+        #[2.1] L2 norm over ω and channels
+        def __L2(a, b, e):
+            diff_sq = (a - b)**2   # shape: (Nwin, 3)
+            f = np.mean(diff_sq, axis=1)   # average over xx,yy,zz
+            return np.sqrt(np.trapz(f, e))
+    
+        #[2.2] L1 norm
+        def __L1(a, b, e):
+            diff = np.abs(a - b)
+            f = np.mean(diff, axis=1)
+            return np.trapz(f, e)
+    
+        #[2.3] Wasserstein (Earth-Mover) distance
+        def __Wasserstein(a, b, e):
+            """
+            Uses the mean value across xx,yy,zz channels.
+            Both curves must be normalized to form valid PDFs.
+            """
+            f1 = np.mean(a, axis=1)
+            f2 = np.mean(b, axis=1)
+    
+            # ensure non-negative
+            f1 = np.clip(f1, 0, None)
+            f2 = np.clip(f2, 0, None)
+    
+            # normalize to sum to 1 (become distributions)
+            if np.sum(f1) > 0:
+                f1 = f1 / np.sum(f1)
+            if np.sum(f2) > 0:
+                f2 = f2 / np.sum(f2)
+    
+            return wasserstein_distance(e, e, f1, f2)
+    
+        #[3] Constructing Dict with all methods and dealing with errors
+        metric_map = { "L2_distance": __L2,
+                       "L1_distance": __L1,
+                       "Wasserstein": __Wasserstein,     }
+        if method not in metric_map:
+            raise ValueError(f"Unknown method '{method}'. "
+                             f"Choose from: {list(metric_map.keys())}")
+    
+        #[4] compute metric AND determine convergence flag
+        distance = metric_map[method](id1, id2, egrid)
+        converged = distance < threshold
+    
+        return converged, distance
+    
+    @staticmethod
+    def _detect_energy_of_diel_onset( imdiel , egrid , thr_for_considering_offset = 0.1):
+        """  Detect the onset of the imaginary dielectric function ε₂(ω).
+        Returns the first energy where average of diagonal component (xx,yy,zz)  exceeds 'eps'.
+        Parameters: imdie : (N_energy x 6) ndarray - suppsed ordering is (xx,yy,zz,..non-diag.components..)
+                    egrid : (N_energy,) energy array
+                    eps   : small threshold to avoid picking numerical noise
+        Returns:    float : onset energy """                                 
+        diag = imdiel[:, :3]  # consider only xx, yy, zz : thus shape (N, 3)
+        diag_mean = np.mean(diag, axis=1)
+        idx = np.where(diag_mean > thr_for_considering_offset)[0]
+        if len(idx) == 0: return egrid[0]  # fallback: no onset detected
+        return egrid[idx[0]]
+    
+    @staticmethod
+    def _summary_list_kmesh_gap_diel(wc_list , window_size , diel_metric):
+        """ Return a formatted string summarizing:
+            idx | kmesh | optical gap | dielectric distance vs previous
+            Additionally returns the lists of Δ(optical gap) and Δ(diel) for external use.
+            using the records in wc_list = wc_MBPT_successful_sorted_elaborated.     
+    
+            wc_list : list of records with fields:
+                      kmesh - optgap - imdiel - imdiel_onset - energygrid       """   
 
-        #[2.4] Compute dielectric Δ (no threshold, just raw distance)
-        _, diel_distance = _check_dielectric_convergence(
-            prev["imdiel"], last["imdiel"] ,
-            energy_grid      = last["energygrid"],
-            energy_window    = energy_window,
-            method           = diel_metric ,
-            channels         = (0,1,2)     ,
-            threshold        = 100         )   # irrelevant, we only want distance
-        diel_diffs.append(diel_distance)
-
-
-    # Pretty print each entry
-    out += "\n      idx   kmesh          optgap[eV]         Δopt       Δdiel(prev)"
-    out += "\n      ---------------------------------------------------------------"
-
-    for idx, rec in enumerate(wc_list):
-        km = rec["kmesh"]
-        kmesh_str = f"[{km[0]}, {km[1]}, {km[2]}]"
-
-        # optical gap
-        if rec["optgap"] is not None: gap_str = f"{rec['optgap']:.4f}"
-        else:                         gap_str = "--"
-        # Δoptgap from previous
-        dop = opt_diffs[idx]
-        dop_str = "--" if dop is None else f"{dop:.4f}"
-        # dielectric Δ
-        d = diel_diffs[idx]
-        d_str = "--" if d is None else f"{d:.4e}"
-        out += ( f"\n      [{idx:2d}]  "
-                 f"{kmesh_str:<12}  "
-                 f"{gap_str:<12}  "
-                 f"{dop_str:<8}  "
-                 f"{d_str}"        )
-    return out, opt_diffs, diel_diffs
+    
+        #[1] header
+        out = "\n  > [conv-summary] Completed mBSE nodes:"
+        if len(wc_list) == 0:
+            out += "    (none yet)"
+            return out, [], []
+        
+    
+        #[2] Compute dielectric distances wrt previous iteration and accumulate in the list
+        opt_diffs = []
+        diel_diffs = []
+        for i in range(len(wc_list)):
+            if i == 0:
+                opt_diffs.append(None)
+                diel_diffs.append(None)
+                continue
+    
+            prev = wc_list[i - 1]
+            last = wc_list[i]
+    
+            #[2.1] Optical gap difference
+            if prev["optgap"] is not None and last["optgap"] is not None:
+                opt_diffs.append(abs(last["optgap"] - prev["optgap"]))
+            else:
+                opt_diffs.append(None)
+                
+            #[2.2] Dielectric difference 
+            #      Starty by skipping if imdiel is absent
+            if prev["imdiel"] is None or last["imdiel"] is None:
+                diel_diffs.append(None)
+                continue
+    
+            #[2.3] Define energy window
+            onset = min(prev["imdiel_onset"], last["imdiel_onset"])
+            E_min = max(onset, last["energygrid"][0])
+            E_max = min(onset + window_size, last["energygrid"][-1])
+            energy_window = (E_min, E_max)
+    
+    
+            #[2.4] Compute dielectric Δ (no threshold, just raw distance)
+            _, diel_distance = helper_kptsConv_mBSE._check_dielectric_convergence(
+                prev["imdiel"], last["imdiel"] ,
+                energy_grid      = last["energygrid"],
+                energy_window    = energy_window,
+                method           = diel_metric ,
+                channels         = (0,1,2)     ,
+                threshold        = 100         )   # irrelevant, we only want distance
+            diel_diffs.append(diel_distance)
+    
+    
+        # Pretty print each entry
+        out += "\n      idx   kmesh          optgap[eV]         Δopt       Δdiel(prev)"
+        out += "\n      ---------------------------------------------------------------"
+    
+        for idx, rec in enumerate(wc_list):
+            km = rec["kmesh"]
+            kmesh_str = f"[{km[0]}, {km[1]}, {km[2]}]"
+    
+            # optical gap
+            if rec["optgap"] is not None: gap_str = f"{rec['optgap']:.4f}"
+            else:                         gap_str = "--"
+            # Δoptgap from previous
+            dop = opt_diffs[idx]
+            dop_str = "--" if dop is None else f"{dop:.4f}"
+            # dielectric Δ
+            d = diel_diffs[idx]
+            d_str = "--" if d is None else f"{d:.4e}"
+            out += ( f"\n      [{idx:2d}]  "
+                     f"{kmesh_str:<12}  "
+                     f"{gap_str:<12}  "
+                     f"{dop_str:<8}  "
+                     f"{d_str}"        )
+        return out, opt_diffs, diel_diffs
 
 
 
@@ -241,7 +245,7 @@ class VaspmBSEKptsConvWorkChain(WorkChain):
             super(VaspmBSEKptsConvWorkChain , cls).define(spec)
 
             spec.expose_inputs(cls._next_workchain          , exclude=('kpoints','parameters','settings','potential_family','potential_mapping')) 
-            spec.expose_inputs(VaspmBSEInitScriptWorkChain  , exclude=('kpoints') ) 
+            spec.expose_inputs(VaspmBSEInitScriptWorkChain  , exclude=('kpoints','ns_reference') ) 
              
             spec.input( 'ns_kpoints.convergence_threshold'       , valid_type=Float , required=False , default=lambda:Float(0.1), help="minimum converge value in eV" ) 
             spec.input( 'ns_kpoints.kmesh.starting_mesh'         , valid_type= KpointsData , required=False , help="Starting k-mesh for the k-point density convergence If not specified, a k-mesh based on the density kdensity.starting_mesh will be used" )
@@ -257,7 +261,7 @@ class VaspmBSEKptsConvWorkChain(WorkChain):
 
         
             #Optional pass-through (kept for symmetry with G0W0; currently not consumed explicitly by the base chain)
-            spec.input('ns_reference.DFTgr_RemoteData', valid_type=RemoteData, required=False)
+            spec.input('ns_reference.starting_RemoteData', valid_type=RemoteData, required=False)
        
         
             spec.output( 'kmesh_converged' , valid_type= KpointsData , required=True)
@@ -272,12 +276,6 @@ class VaspmBSEKptsConvWorkChain(WorkChain):
                                           "Allowed: 'L2_distance', 'L1_distance', 'Wasserstein'."                                ))
             spec.exit_code( 411, 'TWO_CONSECUTIVE_MBSE_FAILURES',
                                message='Two consecutive mBSE calculations failed — aborting convergence loop.'  )
-
-
-
-
-
-
             
             
             spec.outline(
@@ -374,7 +372,7 @@ class VaspmBSEKptsConvWorkChain(WorkChain):
         #In internal tests PRECFOCK reduces computational cost of the setting-up the BSE matrix of almost 40%
         #with negligible cost in term of precision decrease.
         #Thus we always keep on for kpts-convergence
-        self.ctx.inputs_mBSEbase.ns_BSE.set_PRECFOCK_to = Bool(True)
+        self.ctx.inputs_mBSEbase.ns_BSE.set_PRECFOCK_to_Fast = Bool(True)
         
         #[2] POTCAR and kpoints related stuff
         self.ctx.inputs_mBSEbase.clean_workdir = Bool(False)            
@@ -388,7 +386,7 @@ class VaspmBSEKptsConvWorkChain(WorkChain):
         #[3] Not currently used - for future   
         # Reference WAVECAR/CHGCAR if user provided (optional)
         # Optional: allow future use of ns_reference (currently unused by base chain)
-        if 'ns_reference' in self.inputs and 'DFTgr_RemoteData' in self.inputs.ns_reference:
+        if 'ns_reference' in self.inputs and 'starting_RemoteData' in self.inputs.ns_reference:
             pass  # kept for symmetry; not altering the base workchain behavior
                      
         self.report("\n [wkc_KptsConv][DFT+mBSE calc - NonSpinPolarized - From scratch]\n  > Lauching DFT+mBSE(NonSpinPolarized) using VaspmBSEInitScriptWorkChain on k-mesh "
@@ -474,7 +472,7 @@ class VaspmBSEKptsConvWorkChain(WorkChain):
                 if "dielectrics" in wc.outputs:
                     record["imdiel"]     = wc.outputs.dielectrics.get_array("idiel")
                     record["energygrid"] = wc.outputs.dielectrics.get_array("ediel")
-                    record["imdiel_onset"] = _detect_energy_of_diel_onset(record["imdiel"], record["energygrid"] , 
+                    record["imdiel_onset"] = helper_kptsConv_mBSE._detect_energy_of_diel_onset(record["imdiel"], record["energygrid"] , 
                                                                   thr_for_considering_offset=0.1         )    
                 else:
                     record["imdiel"] = None ; record["energygrid"] = None ; record["imdiel_onset"] = None
@@ -543,7 +541,7 @@ class VaspmBSEKptsConvWorkChain(WorkChain):
             #                      wc_diffs_optgap is the list of differences between opt.gap of consecutive gaps
             #                      wc_diffs_dieldist is the list of distance based on the metric based on 
             #                      consecutive mBSE calculations
-            summary_str , wc_diffs_optgap ,  wc_diffs_dieldist = _summary_list_kmesh_gap_diel(
+            summary_str , wc_diffs_optgap ,  wc_diffs_dieldist = helper_kptsConv_mBSE._summary_list_kmesh_gap_diel(
                     wc_list     = self.ctx.control['wc_MBPT_successful_sorted_elaborated'] , 
                     window_size = float(self.inputs.ns_converge.dielfunction_window.value) , 
                     diel_metric = self.inputs.ns_converge.dielfunction_distance.value      )
@@ -651,12 +649,7 @@ class VaspmBSEKptsConvWorkChain(WorkChain):
             self.report(str_log)
 
             return True   # continue workflow
-
-
-
-
-
-       
+ 
     def elaborate_results(self):
         # Determine final k-mesh
         if 'kmesh_converged' in self.ctx.control and self.ctx.control['kmesh_converged'] is not None:

@@ -76,3 +76,7 @@ not paid for this work. Please respect potential lead times in getting answers a
 [aiida-vasp documentation]: https://aiida-vasp-plugin.readthedocs.io/en/latest/
 [space on matrix]: https://matrix.to/#/#aiida-vasp:matrix.org
 [vasp]: https://www.vasp.at
+
+** IMPORTANT : This branch add support for GW calculations, please see https://www.nature.com/articles/s41524-025-01833-w  ** 
+If you use these workchain please cite that paper.
+The README is currently under development.

@@ -33,8 +33,7 @@ class MbseState(Enum):
 
 
 class VaspmBSEInitScriptWorkChain(WorkChain):
-    """
-    [1] OVERVIEW OF THE PURPOSE
+    """ [1] OVERVIEW OF THE PURPOSE
     High-level workflow to execute a complete mBSE (model Bethe–Salpeter Equation)
     calculation using:
     - a preceding DFT ground-state calculation (NSP or SP - run internally by the workchain)
@@ -199,10 +198,10 @@ class VaspmBSEInitScriptWorkChain(WorkChain):
             spec.input("ns_BSE.set_PRECFOCK_to_Fast"  , valid_type=Bool  , required=False , help=('The use of Precfock=Fast depends on the cell dimension, Precfock=Fast is set if volume>350'
                                                                                                   'If True set PRECFOCK=Fast in the mBSE calculation; if False, always set it to default.') )
 
-            spec.input('ns_option.calculation_label'  , valid_type=Str  , required=False , default=lambda: Str("mBSE")     , help='The summary printed at the end will be labeled with this string.')
+            spec.input('ns_option.calculation_label'  , valid_type=Str  , required=False , default=lambda: Str("")     , help='The summary printed at the end will be labeled with this string.')
 
             spec.output("dielectrics"        , valid_type=ArrayData )
-            spec.output("opticaltransitions" , valid_type=ArrayData )
+            spec.output("opticaltransitions" , valid_type=ArrayData , required=False )
             spec.exit_code(402,'MAGN_NOT_IMPLEMENTED', message='_determine_BSE_parameters and reading CHGCAR magnetic non implemented.')
             
             spec.outline(
@@ -214,6 +213,7 @@ class VaspmBSEInitScriptWorkChain(WorkChain):
                 ),
                 cls.elaborate_results,
             )
+
     def initialize(self):
         """Initialize workflow context in the same style as G0W0 base."""
     
@@ -227,7 +227,7 @@ class VaspmBSEInitScriptWorkChain(WorkChain):
                 "for_DFT": None,                # RemoteData used as restart for DFT (rare; usually None)
                 "for_MBSE": None,           }), # RemoteData produced by DFT (WAVECAR/WAVEDER etc) used by MBSE
             "submitted": AttributeDict({  "DFT": [], "MBSE": [], }),
-            "retries":   AttributeDict({ "DFT": 0,   "MBSE": 0, }),
+            "retries":   AttributeDict({ "DFT": -1,   "MBSE": -1, }), #-1 because the first is zer0?
             })
     
         #[3] Store optional external starting RemoteData
@@ -245,8 +245,6 @@ class VaspmBSEInitScriptWorkChain(WorkChain):
 
         self.ctx._next_workchain = { "DFT": WorkflowFactory("vasp.vasp") ,
                                     "MBSE": VaspInitScriptWorkChain      ,   }
-
-
 
     def should_wc_continue(self) -> bool:
         return self.ctx.state_execution not in {MbseState.COMPLETE, MbseState.FAILED}
@@ -307,7 +305,7 @@ class VaspmBSEInitScriptWorkChain(WorkChain):
                                             MbseState.MBSE_PENDING: "MBSE",     }
         calc_type = mapping_enum_to_calc_type_torun.get(state)
         
-        #Some additional error checking
+        #Some error checking
         if calc_type is None: return
         if self.ctx.inputs_finalized is None:
             self.report(f"[<{label}> execute_step] ERROR: inputs_finalized is None for {calc_type}")
@@ -359,8 +357,7 @@ class VaspmBSEInitScriptWorkChain(WorkChain):
             inputs = self.__add_inputs_mBSE_incar(inputs)
     
             # Normalize namespaces expected by aiida-vasp wrappers
-            self.ctx.inputs_finalized = prepare_process_inputs( inputs,
-                                                                namespaces=["dynamics", "verify", "local_files_to_copy_to_remote_submission_folder"],  )
+            self.ctx.inputs_finalized = prepare_process_inputs( inputs, namespaces=["dynamics", "verify", "local_files_to_copy_to_remote_submission_folder"],  )
             return
         # any other state: nothing to prepare
         return
@@ -453,7 +450,7 @@ class VaspmBSEInitScriptWorkChain(WorkChain):
         if dft_node is None or not dft_node.is_finished_ok:
             raise RuntimeError("Cannot prepare mBSE: no successful DFT node found.")
         
-        #[Prelminary-2] Are GPU used for this run? Several optimization options (and options for the BSE matrix)
+        #[Preliminary-2] Are GPU used for this run? Several optimization options (and options for the BSE matrix)
         # later change heavily based on this
         num_GPU_perNode = 0
         opts = self.inputs.options.get_dict()
@@ -462,7 +459,6 @@ class VaspmBSEInitScriptWorkChain(WorkChain):
             if "gpu" in tokens:
                 i = tokens.index("gpu")
                 num_GPU_perNode = int(tokens[i + 1])
-        
         
         #[1] Base incar
         incar = {"incar": { "ismear": 0, "sigma": 0.02,
@@ -499,7 +495,7 @@ class VaspmBSEInitScriptWorkChain(WorkChain):
                                     bandsdata=dft_node.outputs.bands       ,
                                     energy_window_goal=input_optical_enwin ,
                                     G0W0_gap=input_G0W0_gap                )
-        self.report(BSE_params_estimated["log"])
+        self.ctx.log = BSE_params_estimated["log"]
         incar["incar"]["nbandso"] = BSE_params_estimated["NBANDSO"]
         incar["incar"]["nbandsv"] = BSE_params_estimated["NBANDSV"]
         #Regarding OMEGAMAX: https://www.vasp.at/wiki/index.php/Category:Bethe-Salpeter_equations
@@ -509,36 +505,40 @@ class VaspmBSEInitScriptWorkChain(WorkChain):
         if num_GPU_perNode == 0:
             incar["incar"]["omegamax"] = BSE_params_estimated["OMEGAMAX"]
         
-        #Now let's manage the overrides
+        #Now let's manage the overrides/optimization
+        self.ctx.log +=  ("\n"+ " [Override/Optimization section]")
         if "OMEGAMAX" in self.inputs.get("ns_BSE", {}):
             incar["incar"]["omegamax"] = self.inputs.ns_BSE.OMEGAMAX.value
             if num_GPU_perNode > 0:
-                self.report("BIG WARNING: it's adviced to avoid setting OMEGAMAX (or setting to a value that includes all transitions defined by"
-                            "NBANDSV/NBANDSO) when GPU are used, see https://www.vasp.at/wiki/index.php/Category:Bethe-Salpeter_equations ."
-                            "I will continue, BUT I HOPE YOU KNOW WHAT ARE YOU DOING!")
+                self.ctx.log += ("\n\nBIG WARNING: it's adviced to avoid setting OMEGAMAX (or setting to a value that includes all transitions defined by"
+                                 "NBANDSV/NBANDSO) when GPU are used, see https://www.vasp.at/wiki/index.php/Category:Bethe-Salpeter_equations ."
+                                 "I will continue, BUT I HOPE YOU KNOW WHAT ARE YOU DOING!\n\n")
         if ("NBANDSV" in self.inputs.ns_BSE) or ("NBANDSO" in self.inputs.ns_BSE):
             if ("NBANDSV" in self.inputs.ns_BSE) and ("NBANDSO" in self.inputs.ns_BSE):
                 incar["incar"]["nbandso"] = self.inputs.ns_BSE.NBANDSO.value
                 incar["incar"]["nbandsv"] = self.inputs.ns_BSE.NBANDSV.value
+                self.ctx.log +=  ("\n"+f"  > Override: NBANDSO/V from workchain input : {incar["incar"]["nbandso"]}/{incar["incar"]["nbandsv"]}" )
             else:
                 raise ValueError("ns_BSE.NBANDSV and ns_BSE.NBANDSO must be both set or both unset.")
 
         #[5.3] BSE: Another important flag involved in the construction of the BSE matrix : PRECFOCK
-        # Default behaviour follows https://vasp.at/wiki/Best_practices_for_Bethe-Salpeter_calculations
+        # Default behavior follows https://vasp.at/wiki/Best_practices_for_Bethe-Salpeter_calculations
         #In large cells, the FFTs may take up the majority of the time in the calculation of the matrix elements, and 
         #reducing the FFT grid can largely speed up the calculation. For the large cells, even low precision can be found
         #sufficiently accurate, but the convergence with PRECFOCK must be investigated for each system.
         #where threshold for considering a system "large" is threshold_cell_volume_for_PRECFOCK.
-        #set_PRECFOCK_to overrides this default: if it is set_PRECFOCK_to=True it's always set to Fast, if it's
+        #set_PRECFOCK_to_Fast overrides this default: if it is set_PRECFOCK_to_Fast=True it's always set to Fast, if it's
         #False it's always left to Normal (and thus not defined)
         #In internal tests PRECFOCK is almost always useful with negligible cost in term of precision also for smaller cell,
         # but let's stick to the wiki
         threshold_cell_volume_for_PRECFOCK = 250
         if self.inputs.structure.get_cell_volume() > threshold_cell_volume_for_PRECFOCK :
              incar['incar']['precfock'] = "Fast"
+             self.ctx.log +=  ("\n"+f"  > Optimization:  Cell volume is > threshold : {self.inputs.structure.get_cell_volume()} > {threshold_cell_volume_for_PRECFOCK} : automatically set precfock to fast!")
         #Now let's manage the override
-        if ("set_PRECFOCK_to" in self.inputs.ns_BSE) and self.inputs.ns_BSE.set_PRECFOCK_to.value : 
-            incar['incar']['precfock'] = "Fast"    
+        if ("set_PRECFOCK_to_Fast" in self.inputs.ns_BSE) and self.inputs.ns_BSE.set_PRECFOCK_to_Fast.value : 
+            incar['incar']['precfock'] = "Fast" 
+            self.ctx.log +=  ("\n"+f"  > Override: precfock flag from workchain input : set precfock to fast!")
 
         #[5.4] BSE : optimization options
         #This follows the advice on https://vasp.at/wiki/Best_practices_for_Bethe-Salpeter_calculations
@@ -549,10 +549,13 @@ class VaspmBSEInitScriptWorkChain(WorkChain):
             # KPAR = num GPUs per node * num nodes
             num_nodes = inputs.options.get_dict()["resources"]["num_machines"]
             incar["incar"]["kpar"] = num_GPU_perNode * num_nodes
+            self.ctx.log +=  ("\n"+f"  > Optimization: Using a total of {num_GPU_perNode * num_nodes} GPUs : automatically se KPAR to #(total GPUs)")
 
         #[5.5] BSE scissor if interpolation disabled
         if not self.inputs.ns_interpolation.use_interpolation.value:
             incar["incar"]["scissor"] = BSE_params_estimated["SCISSOR"]
+            self.ctx.log +=  ("\n"+f"  > Override: Interpolation disabled from workchain input, setting SCISSOR to {incar["incar"]["scissor"]}")
+        self.report(self.ctx.log)
         inputs.parameters = incar
         return inputs
 
@@ -561,7 +564,7 @@ class VaspmBSEInitScriptWorkChain(WorkChain):
         The interpolation script will be inserted inside the jobscript (via options.prepend_text ) and run just before the VASP executable
         - The first part of the function manages to copy the script file inside the remote folder where the job will be run 
         ( and renamed script_init.py ). 
-        Internally it uses the input.settings['ADDITIONAL_LOCAL_COPY_LIST'] orinput.settings['ADDITIONAL_REMOTE_COPY_LIST'] 
+        Internally it uses the input.settings['ADDITIONAL_LOCAL_COPY_LIST'] or input.settings['ADDITIONAL_REMOTE_COPY_LIST'] 
         to copy the interpolation script inside the folder on the remote cluster where the calculation will be run.
         - The second part manages the input to interpolation script.
         The interpolation stage requires two mandatory argument and one optional:
@@ -587,7 +590,6 @@ class VaspmBSEInitScriptWorkChain(WorkChain):
         # Ensure the dynamic namespace exists (even if we don’t use it)
         if "local_files_to_copy_to_remote_submission_folder" not in inputs:
             inputs.local_files_to_copy_to_remote_submission_folder = AttributeDict()
-
 
 
         #[1]the interpolation script
@@ -633,8 +635,6 @@ class VaspmBSEInitScriptWorkChain(WorkChain):
             args_interpolation['path_sparse_GW_remote_file_name']  = ( self.inputs.ns_interpolation.gw_reference_filename.value
                                                                        if "gw_reference_filename" in self.inputs.ns_interpolation else 'OUTCAR'  )
 
-
-        
         #The command TO RUN THE INTERPOLATION SCRIPT is added to inputs.options.prepend_text = str_prepend_command
         if flag_use_interp :
             sourcing_cmd = str(self.inputs.ns_interpolation.python_sourcing_env_command.value or "").strip()
@@ -650,26 +650,29 @@ class VaspmBSEInitScriptWorkChain(WorkChain):
         self.ctx.args_interpolation = args_interpolation
         return inputs      
         
-
-
-
-
     def elaborate_results(self):  
-        #[1] Expose outputs (unchanged behavior)
-        self.out("dielectrics"        , self.ctx.wk_DFT_interpolated_BSE[-1].outputs.dielectrics        )
+        """Collect outputs from the final mBSE workchain and optionally copy files locally."""
+        mbse_node = self._last_wc_node("MBSE")
+        if mbse_node is None or not mbse_node.is_finished_ok:
+            raise RuntimeError("Cannot elaborate results: no successful MBSE workchain found.")
+
+        #expose outputs ---
+        self.out("dielectrics" , mbse_node.outputs.dielectrics  )
+        
+        #Optional output (depends on IBSE)
         #We add an if because calculations determined with iterative methods (IBSE=1 and IBSE=3)
-        if "opticaltransitions" in self.ctx.wk_DFT_interpolated_BSE[-1].outputs:
-            self.out("opticaltransitions" , self.ctx.wk_DFT_interpolated_BSE[-1].outputs.opticaltransitions )
+        if "opticaltransitions" in mbse_node.outputs: 
+            self.out("opticaltransitions" , mbse_node.outputs.opticaltransitions )
 
-
-        if self.inputs.copy_result_locally.value == True:
-            self_kpt_mesh_concatenated = "".join( [str(kpt) for kpt in self.ctx.inputs.kpoints.get_kpoints_mesh()[0] ] )
-            self_pid = str( self.pid )
-            foldername = "3.1_mBSE_k"+self_kpt_mesh_concatenated +"_id"+self_pid
+        # --- copy retrieved folder locally ---
+        if self.inputs.copy_result_locally.value:
+            kmesh     = mbse_node.inputs.kpoints.get_kpoints_mesh()[0]
+            kmesh_str = "".join(str(k) for k in kmesh)
+            foldername = f"3.1_mBSE_k{kmesh_str}_id{self.pid}"
             full_foldername = os.path.join(os.getcwd(), foldername)
-            os.makedirs( full_foldername , exist_ok=True)
+            os.makedirs(full_foldername, exist_ok=True)
     
-            self.ctx.wk_DFT_interpolated_BSE[-1].outputs.retrieved.copy_tree( full_foldername )
+            mbse_node.outputs.retrieved.copy_tree(full_foldername)
     
     @staticmethod 
     def __generate_compact_submission_string( wc_node , prefix="  > " , include_BSE_parameters=False ):
@@ -698,6 +701,8 @@ class VaspmBSEInitScriptWorkChain(WorkChain):
                scissor  =  _get_incar_par(wc_node.inputs.parameters, "scissor")
                aexx     =  _get_incar_par(wc_node.inputs.parameters, "aexx")
                hfscreen =  _get_incar_par(wc_node.inputs.parameters, "hfscreen")
+               prepend_text = "\n"+wc_node.inputs.init_script_call_command.value
+               prepend_text = prepend_text.replace("\n","\n       ")
            # --- kpoints ---
            mesh = offset = nkpts = None
            try:
@@ -729,15 +734,17 @@ class VaspmBSEInitScriptWorkChain(WorkChain):
            except Exception:
                pass
            lines =  [ f"{prefix}nbands={nbands}  encut={encut}  encut_chi={encut_chi}  kpar={kpar}","\n" ]
-           lines += [ f"{prefix}kpts_mesh={mesh} nkpts={nkpts}","\n",
+           lines += [ f"{prefix}kpts_mesh={mesh} : nkpts={nkpts}","\n",
                       f"{prefix}potcars_family={pot_family}  potcars_mapping={pot_mapping}",  ]
            if include_BSE_parameters :
                lines +=  [ f"{prefix}mBSE specific parameters:","\n",
-                            "Remind call order : VaspmBSEInitScriptWorkChain -> VaspInitScriptWorkChain -> Vasp2wInitScriptCalculation","\n"    
+                            "  Reminder of call order : VaspmBSEInitScriptWorkChain -> VaspInitScriptWorkChain -> Vasp2wInitScriptCalculation","\n"    
                            f"{prefix}ibse={ibse}  nbandso={nbandso}  nbandsv={nbandsv}  omegamax={omegamax}  bseprec={bseprec}","\n",
+                           f"{prefix}precfock={precfock}  kpar={kpar}","\n",
                            f"{prefix}screening approximation w/ model diel.function : aexx={aexx}  hfscreen={hfscreen}  ","\n",
-                           f"{prefix}QPcorrection - is scissor approximation used   : scissor={scissor}  ","\n",
-                           f"{prefix}precfock={precfock}  bseprec={bseprec}","\n",]
+                           f"{prefix}QPcorrection : is scissor approximation used? scissor={scissor}  ","\n",
+                           f"{prefix}QPcorrection : prepend text for interpolation? {prepend_text}"
+                           ]
            return ("".join(lines))
              
     def _last_wc_node(self, calc_type):

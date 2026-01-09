@@ -634,7 +634,7 @@ class VaspDFTGWWorkChain(WorkChain):
            return ( bands_trimmed, bnd_extrema, gap )
 
 
-        ##[HELPER FUNCTIONS for prepare_step] - should be kept here as it uses self.report
+        ##[HELPER FUNCTIONS for prepare_step]
         def _prepare_inputs_DFT(self, restart_folder, calc_type):
             """ Prepare inputs for a DFT calculation (DFTgr or DFTvo). Reorganized from original prepare_DFT.  
                 NOTE: `restart_folder` is saved inside input.restart_folder but its validity
@@ -715,8 +715,6 @@ class VaspDFTGWWorkChain(WorkChain):
             else: 
                 incar['incar']['ispin'] = 1
 
-
-
             # Parallelization settings : for now we report kpar and npar as defined from the inputs.ns_parallelization namespace.
             if ('kpar' in self.inputs.ns_parallelization ): incar['incar']['kpar'] = self.inputs.ns_parallelization.kpar.value
             if (self.inputs.ns_parallelization.lreal.value == True):
@@ -750,7 +748,7 @@ class VaspDFTGWWorkChain(WorkChain):
                 Returns an ExitCode if retries are exhausted, otherwise None.         """
 
             max_iter = self.inputs.ns_option.maximum_iterations.value
-            retries = self.ctx.state_WC.retries[step]
+            retries  = self.ctx.state_WC.retries[step]
             if retries < max_iter:
                 self.report(f"[update_state] {step} failed, retrying (attempt {retries+1}/{max_iter})")
                 self.ctx.state_execution = pending_state
@@ -846,7 +844,6 @@ class VaspDFTGWWorkChain(WorkChain):
             msg = prolog +"\n"+ self.__generate_compact_submission_string(running_wc)+"\n"
             self.report(msg)
 
- 
         def __report_compact_results( self, last_node_DFT, last_node_G0W0,
                                      gaps_dict, gaps_qpc_dict=None,     
                                      bnd_extrema_DFT=None, bnd_extrema_G0W0=None):   

@@ -65,7 +65,7 @@ def _determine_BSE_parameters( bandsdata: orm.BandsData,
     b_band = bandsdata.get_array("bands")
     b_occ  = bandsdata.get_array("occupations")
     n_kpts, n_bands = b_band.shape
-    log    = [ f"\n [1] Input BandsData (pk={bandsdata.pk})\n"]
+    log    = [ f"\n [1] Input BandsData (node pk={bandsdata.pk})\n"]
     log.append(f"  > n_kpts = {n_kpts} , n_bands = {n_bands}\n" )
     output = {}
     #[SAFE-CHECK] Check that occupancy values are in [0, 1]
@@ -95,8 +95,8 @@ def _determine_BSE_parameters( bandsdata: orm.BandsData,
     n_valence_available    = idx_HO + 1             #+1 because 0 is indexed and should be included
     n_conduction_available = n_bands - (idx_HO + 1)
     num_bands_available = min(num_bands_included , n_bands) 
-    n_valence_used      = min(num_bands_included, n_valence_available )
-    n_conduction_used   = min(num_bands_included, n_conduction_available )
+    n_valence_used      = min(n_valence_available    , num_bands_included,  )
+    n_conduction_used   = min(n_conduction_available , num_bands_included,  )
 
     #[3] E_VBM =max( array of the values of the band w/ index idx_HO for all k-points )
     #    E_CBM =min( array of the values of the band w/ index idx_HO+1 for all k-points )
@@ -105,10 +105,10 @@ def _determine_BSE_parameters( bandsdata: orm.BandsData,
     E_VBM = np.max(b_band[:, idx_HO])
     E_CBM = np.min(b_band[:, idx_HO + 1])
     E_gap_DFT = E_CBM - E_VBM
-    log.append( "  [2] Determining distances from VBM and CBM in BandsData:")
-    log.append(f"   > num_bands_included = {num_bands_included}\n")
-    log.append(f"   > n_valence_used = {n_valence_used} , n_conduction_used = {n_conduction_used}\n")
-    log.append(f"   > E_VBM = {E_VBM:.4f} eV , E_CBM = {E_CBM:.4f} eV -> DFT = {E_gap_DFT:.4f} eV\n")
+    log.append( "\n [2] Determining distances from VBM and CBM in BandsData:\n")
+    log.append(f"  > max num of v/o bands considered in the scan = {num_bands_included}\n")
+    log.append(f"  > n_valence_used = {n_valence_used} , n_conduction_used = {n_conduction_used}\n")
+    log.append(f"  > E_VBM = {E_VBM:.4f} eV , E_CBM = {E_CBM:.4f} eV  ->  gap_DFT = {E_gap_DFT:.4f} eV\n")
     
     #[4] Extract valence/conduction band edges for the chosen number of bands ---
     # Each band index corresponds to a single band across all k-points.
@@ -134,15 +134,16 @@ def _determine_BSE_parameters( bandsdata: orm.BandsData,
     # Finally, a sanity check: Both DeltaEn_valb_fromVBM_val and DeltaE_conb_fromCBM_con must be >= 0
     DeltaE_valb_fromVBM = E_VBM - np.array(E_valbands_max)    # distance of each valence band top below VBM
     DeltaE_conb_fromCBM  = np.array(E_conbands_min) - E_CBM     # distance of each conduction band bottom above CBM
-    # VALENCE (v00 = VBM, v01 = one band below, ...)
-    log.append("  > ΔE_valb_from_VBM (eV):\n")
-    log.append("    "+"     ".join(f"v{iv:02d}" for iv in range(n_valence_used)) + "\n")
-    log.append("   "+" ".join(f"{v:7.4f}"  for v in DeltaE_valb_fromVBM) + "\n")
-
+    
+    # VALENCE (v00 = VBM, v01 = one band below, ...)    
     # CONDUCTION (c00 = CBM, c01 = one band above, ...)
-    log.append("  > ΔE_conb_from_CBM] (eV):\n")
-    log.append("  "+"    ".join(f"c{ic:02d}" for ic in range(n_conduction_used)) + "\n")
-    log.append("   "+" ".join(f"{c:7.4f}"  for c in DeltaE_conb_fromCBM) + "\n")
+    colw = 8  # column width (matches %7.4f + space)
+    log.append("  > ΔE_valb_from_VBM (eV):\n")
+    log.append("   " + "".join(f"{f'c{iv:02d}':>{colw}}" for iv in range(n_valence_used)) + "\n") # Header
+    log.append("   " + "".join(f"{v:{colw}.4f}"          for v  in DeltaE_valb_fromVBM)   + "\n") # Values 
+    log.append("  > ΔE_conb_from_CBM (eV):\n")
+    log.append("   " + "".join(f"{f'c{ic:02d}':>{colw}}" for ic in range(n_conduction_used)) + "\n") # Header
+    log.append("   " + "".join(f"{c:{colw}.4f}"          for c  in DeltaE_conb_fromCBM)      + "\n") # Values
     if np.any(DeltaE_conb_fromCBM < 0) or np.any(DeltaE_valb_fromVBM < 0):
         warnings.warn("BIG-WARNING : Negative DeltaEn detected; check band ordering or occupations.")
 
@@ -150,7 +151,7 @@ def _determine_BSE_parameters( bandsdata: orm.BandsData,
     SCISSOR = 0.0
     if G0W0_gap is not None:
         SCISSOR = float(G0W0_gap) - float(E_gap_DFT)
-        log.append( f"\n [2] Input G0W0 :\n")
+        log.append( f"\n [3] Input G0W0 :\n")
         log.append(f"  > G0W0.gap = {G0W0_gap:.3f} eV  --[DFT gap = {E_gap_DFT:.3f} eV]--> scissor = {SCISSOR:.3f} eV")
         if SCISSOR < -1e-3: warnings.warn("BIG-WARNING : Computed scissor shift is negative")
     else:
@@ -179,14 +180,14 @@ def _determine_BSE_parameters( bandsdata: orm.BandsData,
                                            + DeltaE_valb_fromVBM[iv]
                                            + DeltaE_conb_fromCBM[ic]  )
     # Pretty-print the small transition matrix (max 10×10)
-    log.append("\n"+" [3] max.transitions between pairs of bands (eV)"
-               "\n"+"  > including SCISSOR correction."
-               "\n"+f"  > used to determine the smallest combination which contains all transitions under {spectra_energy_window_aboveGap} above the gap"
-               "\n"+"  > only the first {num_bands_used_for_transition_matrix} cond/val bands, if available, are included in the matrix") 
+    log.append("\n"+" [4] max.transitions between pairs of bands (eV)"
+               "\n"+f"  > Starting from G0W0 gap = {E_gap_DFT + SCISSOR}"
+               "\n"+f"  > used to determine the smallest combination which contains all transitions under {spectra_energy_window_aboveGap} above the gap."
+               "\n"+f"  > only the first {n_valence_used}/{n_conduction_used} val/cond bands, if available, are included in the matrix.") 
     max_display_v = min(10, n_valence_used)
     max_display_c = min(10, n_conduction_used)
     # Conduction band header: c00, c01, ...
-    header = "\n      " + "      ".join(f"c{ic:02d}" for ic in range(max_display_c))
+    header = "\n    " + "      ".join(f"c{ic:02d}" for ic in range(max_display_c))
     log.append(header + "\n")
     # Rows: v00, v01, v02 = VBM, VBM-1, VBM-2, ...
     for iv in range(max_display_v):
@@ -211,10 +212,10 @@ def _determine_BSE_parameters( bandsdata: orm.BandsData,
     #                     #Note that SCISSOR is defined   
     #                     #SCISSOR = float(G0W0_gap) - float(E_gap_DFT)  if G0W0_gap is not None else 0
     #                     #Thus E_gap_DFT + SCISSOR = G0W0_gap if it's defined, esle E_gap_DFT
-    log.append( f"\nSpectra_energy_window_aboveGap = {spectra_energy_window_aboveGap:.2f} eV, "
-                f"E_gap_DFT = {E_gap_DFT:.2f} - SCISSOR = {SCISSOR:.2f} eV\n"
-                f"[result] OMEGAMAX = {output['OMEGAMAX']:.2f} eV\n"
-                f"[result] NBANDSV  = {output['NBANDSV']} - NBANDSO = { output['NBANDSO']}\n"     )
+    log.append("\n"+ " [5] Results:" 
+               "\n"+f"  Given Spectra_energy_window_aboveGap = {spectra_energy_window_aboveGap:.4f} eV, E_gap_DFT = {E_gap_DFT:.4f} - SCISSOR = {SCISSOR:.4f} eV\n"
+               "\n"+f"  > OMEGAMAX = {output['OMEGAMAX']:.2f} eV\n"
+               "\n"+f"  > NBANDSV  = {output['NBANDSV']} - NBANDSO = { output['NBANDSO']}\n"     )
     #Construct the final log string and add an indentation to it
     output['log'] = "".join(log)
     output['log'] =  '   ' +  output['log'].replace('\n', '\n   ')

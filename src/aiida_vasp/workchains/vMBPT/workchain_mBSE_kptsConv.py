@@ -330,13 +330,13 @@ class helper_kptsConv_mBSE:
     def _return_next_kmesh_or_abort( self , next_kmesh ):
         # safety bounds check
         if np.any(np.array(next_kmesh) > np.array( self.ctx.control.max_kmesh) ):
-            str_abort = ( f"\n   --> convergence NOT reached and maximum kmesh exceeded:"
+            str_abort = ( f"\n    --> convergence NOT reached and maximum kmesh exceeded:"
                           f"\n       next kmesh would be {next_kmesh}"
-                           f"\n   --> aborting" )
+                           f"\n    --> aborting" )
             self.report( self.ctx.str_log + str_abort)
             return self.exit_codes.CONVERGENCE_NOT_FOUND
         self.ctx.control.current_kmesh = np.array(next_kmesh, dtype=int)
-        str_cont = ( f"\n   --> convergence NOT reached - continuing : next kmesh = {self.ctx.control.current_kmesh}\n" )
+        str_cont = ( f"\n    --> convergence NOT reached - continuing : next kmesh = {self.ctx.control.current_kmesh}\n" )
         self.report(self.ctx.str_log + str_cont)
         return True
     
@@ -638,7 +638,7 @@ class VaspmBSEKptsConvWorkChain(WorkChain):
         if num_mBSE_finished_successfully < (self.ctx.monitor.min_num_calcs_required_for_conv ):
             self.ctx.str_log += (  f"\n  > Not enough successful BSE calculations "
                                    f"({num_mBSE_finished_successfully}/{self.ctx.monitor.min_num_calcs_required_for_conv})."
-                                   f"\n    → Launch next calculation." )
+                                   f"\n    -> Launch next calculation." )
             next_kmesh = helper_kptsConv_mBSE._compute_next_kmesh(self.ctx, num_mBSE_finished_successfully,
                                                                   self.ctx.control.step_kmesh ) 
             return helper_kptsConv_mBSE._return_next_kmesh_or_abort( self , next_kmesh )
@@ -691,7 +691,7 @@ class VaspmBSEKptsConvWorkChain(WorkChain):
         if bool(cs.flag_is_converged):
             # Converged at last successful kmesh (not "current_kmesh", which is next-to-run)
             last_success_kmesh = np.array(self.ctx.control['wc_successful_nodes_kptssorted_elaborated'][-1]["kmesh"], dtype=int)
-            self.ctx.str_log +=  f"\n   --> convergence REACHED : Converged k-mesh = {last_success_kmesh} \n\n"
+            self.ctx.str_log +=  f"\n    --> convergence REACHED : Converged k-mesh = {last_success_kmesh} \n\n"
             self.report(self.ctx.str_log)
             self.ctx.control['kmesh_converged'] = DataFactory('core.array.kpoints')()
             self.ctx.control['kmesh_converged'].set_kpoints_mesh(last_success_kmesh)
@@ -723,3 +723,4 @@ class VaspmBSEKptsConvWorkChain(WorkChain):
     
     
     
+

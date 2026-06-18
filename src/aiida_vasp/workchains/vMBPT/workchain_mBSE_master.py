@@ -91,7 +91,7 @@ class VaspmBSECompleteWorkChain(WorkChain):
     def define(cls, spec):
         super(VaspmBSECompleteWorkChain, cls).define(spec)
         
-        spec.expose_inputs(cls._mbse_base_wc,      exclude=('kpoints'   ,'ns_reference', 'ns_option')  )
+        spec.expose_inputs(cls._mbse_base_wc,      exclude=('kpoints', 'ns_reference', 'ns_option')  )
         # From VaspBSEInitScriptWorkChain we expose:
         #    ns_parameters.encut                  , valid_type=Float , required=False
         #    ns_parameters.nbands                 , valid_type=Int   , required=False   
@@ -115,8 +115,10 @@ class VaspmBSECompleteWorkChain(WorkChain):
         #    ns_BSE.OMEGAMAX              , valid_type=Float , required=False
         #    ns_BSE.NBANDSV               , valid_type=Int   , required=False
         #    ns_BSE.NBANDSO               , valid_type=Int   , required=False 
-        #    ns_BSE.set_PRECFOCK_to_Fast  , valid_type=Bool  , required=False 
-  
+        #        
+        #    ns_optimization.set_PRECFOCK_to_Fast  , valid_type=Bool  , required=False 
+        #    ns_optimization.lreal                 , valid_type=Bool  , required=False
+        
         spec.expose_inputs(cls._mbse_kptsconv_wc,  exclude=('ns_kpoints','ns_reference','ns_converge_BSE')      )
         # From VaspmBSEKptsConvWorkChain we expose:
         #    ns_converge.dielfunction_convergence    , valid_type=Bool
@@ -187,14 +189,16 @@ class VaspmBSECompleteWorkChain(WorkChain):
     # ------------------------------------------------------------------
     #[2] Run the full mBSE calculation on the converged k-mesh
     def run_full_mbse(self):
-        inputs_full = AttributeDict( {'ns_option':AttributeDict(), 'ns_BSE':AttributeDict(),  'ns_parameters':AttributeDict()  }  )
+        inputs_full = AttributeDict( {'ns_option':AttributeDict(),       'ns_parameters':AttributeDict() ,
+                                      'ns_optimization':AttributeDict(), 'ns_BSE':AttributeDict(),       }  )
 
         # Here we use *exactly* what the user provided to the master WC
         # for VaspmBSEInitScriptWorkChain, including ns_BSE.optical_energy_window
         # and/or explicit NBANDSV/O (if they set them).
         inputs_full.update(self.exposed_inputs(self._mbse_base_wc))
         
-        inputs_full.ns_BSE.set_PRECFOCK_to_Fast = Bool(True)
+        inputs_full.ns_optimization.set_PRECFOCK_to_Fast = Bool(True)
+        inputs_full.ns_optimization.lreal = Bool(True)
         inputs_full.ns_option.calculation_label = Str("mBSE final")
         inputs_full.ns_parameters.nbseeig = Int(250)
         inputs_full.ns_parameters.ibse = Int(2)

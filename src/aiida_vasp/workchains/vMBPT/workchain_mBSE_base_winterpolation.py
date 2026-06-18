@@ -161,19 +161,15 @@ class VaspmBSEInitScriptWorkChain(WorkChain):
             spec.input('ns_parameters.kpar'                   , valid_type=Int   , required=False , default=lambda: Int(1),  help="Parallelization across k-points. Defaults = number of GPUs if available.")          
             spec.input('ns_parameters.nbseeig'                , valid_type=Int   , required=False , default=lambda: Int(50), help="Number of BSE eigenvectors written to BSEFATBAND.")          
 
-            spec.input("options" , valid_type=Dict)
-            spec.input("copy_result_locally" , valid_type=Bool, required=False, default=lambda:Bool(True) )
-
-            spec.input('ns_reference.starting_RemoteData'     , valid_type=RemoteData  , required=False , help='the DFT ground state wavefunction (WAVECAR) and CHGCAR will be copied from this RemoteData folder as a starting point' )
 
             path_interpolationscript_default = os.path.join( importlib.import_module('aiida_vasp').__path__[0] , "workchains/vMBPT/utils_interpolationclasses.v2.py")
             SFData_default = SinglefileData( file=path_interpolationscript_default ) 
-            spec.input("ns_interpolation.local_initscript"         ,   valid_type=SinglefileData , required=False , default=lambda:SFData_default ,
+            spec.input("ns_interpolation.local_initscript"           , valid_type=SinglefileData , required=False , default=lambda:SFData_default ,
                                                                        help=("A SinglefileData containing the interpolation python script - Copied to remote sandbox as script_init.py"
                                                                         +" - Default provided via SFData_default"))
-            spec.input("ns_interpolation.use_interpolation"         ,  valid_type=Bool       , required=True , default=lambda:Bool(True) )
-            spec.input("ns_interpolation.nbandsgw_to_interpolate"   ,  valid_type=Int        , required=False )
-            spec.input("ns_interpolation.remote_gw_reference_folder",  valid_type=RemoteData , required=False ,
+            spec.input("ns_interpolation.use_interpolation"          , valid_type=Bool       , required=True , default=lambda:Bool(True) )
+            spec.input("ns_interpolation.nbandsgw_to_interpolate"    , valid_type=Int        , required=False )
+            spec.input("ns_interpolation.remote_gw_reference_folder" , valid_type=RemoteData , required=False ,
                                                                        help=("The GW OUTCAR / vasprun.xml references are inside a single folder on the remote machine " 
                                                                          +"- the RemoteData arguments points to that existing folder - Interpolation script will read from that location.") )
             spec.input("ns_interpolation.local_gw_reference_folder"  , valid_type=Str        , required=False ,
@@ -184,21 +180,30 @@ class VaspmBSEInitScriptWorkChain(WorkChain):
             spec.input("ns_interpolation.python_sourcing_env_command", valid_type=Str        , required=True  , default=lambda:Str("source activate aiida-vasp"),
                                                                        help="Command which will be added to the jobscript - should load a venv/conda env which contains numpy - scipy - pymatgen - spglib")
             
-            spec.input("ns_BSE.static_inverse_diel" , valid_type=Float , required=True  , help='Required for analytic diagonal screening in mBSE.' )
-            spec.input("ns_BSE.screening_parameter" , valid_type=Float , required=True  , help='Required for analytic diagonal screening in mBSE.' )
+            spec.input('ns_optimization.lreal'                , valid_type=Bool  , required=False , default=lambda: Bool(True) , help='lreal value to be used in all calculations. If True sets to Auto, otherwise False') 
+            spec.input("ns_optimization.set_PRECFOCK_to_Fast" , valid_type=Bool  , required=False , default=lambda: Bool(True) , help=('The use of Precfock=Fast depends on the cell dimension, Precfock=Fast is set if volume>350'
+                                                                                                                                        'If True set PRECFOCK=Fast in the mBSE calculation; if False, always set it to default.') )
+            
+            spec.input("ns_BSE.static_inverse_diel"  , valid_type=Float , required=True  , help='Required for analytic diagonal screening in mBSE.' )
+            spec.input("ns_BSE.screening_parameter"  , valid_type=Float , required=True  , help='Required for analytic diagonal screening in mBSE.' )
+            spec.input("ns_BSE.G0W0_gap"             , valid_type=Float , required=False , help="G0W0 gap; required to determine SCISSOR")
+            spec.input("ns_BSE.optical_energy_window", valid_type=Float , required=False , help="Required for the automatic determination of the NBANDSV/NBANDSO given a target energy window")
+            spec.input("ns_BSE.OMEGAMAX"             , valid_type=Float , required=False , help='Required for analytic diagonal screening in mBSE.' )
+            spec.input("ns_BSE.NBANDSV"              , valid_type=Int   , required=False , help=('Force NBANDSV value in the INCAR; override the determination of NBANDSV via target energy window.' 
+                                                                                                 'NBANDSV/NBANDSO should be passed together; cannot define only one of those two.')        )
+            spec.input("ns_BSE.NBANDSO"              , valid_type=Int   , required=False , help=('Force NBANDSO value in the INCAR; override the determination of NBANDSO via target energy window.' 
+                                                                                                 'NBANDSV/NBANDSO should be passed together; cannot define only one of those two.')        )
 
-            spec.input("ns_BSE.G0W0_gap"            , valid_type=Float , required=False , help="G0W0 gap; required to determine SCISSOR")
+            spec.input("options" , valid_type=Dict , required=True )
+            spec.input("ns_option.copy_result_locally"    , valid_type=Bool       , required=False , default=lambda:Bool(True) )
+            spec.input('ns_option.calculation_label'      , valid_type=Str        , required=False , default=lambda: Str("")     , help='The summary printed at the end will be labeled with this string.')
+            spec.input('ns_reference.starting_RemoteData' , valid_type=RemoteData , required=False , help='the DFT ground state wavefunction (WAVECAR) and CHGCAR will be copied from this RemoteData folder as a starting point' )
+            spec.input('ns_reference.use_hdf5'            , valid_type=Bool       , required=False , default=lambda: Bool(False) , help='set LH5 and LWAVEH5 to true, i.e. use preferentially HF5 instead of WAVECAR.')
 
-            spec.input("ns_BSE.optical_energy_window" , valid_type=Float , required=False , help="Required for the automatic determination of the NBANDSV/NBANDSO given a target energy window")
-            spec.input("ns_BSE.OMEGAMAX"              , valid_type=Float , required=False , help='Required for analytic diagonal screening in mBSE.' )
-            spec.input("ns_BSE.NBANDSV"               , valid_type=Int   , required=False , help=('Force NBANDSV value in the INCAR; override the determination of NBANDSV via target energy window.' 
-                                                                                                  'NBANDSV/NBANDSO should be passed together; cannot define only one of those two.')        )
-            spec.input("ns_BSE.NBANDSO"               , valid_type=Int   , required=False , help=('Force NBANDSO value in the INCAR; override the determination of NBANDSO via target energy window.' 
-                                                                                                  'NBANDSV/NBANDSO should be passed together; cannot define only one of those two.')        )
-            spec.input("ns_BSE.set_PRECFOCK_to_Fast"  , valid_type=Bool  , required=False , help=('The use of Precfock=Fast depends on the cell dimension, Precfock=Fast is set if volume>350'
-                                                                                                  'If True set PRECFOCK=Fast in the mBSE calculation; if False, always set it to default.') )
 
-            spec.input('ns_option.calculation_label'  , valid_type=Str  , required=False , default=lambda: Str("")     , help='The summary printed at the end will be labeled with this string.')
+
+
+
 
             spec.output("dielectrics"        , valid_type=ArrayData )
             spec.output("opticaltransitions" , valid_type=ArrayData , required=False )
@@ -391,8 +396,7 @@ class VaspmBSEInitScriptWorkChain(WorkChain):
         if "nbands" in self.inputs.ns_parameters:   incar["incar"]["nbands"] = self.inputs.ns_parameters.nbands.value
         if self.ctx.is_spinpol:
             # kept from your code; MBSE SP path still not implemented
-            _, incar["incar"]["magmom"] = input_magnetic_moment_tomagmom( self.inputs.structure,
-                                                                          self.inputs.ns_parameters.magnetic_moment_onsite.get_dict(), )
+            _,incar["incar"]["magmom"] = input_magnetic_moment_tomagmom( self.inputs.structure, self.inputs.ns_parameters.magnetic_moment_onsite.get_dict(), )
             incar["incar"]["ispin"] = 2
             incar["incar"]["icharg"] = 1
             incar["incar"]["lorbit"] = 11
@@ -400,6 +404,22 @@ class VaspmBSEInitScriptWorkChain(WorkChain):
             incar["incar"]["bmix_mag"] = 1e-5
             incar["incar"]["amix"] = 0.2
             incar["incar"]["bmix"] = 1e-5
+        
+        #[2.1] parameters regarding HDF5 use
+        if ("use_hdf5" in self.inputs.ns_reference) and self.inputs.ns_reference.use_hdf5.value :
+            incar["incar"]["lh5"]      = ".TRUE."
+            incar["incar"]["lwaveh5"]  = ".TRUE."
+            incar["incar"]["lchargh5"] = ".TRUE."
+            incar["incar"]["lwave"]    = ".FALSE."
+            incar["incar"]["lcharg"]   = ".FALSE."
+        else:
+            incar["incar"]["lh5"]      = ".FALSE."
+            incar["incar"]["lwaveh5"]  = ".FALSE."
+            incar["incar"]["lchargh5"] = ".FALSE."
+            incar["incar"]["lwave"]    = ".TRUE."
+            incar["incar"]["lcharg"]   = ".TRUE."
+
+        #[2.2] Finalize incar
         inputs.parameters = incar
 
         #[3] Parser settings 
@@ -434,13 +454,14 @@ class VaspmBSEInitScriptWorkChain(WorkChain):
         inputs.settings["ADDITIONAL_RETRIEVE_LIST"] = [  "BSEFATBAND", "vaspout.h5", "_aiidasubmit.sh", "POSCAR", "POTCAR", "KPOINTS",
             "script_init.py", "INCAR", "CopiedFromLocal_OUTCAR_3", ]
 
-        #[2.2] Setting for the Restart folder, which is very important
+        #[2.2] Setting for the Restart folder : the mBSE should restart from the WAVEDER / WAVECAR (or equivalenty WAVEDER+vaspwave) 
         inputs.restart_folder = self.ctx.state_WC.restart_folders.for_MBSE
-        inputs.settings["ADDITIONAL_REMOTE_COPY_LIST"] = ["WAVEDER", "CONTCAR"]
+        inputs.settings["ADDITIONAL_REMOTE_COPY_LIST"] = ["CONTCAR","CHGCAR","WAVECAR","WAVEDER"]
+        if ("use_hdf5" in self.inputs.ns_reference) and self.inputs.ns_reference.use_hdf5.value :
+            inputs.settings["ADDITIONAL_REMOTE_COPY_LIST"].extend(["vaspwave.h5"])
 
         #[3] Options
         inputs.options = self.__build_options_entry()
-
         return inputs
 
     def __add_inputs_mBSE_incar(self, inputs):
@@ -506,7 +527,7 @@ class VaspmBSEInitScriptWorkChain(WorkChain):
             incar["incar"]["omegamax"] = BSE_params_estimated["OMEGAMAX"]
         
         #Now let's manage the overrides/optimization
-        self.ctx.log +=  ("\n"+ " [Override/Optimization section]")
+        self.ctx.log +=  ("\n"+ "    [Override/Optimization section]")
         if "OMEGAMAX" in self.inputs.get("ns_BSE", {}):
             incar["incar"]["omegamax"] = self.inputs.ns_BSE.OMEGAMAX.value
             if num_GPU_perNode > 0:
@@ -517,7 +538,7 @@ class VaspmBSEInitScriptWorkChain(WorkChain):
             if ("NBANDSV" in self.inputs.ns_BSE) and ("NBANDSO" in self.inputs.ns_BSE):
                 incar["incar"]["nbandso"] = self.inputs.ns_BSE.NBANDSO.value
                 incar["incar"]["nbandsv"] = self.inputs.ns_BSE.NBANDSV.value
-                self.ctx.log +=  ("\n"+f"  > Override: NBANDSO/V from workchain input : {incar["incar"]["nbandso"]}/{incar["incar"]["nbandsv"]}" )
+                self.ctx.log +=  ("\n"+f"     > Override: NBANDSO/V from workchain input : {incar["incar"]["nbandso"]}/{incar["incar"]["nbandsv"]}" )
             else:
                 raise ValueError("ns_BSE.NBANDSV and ns_BSE.NBANDSO must be both set or both unset.")
 
@@ -534,13 +555,17 @@ class VaspmBSEInitScriptWorkChain(WorkChain):
         threshold_cell_volume_for_PRECFOCK = 250
         if self.inputs.structure.get_cell_volume() > threshold_cell_volume_for_PRECFOCK :
              incar['incar']['precfock'] = "Fast"
-             self.ctx.log +=  ("\n"+f"  > Optimization:  Cell volume is > threshold : {self.inputs.structure.get_cell_volume()} > {threshold_cell_volume_for_PRECFOCK} : automatically set precfock to fast!")
+             self.ctx.log +=  ("\n"+f"     > Optimization:  Cell volume is > threshold : {self.inputs.structure.get_cell_volume()} > {threshold_cell_volume_for_PRECFOCK} : automatically set precfock to fast!")
         #Now let's manage the override
-        if ("set_PRECFOCK_to_Fast" in self.inputs.ns_BSE) and self.inputs.ns_BSE.set_PRECFOCK_to_Fast.value : 
+        if ("set_PRECFOCK_to_Fast" in self.inputs.ns_optimization) and self.inputs.ns_optimization.set_PRECFOCK_to_Fast.value : 
             incar['incar']['precfock'] = "Fast" 
-            self.ctx.log +=  ("\n"+f"  > Override: precfock flag from workchain input : set precfock to fast!")
+            self.ctx.log +=  ("\n"+f"     > Override: precfock flag from workchain input : set precfock to fast!")
 
         #[5.4] BSE : optimization options
+        if ("lreal" in self.inputs.ns_optimization) and self.inputs.ns_optimization.lreal.value : 
+            incar["incar"]["lreal"] = "Auto"
+            self.ctx.log +=  ("\n"+f"     > Optimization: Setting Lreal=Auto; this may help reduce the memory space occupied by projectors.")
+        
         #This follows the advice on https://vasp.at/wiki/Best_practices_for_Bethe-Salpeter_calculations
         # i.e. KPAR=num of GPUs. 
         #Given that NCCL for VASP imposes #mpiranks = #gpus, this means that all wavefunctions are stored on every MPI rank, 
@@ -549,13 +574,29 @@ class VaspmBSEInitScriptWorkChain(WorkChain):
             # KPAR = num GPUs per node * num nodes
             num_nodes = inputs.options.get_dict()["resources"]["num_machines"]
             incar["incar"]["kpar"] = num_GPU_perNode * num_nodes
-            self.ctx.log +=  ("\n"+f"  > Optimization: Using a total of {num_GPU_perNode * num_nodes} GPUs : automatically se KPAR to #(total GPUs)")
+            self.ctx.log +=  ("\n"+f"     > Optimization: Using a total of {num_GPU_perNode * num_nodes} GPUs : automatically se KPAR to #(total GPUs)")
 
         #[5.5] BSE scissor if interpolation disabled
         if not self.inputs.ns_interpolation.use_interpolation.value:
             incar["incar"]["scissor"] = BSE_params_estimated["SCISSOR"]
-            self.ctx.log +=  ("\n"+f"  > Override: Interpolation disabled from workchain input, setting SCISSOR to {incar["incar"]["scissor"]}")
+            self.ctx.log +=  ("\n"+f"     > Override: Interpolation disabled from workchain input, setting SCISSOR to {incar["incar"]["scissor"]}")
         self.report(self.ctx.log)
+        
+        #[6] parameters regarding HDF5 use
+        if ("use_hdf5" in self.inputs.ns_reference) and self.inputs.ns_reference.use_hdf5.value :
+            incar["incar"]["lh5"]      = ".TRUE."
+            incar["incar"]["lwaveh5"]  = ".TRUE."
+            incar["incar"]["lchargh5"] = ".TRUE."
+            incar["incar"]["lwave"]    = ".FALSE."
+            incar["incar"]["lcharg"]   = ".FALSE."
+        else:
+            incar["incar"]["lh5"]      = ".FALSE."
+            incar["incar"]["lwaveh5"]  = ".FALSE."
+            incar["incar"]["lchargh5"] = ".FALSE."
+            incar["incar"]["lwave"]    = ".TRUE."
+            incar["incar"]["lcharg"]   = ".TRUE."
+
+        #[7] Finalize incar
         inputs.parameters = incar
         return inputs
 
@@ -639,11 +680,11 @@ class VaspmBSEInitScriptWorkChain(WorkChain):
         if flag_use_interp :
             sourcing_cmd = str(self.inputs.ns_interpolation.python_sourcing_env_command.value or "").strip()
             str_launch_command =( f"{sourcing_cmd}"+"\n"
-                                   "python3 "               +str(args_interpolation['interpolation_script_remote_filename'])+"  "
-                                   "--path_sparse_GW "      +str(args_interpolation['path_sparse_GW_remote_file_name'])     +"  "
-                                   "--sparse_GW_filename "  +str(args_interpolation['path_sparse_GW_remote_file_path'])     +"  "     
-                                   "--path_dense_DFT_toInterp "  +str("./")                                                 +"  "
-                                   "--nbandsgw_dense "  +str(args_interpolation['nbandsgw_to_interpolate']) ) 
+                                   "python3 "                   +str(args_interpolation['interpolation_script_remote_filename'])+"  "
+                                   "--path_sparse_GW "          +str(args_interpolation['path_sparse_GW_remote_file_name'])     +"  "
+                                   "--sparse_GW_filename "      +str(args_interpolation['path_sparse_GW_remote_file_path'])     +"  "     
+                                   "--path_dense_DFT_toInterp " +str("./")                                                      +"  "
+                                   "--nbandsgw_dense "          +str(args_interpolation['nbandsgw_to_interpolate']) ) 
         else: str_launch_command = ""
         inputs.init_script_call_command = str_launch_command
         # Optional: store for later reporting/debugging
@@ -654,7 +695,7 @@ class VaspmBSEInitScriptWorkChain(WorkChain):
         """Collect outputs from the final mBSE workchain and optionally copy files locally."""
         mbse_node = self._last_wc_node("MBSE")
         if mbse_node is None or not mbse_node.is_finished_ok:
-            raise RuntimeError("Cannot elaborate results: no successful MBSE workchain found.")
+            raise RuntimeError("Cannot elaborate results: no successful MBSE workchain found: (mBSE node).is_finished_ok is FALSE!")
 
         #expose outputs ---
         self.out("dielectrics" , mbse_node.outputs.dielectrics  )
@@ -665,7 +706,7 @@ class VaspmBSEInitScriptWorkChain(WorkChain):
             self.out("opticaltransitions" , mbse_node.outputs.opticaltransitions )
 
         # --- copy retrieved folder locally ---
-        if self.inputs.copy_result_locally.value:
+        if ("copy_result_locally" in self.inputs.ns_option) and self.inputs.ns_option.copy_result_locally.value:
             kmesh     = mbse_node.inputs.kpoints.get_kpoints_mesh()[0]
             kmesh_str = "".join(str(k) for k in kmesh)
             foldername = f"3.1_mBSE_k{kmesh_str}_id{self.pid}"

@@ -271,8 +271,8 @@ class VaspG0W0BasisExtrWorkChain(WorkChain):
             #VaspDFTGWWorkChain expose:
             #   from spec.expose_inputs(WorkflowFactory('vasp.vasp') : options - potential_family - potential_mapping - kpoints
             #                                                          (parameters - settings of vasp.vasp are NOT exposed by  VaspDFTGWWorkChain)
-            #   ns_parameters - ns_parallelization - ns_reference - ns_option - kpoints
-            #Of those we expose only ns_parallelization; the rest is controlled internally.  
+            #   ns_parameters - ns_optimization - ns_reference - ns_option - kpoints
+            #Of those we expose only ns_optimization; the rest is controlled internally.  
             
             spec.input('ns_extrapolation.encut_chi_fraction'    , valid_type=Float     , required=True  , default=lambda: Float(0.63)  , help='if not specified, ENCUTGW defined as 0.63 x ENCUT ; - if specified, the fraction provided is used' )
             spec.input('ns_extrapolation.nbands_stride'         , valid_type=Int       , required=False , help='minimum nbands steps used to increase the number of bands in the fit for the final (an other) modes')
@@ -358,7 +358,7 @@ class VaspG0W0BasisExtrWorkChain(WorkChain):
             for ecutNbIdx in range( self.ctx.max_num_runnable_G0W0_calcs ):                
                 self.ctx.inputs_array.append( AttributeDict({ 'ns_parameters':AttributeDict(), 'ns_option':AttributeDict(), 'ns_reference':AttributeDict() }) )
                 self.ctx.inputs_array[ecutNbIdx].update(self.exposed_inputs(VaspDFTGWWorkChain))
-                #ns_parallelization of VaspDFTGWWorkChain is not excluded from expose_inputs and thus is set by update
+                #ns_optimization of VaspDFTGWWorkChain is not excluded from expose_inputs and thus is set by update
                 self.ctx.inputs_array[ecutNbIdx].clean_workdir    = Bool(False)
                 #self.ctx.finishedWC_DFTgr_NSP[-1].outputs.kpoints does not work for VASP G0W0s: it doesn't use VASP automatic generation but define manually the points inside KPOINTS - may give error in screened_2e.F -> use inputs values, which employs VASP automatic generation
                 #self.ctx.finishedWC_DFTgr_NSP[-1].outputs.kpoints does not work for determine_completeBasis_encutNband: it requires explicit k-mesh -> in 
@@ -507,7 +507,7 @@ class VaspG0W0BasisExtrWorkChain(WorkChain):
         #       This could cause a crash in the later call of the function  get_closest_EncutNband_multiple; therefore we do a max(1, ..)
         total_mpithrd_num_for_extrapolation = (self.inputs.ns_option.options_for_extrapolation.get_dict()['resources']['num_machines'] *
                                                self.inputs.ns_option.options_for_extrapolation.get_dict()['resources']['num_mpiprocs_per_machine'] )
-        kpar = self.inputs.ns_parallelization.kpar.value if ("kpar" in self.inputs.ns_parallelization) else 1 
+        kpar = self.inputs.ns_optimization.kpar.value if ("kpar" in self.inputs.ns_optimization) else 1 
         GW_nbands_divisor_for_extrapolation = max(1, (total_mpithrd_num_for_extrapolation // kpar) ) 
         GW_nbands_divisor_for_dense = ( self.inputs.ns_option.constraint_nbands_divisor.value if ('constraint_nbands_divisor' in self.inputs.ns_option) 
                                          else GW_nbands_divisor_for_extrapolation )

@@ -143,9 +143,9 @@ class VaspDFTGWWorkChain(WorkChain):
 
                 spec.input('kpoints'                              , valid_type=KpointsData , help='K-mesh used for VASP G0W0 and DFT runs; get_kpoints_mesh() must work.' )     
 
-                spec.input('ns_parallelization.kpar'              , valid_type=Int         , required=False , default=lambda: Int(4)      , help='kpar value to be used in G0W0 calculations')
-                spec.input('ns_parallelization.npar'              , valid_type=Int         , required=False , default=lambda: Int(1)      , help='NPAR value to be used in G0W0 calculations')
-                spec.input('ns_parallelization.lreal'             , valid_type=Bool        , required=False , default=lambda: Bool(False) , help='lreal value to be used in all calculations. If True sets to Auto, otherwise False') 
+                spec.input('ns_optimization.kpar'                 , valid_type=Int         , required=False , default=lambda: Int(4)      , help='kpar value to be used in G0W0 calculations')
+                spec.input('ns_optimization.npar'                 , valid_type=Int         , required=False , default=lambda: Int(1)      , help='NPAR value to be used in G0W0 calculations')
+                spec.input('ns_optimization.lreal'                , valid_type=Bool        , required=False , default=lambda: Bool(False) , help='lreal value to be used in all calculations. If True sets to Auto, otherwise False') 
 
                 spec.input('ns_reference.starting_RemoteData'     , valid_type=RemoteData  , required=False , help='the DFT ground state wavefunction (WAVECAR) and CHGCAR will be copied from this RemoteData folder as a starting point' )
                 
@@ -662,10 +662,10 @@ class VaspDFTGWWorkChain(WorkChain):
             else: 
                 incar['incar']['ispin'] = 1
 
-            # Parallelization settings : for now we report kpar and npar as defined from the inputs.ns_parallelization namespace.
-            if ('kpar' in self.inputs.ns_parallelization ): incar['incar']['kpar'] = self.inputs.ns_parallelization.kpar.value
-            if ('npar' in self.inputs.ns_parallelization ): incar['incar']['npar'] = self.inputs.ns_parallelization.npar.value
-            if (self.inputs.ns_parallelization.lreal.value == True):
+            # Parallelization settings : for now we report kpar and npar as defined from the inputs.ns_optimization namespace.
+            if ('kpar' in self.inputs.ns_optimization ): incar['incar']['kpar'] = self.inputs.ns_optimization.kpar.value
+            if ('npar' in self.inputs.ns_optimization ): incar['incar']['npar'] = self.inputs.ns_optimization.npar.value
+            if (self.inputs.ns_optimization.lreal.value == True):
                 incar['incar']['lreal'] = 'Auto'
             else:
                 incar['incar']['lreal'] = '.FALSE.'
@@ -699,7 +699,7 @@ class VaspDFTGWWorkChain(WorkChain):
                                'ismear':0 , 'sigma':0.02 , 
                                'prec':'Accurate', 'lmaxmix':4 , 'lorbit':11    ,
                                'nomega':self.inputs.ns_parameters.nomega.value , 
-                               'kpar':self.inputs.ns_parallelization.kpar      }}
+                               'kpar':self.inputs.ns_optimization.kpar      }}
             if ('encut'  in self.inputs.ns_parameters ):  incar['incar']['encut'] = self.inputs.ns_parameters.encut.value
             if ('nbands' in self.inputs.ns_parameters ): incar['incar']['nbands'] = self.inputs.ns_parameters.nbands.value            
             #else: incar['incar']['nbands'] =  np.shape(self.ctx.WC_record_2DFTvo[-1].outputs.bands.get_bands())[1]   #In altenrnativa : self.ctx.WC_record_DFT[-1].outputs.get_dict()['run_status']['nbands']
@@ -715,9 +715,9 @@ class VaspDFTGWWorkChain(WorkChain):
             else: 
                 incar['incar']['ispin'] = 1
 
-            # Parallelization settings : for now we report kpar and npar as defined from the inputs.ns_parallelization namespace.
-            if ('kpar' in self.inputs.ns_parallelization ): incar['incar']['kpar'] = self.inputs.ns_parallelization.kpar.value
-            if (self.inputs.ns_parallelization.lreal.value == True):
+            # Parallelization settings : for now we report kpar and npar as defined from the inputs.ns_optimization namespace.
+            if ('kpar' in self.inputs.ns_optimization ): incar['incar']['kpar'] = self.inputs.ns_optimization.kpar.value
+            if (self.inputs.ns_optimization.lreal.value == True):
                 incar['incar']['lreal'] = 'Auto'
             else:
                 incar['incar']['lreal'] = '.FALSE.'

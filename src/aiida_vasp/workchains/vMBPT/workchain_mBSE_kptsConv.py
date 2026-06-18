@@ -332,9 +332,10 @@ class helper_kptsConv_mBSE:
         if np.any(np.array(next_kmesh) > np.array( self.ctx.control.max_kmesh) ):
             str_abort = ( f"\n    --> convergence NOT reached and maximum kmesh exceeded:"
                           f"\n       next kmesh would be {next_kmesh}"
-                           f"\n    --> aborting" )
+                          f"\n    --> aborting" )
             self.report( self.ctx.str_log + str_abort)
-            return self.exit_codes.CONVERGENCE_NOT_FOUND
+            self.ctx.control['last_exit_code_thrown'] = self.exit_codes.CONVERGENCE_NOT_FOUND
+            return False
         self.ctx.control.current_kmesh = np.array(next_kmesh, dtype=int)
         str_cont = ( f"\n    --> convergence NOT reached - continuing : next kmesh = {self.ctx.control.current_kmesh}\n" )
         self.report(self.ctx.str_log + str_cont)
@@ -390,7 +391,7 @@ class VaspmBSEKptsConvWorkChain(WorkChain):
             super(VaspmBSEKptsConvWorkChain , cls).define(spec)
 
             #spec.expose_inputs(cls._next_workchain          , exclude=('kpoints','parameters','settings','potential_family','potential_mapping')) 
-            spec.expose_inputs(VaspmBSEInitScriptWorkChain  , exclude=('kpoints','ns_reference', 'ns_BSE') ) 
+            spec.expose_inputs(VaspmBSEInitScriptWorkChain  , exclude=('kpoints','ns_reference', 'ns_BSE', 'ns_optimization') ) 
              
             spec.input( 'ns_kpoints.convergence_threshold'       , valid_type=Float , required=False , default=lambda:Float(0.35), help="minimum converge value in eV" ) 
             spec.input( 'ns_kpoints.kmesh.starting_mesh'         , valid_type= KpointsData , required=True , help="Starting k-mesh for the k-point convergence study." )
@@ -435,20 +436,24 @@ class VaspmBSEKptsConvWorkChain(WorkChain):
     def initialize(self):
         self.ctx.control = AttributeDict() ; 
         self.ctx.control['convergence'] = []
-        self.ctx.control['kmesh_converged']      = None 
-        self.ctx.control['kdensity_converged']   = None 
-        self.ctx.control["dynamic_step_refined"] = False
-        self.ctx.control['fail_counter'] = 0
+        self.ctx.control['kmesh_converged']       = None 
+        self.ctx.control['kdensity_converged']    = None 
+        self.ctx.control["dynamic_step_refined"]  = False
+        self.ctx.control['last_exit_code_thrown'] = None
+        
         self.ctx.WC_MBPT = []
 
         ##[1][ Input checking regarding the ns_converge namespace ]
         allowed_metrics = ["L2_distance", "L1_distance", "Wasserstein"]
         if self.inputs.ns_converge.dielfunction_distance.value not in allowed_metrics: 
-            return self.exit_codes.UNSUPPORTED_DIELFUNCTION_METRIC   
+            self.ctx.control['last_exit_code_thrown'] = self.exit_codes.UNSUPPORTED_DIELFUNCTION_METRIC
+            return self.ctx.control['last_exit_code_thrown'] 
         if (not self.inputs.ns_converge.dielfunction_convergence.value) and (not self.inputs.ns_converge.opticalgap_convergence.value):
-            return self.exit_codes.NO_CONVERGENCE_REQUESTED
+            self.ctx.control['last_exit_code_thrown'] = self.exit_codes.NO_CONVERGENCE_REQUESTED
+            return self.ctx.control['last_exit_code_thrown'] 
         if (self.inputs.ns_converge.dielfunction_window.value < 1) or (self.inputs.ns_converge_BSE.NBANDSO.value < 1) or (self.inputs.ns_converge_BSE.NBANDSV.value < 1):
-            return self.exit_codes.INVALID_MBSE_CONVERGE_PARAMETERS
+            self.ctx.control['last_exit_code_thrown'] = self.exit_codes.INVALID_MBSE_CONVERGE_PARAMETERS
+            return self.ctx.control['last_exit_code_thrown'] 
         
         ##[ The Kpoint part ]
         #There are two possible ways to control the convergence:
@@ -485,12 +490,13 @@ class VaspmBSEKptsConvWorkChain(WorkChain):
                        f"\n   Step (initial)     : {step_vec}" )
         
         else:
-            return self.exit_codes.NOT_IMPLEMENTED           
+            self.ctx.control['last_exit_code_thrown'] = self.exit_codes.NOT_IMPLEMENTED 
+            return self.ctx.control['last_exit_code_thrown'] 
         self.report(str_log)
 
     def prepare_run_mBSE(self):
         # Build inputs for the base workchain
-        self.ctx.inputs_mBSEbase = AttributeDict({ 'ns_parameters' : AttributeDict() , 'ns_BSE' : AttributeDict() })
+        self.ctx.inputs_mBSEbase = AttributeDict({ 'ns_parameters':AttributeDict(), 'ns_BSE':AttributeDict(), 'ns_optimization':AttributeDict() })
         self.ctx.inputs_mBSEbase.update(self.exposed_inputs(VaspmBSEInitScriptWorkChain))
         self.ctx.inputs_mBSEbase.clean_workdir = Bool(False)            
 
@@ -520,8 +526,9 @@ class VaspmBSEKptsConvWorkChain(WorkChain):
         #In internal tests PRECFOCK reduces computational cost of the setting-up the BSE matrix of almost 40%
         #with negligible cost in term of precision decrease.
         #Thus we always keep on for kpts-convergence
-        self.ctx.inputs_mBSEbase.ns_BSE.set_PRECFOCK_to_Fast = Bool(True)
+        self.ctx.inputs_mBSEbase.ns_optimization.set_PRECFOCK_to_Fast = Bool(True)
         self.ctx.log_launching_run += f"\n  > For mBSE kpoints convergence (which does not need to be overly accurate), we set PRECFOCK to Fast."
+        self.ctx.inputs_mBSEbase.ns_optimization.lreal = Bool(True)
 
 
         
@@ -603,7 +610,9 @@ class VaspmBSEKptsConvWorkChain(WorkChain):
             if last_wc.is_excepted or (not last_wc.is_finished_ok):
                 self.report( f"\n  > ERROR: last mBSE child failed (pk={last_wc.pk})."
                              f"\n    Aborting convergence loop (retries should be handled in base workchain)."  )
-                return self.exit_codes.MBSE_CALC_FAILURE        
+                self.ctx.control['last_exit_code_thrown'] = self.exit_codes.MBSE_CALC_FAILURE    
+                return self.ctx.control['last_exit_code_thrown'] 
+
             
         ##[ELABORATION] ------------------------------------------------------------------------
         #[2] Collect successful nodes sorted by kmesh + build elaborated records for each node (optgap, extract diel, etc)
@@ -638,7 +647,7 @@ class VaspmBSEKptsConvWorkChain(WorkChain):
         if num_mBSE_finished_successfully < (self.ctx.monitor.min_num_calcs_required_for_conv ):
             self.ctx.str_log += (  f"\n  > Not enough successful BSE calculations "
                                    f"({num_mBSE_finished_successfully}/{self.ctx.monitor.min_num_calcs_required_for_conv})."
-                                   f"\n    -> Launch next calculation." )
+                                   f"\n    → Launch next calculation." )
             next_kmesh = helper_kptsConv_mBSE._compute_next_kmesh(self.ctx, num_mBSE_finished_successfully,
                                                                   self.ctx.control.step_kmesh ) 
             return helper_kptsConv_mBSE._return_next_kmesh_or_abort( self , next_kmesh )
@@ -707,20 +716,30 @@ class VaspmBSEKptsConvWorkChain(WorkChain):
 
  
     def elaborate_results(self):
+        # Check that critical (aborting) error codes have been thrown during convergence
+        if self.ctx.control['last_exit_code_thrown'] is not None:
+            last_exit_code = self.ctx.control['last_exit_code_thrown']
+            self.report(f"Aborting-grade error thrown during convergence! self.ctx.control.last_exit_code_thrown={last_exit_code}")
+            return self.ctx.control['last_exit_code_thrown']
+        
         # Determine final k-mesh
         if 'kmesh_converged' in self.ctx.control and self.ctx.control['kmesh_converged'] is not None:
             # already stored as KpointsData
             node_kpoints = self.ctx.control['kmesh_converged']
             node_kpoints.store()
+            self.report("Debug - self.ctx.control.kmesh_converged found and returned") 
             self.out('kmesh_converged', node_kpoints)
+        else:
+            self.report("There are not exit code thrown - but kmesh_converged node in self.ctx.control is absent!")
+            return self.exit_codes.CONVERGENCE_NOT_FOUND
+            
     
         # Output optical gap if available
-        if ( self.ctx.control['convergence'] 
-             and self.ctx.control['convergence'][-1].get('optgap') is not None  ):
+        if ( self.ctx.control['convergence'] and self.ctx.control['convergence'][-1].get('optgap') is not None  ):            
             optgap_value = self.ctx.control['convergence'][-1]['optgap']
+            self.report(f"Debug - optical gap convergence returned, equal to : {optgap_value}")
             self.out('optical_gap', Float(optgap_value))
     
     
     
     
-

@@ -37,12 +37,12 @@ class VaspG0W0CompleteWorkChain(WorkChain):
             #VaspDFTGWWorkChain expose:
             #   from spec.expose_inputs(WorkflowFactory('vasp.vasp') : options - potential_family - potential_mapping - kpoints
             #                                                          (parameters - settings of vasp.vasp are NOT exposed by  VaspDFTGWWorkChain)
-            #   ns_parameters - ns_parallelization - ns_reference - ns_option - kpoints
-            #Of those we expose only ns_parallelization; the rest is controlled internally.          
+            #   ns_parameters - ns_optimization - ns_reference - ns_option - kpoints
+            #Of those we expose only ns_optimization; the rest is controlled internally.          
             
             spec.expose_inputs(VaspG0W0BasisExtrWorkChain  , exclude=('kpoints','potential_family','potential_mapping','options','ns_reference'   ,'ns_option')) 
             #VaspG0W0BasisExtrWorkChain expose:
-            #   from spec.expose_inputs(VaspDFTGWWorkChain): potential_family - potential_mapping -options -  ns_parallelization 
+            #   from spec.expose_inputs(VaspDFTGWWorkChain): potential_family - potential_mapping -options -  ns_optimization 
             #                                               (the rest of is VaspDFTGWWorkChain is not exposed and controlled internally by VaspG0W0BasisExtrWorkChain).
             #	ns_extrapolation - ns_parameters - kpoints - ns_reference - ns_options
             spec.expose_inputs(VaspG0W0KptsConvWorkChain   , exclude=('kpoints','potential_family','potential_mapping','options','ns_opt_converge','ns_option','ns_kpoints')) 
@@ -279,7 +279,7 @@ class VaspG0W0CompleteWorkChain(WorkChain):
                 
                 opts = self.inputs.ns_option.options_for_extrapolation.get_dict()
                 total_mpi = int(opts["resources"]["num_machines"]) * int(opts["resources"]["num_mpiprocs_per_machine"])
-                kpar = int(kconv_inputs.ns_parallelization.kpar.value)
+                kpar = int(kconv_inputs.ns_optimization.kpar.value)
                 GW_mpithrd_num = Int(total_mpi // kpar)
                 params_fit = get_EncutNbandFitParams_completeBasis_quadratic( DFTgr_kpts, DFTgr_cell, DFTgr_NGarray, Float(DFTgr_ENMAXmax) )
                     
@@ -352,7 +352,7 @@ class VaspG0W0CompleteWorkChain(WorkChain):
                                                       source_DFTgr_wcnode, 
                                                       cutoff_starting_value=None):
             input_extr = AttributeDict({ 'ns_parameters':AttributeDict(),      'ns_reference':AttributeDict(), 
-                                         'ns_parallelization':AttributeDict(), 'ns_extrapolation':AttributeDict(),
+                                         'ns_optimization':AttributeDict(), 'ns_extrapolation':AttributeDict(),
                                          'ns_option':AttributeDict()})
             
             #[1] Default stuff : scheduler options , parser settings  + potcars and kpoints 

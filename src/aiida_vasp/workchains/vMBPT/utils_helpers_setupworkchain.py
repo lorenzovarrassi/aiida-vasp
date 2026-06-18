@@ -424,6 +424,41 @@ class Helpers_setup_Workchain :
 
         return ns_bse
 
+    # -------------------------------------------------------------------------
+    #[7.1] Build a BandsData node from the reference DFT/GW vasprun (for IPA-transition-matrix helpers)
+    @staticmethod
+    def _build_bandsdata_from_vasprun(local_folder_gw_reference: str,
+                                      gw_reference_filename_vasprun: str = 'vasprun.xml.3',
+                                      ) -> orm.BandsData:
+        """
+        Parse band energies, occupations and k-points from the reference vasprun.xml
+        and wrap them into a stored AiiDA BandsData node.
+
+        Used to feed `_determine_BSE_parameters` (utils_helpers_mBSE.py), which needs
+        the DFT eigenvalues/occupations to build the independent-particle transition matrix.
+
+        Requires vasprun.xml.3 (or whichever filename is passed) to exist in the
+        reference GW directory.
+        """
+        from pymatgen.electronic_structure.core import Spin
+
+        # BSVasprun (not the full Vasprun) matches the parser already used by
+        # _extract_gap for this exact file - lighter, and proven to work on it.
+        vasprun_path = os.path.join(local_folder_gw_reference, gw_reference_filename_vasprun)
+        vasprun = BSVasprun(vasprun_path)
+
+        spin_key = Spin.up if Spin.up in vasprun.eigenvalues else next(iter(vasprun.eigenvalues))
+        eigenvalues_and_occupations = vasprun.eigenvalues[spin_key]  # shape (n_kpts, n_bands, 2)
+        bands = eigenvalues_and_occupations[:, :, 0]
+        occupations = eigenvalues_and_occupations[:, :, 1]
+        kpoints = np.array(vasprun.actual_kpoints)
+
+        bandsdata = orm.BandsData()
+        bandsdata.set_kpoints(kpoints)
+        bandsdata.set_bands(bands, units='eV', occupations=occupations)
+        bandsdata.store()
+        return bandsdata
+
 
     # -------------------------------------------------------------------------
     #[8] Pretty print

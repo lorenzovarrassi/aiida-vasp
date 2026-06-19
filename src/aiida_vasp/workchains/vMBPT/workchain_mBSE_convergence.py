@@ -251,6 +251,11 @@ class VaspmBSEConvergenceTemplateWorkChain(WorkChain):
             NBands child : record["optical_window_threshold"]
     """
 
+    # Human-readable label identifying which convergence this is, used in the
+    # printed [conv-summary] header so kpts-convergence and NBANDSV/NBANDSO-
+    # convergence logs are never ambiguous. Overridden by each child class.
+    _conv_label = "generic"
+
     @classmethod
     def define(cls, spec):
         super().define(spec)
@@ -471,8 +476,8 @@ class VaspmBSEConvergenceTemplateWorkChain(WorkChain):
         self.ctx.control['consecutive_diel_distances']     = diel_diffs
         self.ctx.control['consecutive_diel_meta']          = meta
 
-        self.ctx.str_log = ("\n [monitor_convergence]\n"
-                            + self._prettyprint_summary(successful_records, opt_diffs, diel_diffs))
+        self.ctx.str_log = (f"\n [monitor_convergence] -- convergence on: {self._conv_label} --\n"
+                            + self._prettyprint_summary(successful_records, opt_diffs, diel_diffs, meta))
 
         # ---- [4] Early exit: not enough calculations yet ----
         if num_ok < min_calcs_required:
@@ -607,25 +612,41 @@ class VaspmBSEConvergenceTemplateWorkChain(WorkChain):
     # Default pretty-print (child may override for a cleaner column layout)
     # --------------------------------------------------------------------------
 
-    def _prettyprint_summary(self, records, opt_diffs, diel_diffs, prefix="  "):
-        out = prefix + "[conv-summary]\n" + prefix + "> Completed mBSE nodes:"
+    def _prettyprint_summary(self, records, opt_diffs, diel_diffs, meta=None, prefix="  "):
+        out = prefix + f"[conv-summary] ({self._conv_label})\n" + prefix + "> Completed mBSE nodes:"
         if not records:
             return out + "    (none yet)"
+        if meta is None:
+            meta = [None] * len(records)
+        # 'EnWindow_aboveGap[eV]' = energy_window_goal actually passed to _determine_BSE_parameters
+        # to derive this record's (NBANDSV, NBANDSO); shows 'fixed' where they are not threshold-derived
+        # (e.g. during k-mesh convergence, NBANDSV/NBANDSO stay constant - see _conv_label above).
+        # 'diel_window(prev)[eV]' = the [E_min, E_max] energy range actually used when computing
+        # delta_diel(prev) below (see helper_BSEConv_shared._collect_consecutive_optgap_and_diel_differences).
         out += ("\n" + prefix +
-                "  idx   kmesh          NBANDSV  NBANDSO  optgap[eV]   delta_opt   delta_diel(prev)")
-        out += "\n" + prefix + "  " + "-" * 75
+                "  idx | kmesh          NBANDSV  NBANDSO  EnWindow_aboveGap[eV] |"
+                "  optgap[eV]   delta_opt   delta_diel(prev)  diel_window(prev)[eV]")
+        out += "\n" + prefix + "  " + "-" * 113
         for i, rec in enumerate(records):
             km  = rec.get("kmesh", [0, 0, 0])
             km_str  = f"[{km[0]},{km[1]},{km[2]}]"
             nbv_str = str(rec.get("NBANDSV", "--"))
             nbo_str = str(rec.get("NBANDSO", "--"))
+            ew      = rec.get("optical_window_threshold")
+            ew_str  = f"{ew:.2f}" if isinstance(ew, (int, float)) else "fixed"
             gap_str = f"{rec['optgap']:.4f}" if rec.get("optgap") is not None else "--"
             dop     = opt_diffs[i]  if i < len(opt_diffs)  else None
             dd      = diel_diffs[i] if i < len(diel_diffs) else None
             dop_str = "--" if dop is None else f"{dop:.4f}"
             dd_str  = "--" if dd  is None else f"{dd:.4e}"
-            out += (f"\n{prefix}  [{i:2d}]  {km_str:<14}  {nbv_str:<8} {nbo_str:<8}"
-                    f" {gap_str:<12}  {dop_str:<11}  {dd_str}")
+            m       = meta[i] if i < len(meta) else None
+            if m and m.get("energy_window") is not None:
+                e_min, e_max = m["energy_window"]
+                win_str = f"[{e_min:.2f}-{e_max:.2f}]"
+            else:
+                win_str = "--"
+            out += (f"\n{prefix}  [{i:2d}] | {km_str:<14}  {nbv_str:<8} {nbo_str:<8} {ew_str:<22} |"
+                    f"  {gap_str:<12}  {dop_str:<11}  {dd_str:<17}  {win_str}")
         return out
 
     # --------------------------------------------------------------------------
@@ -741,6 +762,8 @@ class VaspmBSEKptsConvWorkChain(VaspmBSEConvergenceTemplateWorkChain):
     BSE convergence over k-mesh density.
     NBANDSV and NBANDSO are kept fixed (default 2) throughout.
     """
+
+    _conv_label = "k-mesh (NBANDSV/NBANDSO fixed)"
 
     @classmethod
     def define(cls, spec):
@@ -883,6 +906,8 @@ class VaspmBSENBandsConvWorkChain(VaspmBSEConvergenceTemplateWorkChain):
     when this convergence is run), since the BSE band subspace required to cover
     a given IPA transition window does not depend strongly on the k-mesh density.
     """
+
+    _conv_label = "NBANDSV/NBANDSO (k-mesh fixed)"
 
     @classmethod
     def define(cls, spec):

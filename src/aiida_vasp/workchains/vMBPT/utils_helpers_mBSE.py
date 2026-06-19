@@ -146,6 +146,11 @@ def _determine_BSE_parameters( bandsdata: orm.BandsData,
     log.append("  > ΔE_conb_from_CBM (eV):\n")
     log.append("   " + "".join(f"{f'c{ic:02d}':>{colw}}" for ic in range(n_conduction_used)) + "\n") # Header
     log.append("   " + "".join(f"{c:{colw}.4f}"          for c  in DeltaE_conb_fromCBM)      + "\n") # Values
+    log.append("  > NOTE: each ΔE above is the SMALLEST possible distance of that band from the VBM/CBM,\n"
+               "    i.e. taken at whichever k-point brings that band closest to the gap - NOT the value at a fixed k.\n"
+               "    This is a conservative (best-case) bound, used so that no band with even a single low-energy\n"
+               "    transition anywhere in the BZ is mistakenly excluded later. Repeated identical values across\n"
+               "    neighbouring bands (e.g. two equal numbers) indicate degenerate bands.\n")
     if np.any(DeltaE_conb_fromCBM < 0) or np.any(DeltaE_valb_fromVBM < 0):
         warnings.warn("BIG-WARNING : Negative DeltaEn detected; check band ordering or occupations.")
 
@@ -178,25 +183,11 @@ def _determine_BSE_parameters( bandsdata: orm.BandsData,
     transitions_matrix = np.zeros((n_valence_used, n_conduction_used))
     for iv in range(n_valence_used):
         for ic in range(n_conduction_used):
-            transitions_matrix[iv, ic] = ( E_gap_DFT + SCISSOR 
+            transitions_matrix[iv, ic] = ( E_gap_DFT + SCISSOR
                                            + DeltaE_valb_fromVBM[iv]
                                            + DeltaE_conb_fromCBM[ic]  )
-    # Pretty-print the small transition matrix (max 10×10)
-    log.append("\n"+" [4] max.transitions between each pairs of (v)alence -> (c)conduction bands (eV)"
-               "\n"+f"  > Starting from G0W0 gap = {E_gap_DFT + SCISSOR}"
-               "\n"+f"  > used to determine the smallest combination which contains all transitions under {spectra_energy_window_aboveGap} above the gap."
-               "\n"+f"  > only the first {n_valence_used}/{n_conduction_used} val/cond bands, if available, are included in the matrix.") 
-    max_display_v = min(10, n_valence_used)
-    max_display_c = min(10, n_conduction_used)
-    # Conduction band header: c00, c01, ...
-    header = "\n    "+"       "+ "      ".join(f"c{ic:02d}" for ic in range(max_display_c))
-    log.append(header + "\n")
-    # Rows: v00, v01, v02 = VBM, VBM-1, VBM-2, ...
-    for iv in range(max_display_v):
-        row = "  ".join(f"{transitions_matrix[iv, ic]:7.3f}" for ic in range(max_display_c))
-        log.append(f"    v{iv:02d}: {row}\n")
-    
-    # Create a boolean mask of all transitions lying within the target optical window.
+
+    # Create a boolean mask of all (lower-bound) transitions lying within the target optical window.
     # 'energyWindow_goal' is the width of the desired spectral window (e.g. 3 eV);
     # hence all transitions below this energy are considered relevant for the BSE kernel.
     # Determine how many valence and conduction bands are required to cover
@@ -204,20 +195,92 @@ def _determine_BSE_parameters( bandsdata: orm.BandsData,
     #   - if ANY transition from a given valence band is within the window,
     #     that valence band must be included → count over axis=1
     #   - same for conduction bands → count over axis=0
-    mask = transitions_matrix < E_gap_DFT + SCISSOR + spectra_energy_window_aboveGap
+    cutoff = E_gap_DFT + SCISSOR + spectra_energy_window_aboveGap
+    mask = transitions_matrix < cutoff
+    included_valence    = np.any(mask, axis=1)   # per valence band: at least one in-window transition
+    included_conduction = np.any(mask, axis=0)   # per conduction band: at least one in-window transition
+    NBANDSO = int(np.sum(included_valence))       # occupied bands needed
+    NBANDSV = int(np.sum(included_conduction))    # virtual/unoccupied bands needed
+
+    # The single pair that JUSTIFIES each decision: the deepest included valence band (and the
+    # conduction band that puts it in-window), and the highest included conduction band (and the
+    # valence band that puts it in-window). Found directly from the mask, not assumed.
+    if NBANDSO > 0:
+        v_decide      = int(np.max(np.where(included_valence)[0]))
+        c_decide_forV = int(np.argmin(transitions_matrix[v_decide, :]))
+    else:
+        v_decide, c_decide_forV = None, None
+    if NBANDSV > 0:
+        c_decide      = int(np.max(np.where(included_conduction)[0]))
+        v_decide_forC = int(np.argmin(transitions_matrix[:, c_decide]))
+    else:
+        c_decide, v_decide_forC = None, None
+
+    # Pretty-print the transition matrix. Normally capped at a 10-wide preview, but it is always
+    # widened to keep the deciding row/column visible, even when NBANDSO/NBANDSV exceed 10.
+    log.append("\n"+" [4] min.transition energy between each (v)alence -> (c)conduction band pair (eV)  [lower bound]"
+               "\n"+f"  > lower bound = E_gap_DFT + SCISSOR + ΔE_val(iv) + ΔE_con(ic) ; the smallest energy that pair could possibly have."
+               "\n"+f"  > cutoff = E_gap_DFT + SCISSOR + window = {E_gap_DFT:.3f} + {SCISSOR:.3f} + {spectra_energy_window_aboveGap:.3f} = {cutoff:.3f} eV"
+               "\n"+f"  > pairs below the cutoff (marked [..]) are guaranteed to be needed to cover the requested window."
+               "\n"+f"  > scanning the first {n_valence_used}/{n_conduction_used} val/cond bands (set by num_bands_included).")
+    max_display_v = min(n_valence_used, max(10, NBANDSO, (v_decide_forC or 0) + 1))
+    max_display_c = min(n_conduction_used, max(10, NBANDSV, (c_decide_forV or 0) + 1))
+    # Conduction band header: c00, c01, ...
+    header = "\n    "+"       "+ "      ".join(f"c{ic:02d}" for ic in range(max_display_c))
+    log.append(header + "\n")
+    # Rows: v00, v01, v02 = VBM, VBM-1, VBM-2, ...
+    deciding_cells = {(v_decide, c_decide_forV), (v_decide_forC, c_decide)}
+    for iv in range(max_display_v):
+        cells = []
+        for ic in range(max_display_c):
+            val = transitions_matrix[iv, ic]
+            cells.append(f"[{val:.3f}]" if (iv, ic) in deciding_cells else f"{val:7.3f}")
+        log.append(f"    v{iv:02d}: {'  '.join(cells)}\n")
+
     output['HOMO_band_idx'] = idx_HO
     output['gap_DFT']  = E_gap_DFT
     output['SCISSOR']  = SCISSOR
-    output['NBANDSO']  = np.sum( np.any(mask, axis=1) )   #axis 1 is for occupied - NBANDSO = Nbands Occupied
-    output['NBANDSV']  = np.sum( np.any(mask, axis=0) )   #axis 0 is for unoccupied - NBANDSV = Nbands Virtual
-    output['OMEGAMAX'] =  E_gap_DFT + SCISSOR + spectra_energy_window_aboveGap
-    #                     #Note that SCISSOR is defined   
-    #                     #SCISSOR = float(G0W0_gap) - float(E_gap_DFT)  if G0W0_gap is not None else 0
-    #                     #Thus E_gap_DFT + SCISSOR = G0W0_gap if it's defined, esle E_gap_DFT
-    log.append(""  + " [5] Results:" 
-               "\n"+f"  Given Spectra_energy_window_aboveGap = {spectra_energy_window_aboveGap:.4f} eV, E_gap_DFT = {E_gap_DFT:.4f} - SCISSOR = {SCISSOR:.4f} eV"
-               "\n"+f"  > OMEGAMAX = {output['OMEGAMAX']:.2f} eV"
-               "\n"+f"  > NBANDSV  = {output['NBANDSV']} - NBANDSO = { output['NBANDSO']}\n"     )
+    output['NBANDSO']  = NBANDSO
+    output['NBANDSV']  = NBANDSV
+    output['OMEGAMAX'] = cutoff
+    log.append(""  + " [5] Results:"
+               "\n"+f"  window above gap = {spectra_energy_window_aboveGap:.4f} eV , E_gap_DFT = {E_gap_DFT:.4f} eV , SCISSOR = {SCISSOR:.4f} eV"
+               "\n"+f"  > OMEGAMAX = E_gap_DFT + SCISSOR + window = {cutoff:.2f} eV"
+               "\n"+f"  > NBANDSV  = {NBANDSV} - NBANDSO = {NBANDSO}\n"     )
+
+    # [Why these values were chosen] - trace each count back to the specific pair that set it,
+    # and show the next (excluded) band for contrast, so the cutoff decision is verifiable at a glance.
+    log.append("  [Why these values were chosen]\n")
+    if v_decide is not None:
+        log.append(f"   > NBANDSO={NBANDSO}: deepest valence band still needed is v{v_decide:02d}, via transition"
+                    f" (v{v_decide:02d},c{c_decide_forV:02d}) = {transitions_matrix[v_decide, c_decide_forV]:.3f} eV"
+                    f" < cutoff {cutoff:.3f} eV.\n")
+        if v_decide + 1 < n_valence_used:
+            next_c = int(np.argmin(transitions_matrix[v_decide + 1, :]))
+            log.append(f"        next valence band v{v_decide+1:02d}'s closest transition is"
+                        f" (v{v_decide+1:02d},c{next_c:02d}) = {transitions_matrix[v_decide+1, next_c]:.3f} eV"
+                        f" >= cutoff -> excluded.\n")
+        else:
+            log.append(f"        all {n_valence_used} scanned valence bands are needed;"
+                        f" raise num_bands_included to check if more would be required.\n")
+    else:
+        log.append("   > NBANDSO=0: no valence band has a transition under the cutoff.\n")
+
+    if c_decide is not None:
+        log.append(f"   > NBANDSV={NBANDSV}: highest conduction band still needed is c{c_decide:02d}, via transition"
+                    f" (v{v_decide_forC:02d},c{c_decide:02d}) = {transitions_matrix[v_decide_forC, c_decide]:.3f} eV"
+                    f" < cutoff {cutoff:.3f} eV.\n")
+        if c_decide + 1 < n_conduction_used:
+            next_v = int(np.argmin(transitions_matrix[:, c_decide + 1]))
+            log.append(f"        next conduction band c{c_decide+1:02d}'s closest transition is"
+                        f" (v{next_v:02d},c{c_decide+1:02d}) = {transitions_matrix[next_v, c_decide+1]:.3f} eV"
+                        f" >= cutoff -> excluded.\n")
+        else:
+            log.append(f"        all {n_conduction_used} scanned conduction bands are needed;"
+                        f" raise num_bands_included to check if more would be required.\n")
+    else:
+        log.append("   > NBANDSV=0: no conduction band has a transition under the cutoff.\n")
+
     #Construct the final log string and add an indentation to it
     output['log'] = "".join(log)
     output['log'] =  '   ' +  output['log'].replace('\n', '\n   ')

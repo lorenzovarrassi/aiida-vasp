@@ -544,7 +544,9 @@ class VaspmBSEConvergenceTemplateWorkChain(WorkChain):
 
         records = self.ctx.control.get('successful_records', [])
         if records and records[-1].get('optgap') is not None:
-            self.out('optical_gap', Float(records[-1]['optgap']))
+            optgap_node = Float(records[-1]['optgap'])
+            optgap_node.store()
+            self.out('optical_gap', optgap_node)
 
     # --------------------------------------------------------------------------
     # Internal helper: advance ctx.control['current_value'] (concrete, shared)
@@ -1019,8 +1021,12 @@ class VaspmBSENBandsConvWorkChain(VaspmBSEConvergenceTemplateWorkChain):
         nbv = self.ctx.control.get('nbandsv_converged')
         nbo = self.ctx.control.get('nbandso_converged')
         if nbv is not None and nbo is not None:
-            self.out('nbandsv_converged', Int(nbv))
-            self.out('nbandso_converged', Int(nbo))
+            nbv_node = Int(nbv)
+            nbo_node = Int(nbo)
+            nbv_node.store()
+            nbo_node.store()
+            self.out('nbandsv_converged', nbv_node)
+            self.out('nbandso_converged', nbo_node)
         else:
             self.report("nbandsv/nbandso_converged not found in ctx!")
             return self.exit_codes.CONVERGENCE_NOT_FOUND

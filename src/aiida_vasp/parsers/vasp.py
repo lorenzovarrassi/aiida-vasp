@@ -334,7 +334,6 @@ class VaspParser(Parser):
             if name in self.nodes_to_exclude:
                 continue
             node_or_dict = None
-            node_or_dict = getattr(self, '_compose_' + name)(self.quantities_each)
             try:
                 node_or_dict = getattr(self, '_compose_' + name)(self.quantities_each)
             except (QuantityMissingError, KeyError, ValueError, TypeError) as error:
@@ -447,7 +446,12 @@ class VaspParser(Parser):
             kpoints_data = quantities_each['vasprun.xml'].get('kpoints')
 
         if kpoints_data is not None:
-            return get_kpoints_node(kpoints_data, quantities_each['vasprun.xml']['structure']['unitcell'])
+            try:
+                # vasprun.xml's structure/unitcell is missing for non-ionic runs (e.g. GW, BSE)
+                cell = quantities_each['vasprun.xml']['structure']['unitcell']
+            except (KeyError, TypeError):
+                cell = self.node.inputs.structure.cell
+            return get_kpoints_node(kpoints_data, cell)
         raise QuantityMissingError('No valid kpoints data to use')
 
     def _compose_trajectory(self, quantities_each):

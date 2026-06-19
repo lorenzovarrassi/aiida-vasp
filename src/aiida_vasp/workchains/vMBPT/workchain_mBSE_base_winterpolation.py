@@ -362,7 +362,7 @@ class VaspmBSEInitScriptWorkChain(WorkChain):
             inputs = self.__add_inputs_mBSE_incar(inputs)
     
             # Normalize namespaces expected by aiida-vasp wrappers
-            self.ctx.inputs_finalized = prepare_process_inputs( inputs, namespaces=["dynamics", "verify", "local_files_to_copy_to_remote_submission_folder"],  )
+            self.ctx.inputs_finalized = prepare_process_inputs( inputs, namespaces=["calc", "dynamics", "verify", "local_files_to_copy_to_remote_submission_folder"],  )
             return
         # any other state: nothing to prepare
         return

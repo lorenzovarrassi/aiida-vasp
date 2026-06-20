@@ -291,6 +291,12 @@ class VaspmBSECompleteWorkChain(WorkChain):
         inputs_full.ns_optimization.lreal = Bool(True)
         inputs_full.ns_option.calculation_label = Str("mBSE final")
         inputs_full.ns_option.calculation_tag   = Str("_final")
+        # ns_option is excluded from the base_wc expose above (we rebuild it from scratch so
+        # calculation_label/calculation_tag are always ours), but copy_result_locally_path is
+        # still a master-level input (exposed via the kptsconv/nbandsconv children instead) -
+        # carry it through explicitly or the final stage would silently fall back to os.getcwd().
+        if "copy_result_locally_path" in self.inputs.ns_option:
+            inputs_full.ns_option.copy_result_locally_path = self.inputs.ns_option.copy_result_locally_path
         inputs_full.ns_parameters.nbseeig = Int(250)
         inputs_full.ns_parameters.ibse = Int(2)
 

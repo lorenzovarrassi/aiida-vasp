@@ -171,6 +171,13 @@ if __name__ == '__main__':
     inputs.ns_nbandsconv.threshold_step        = Float(arg_inputs['NBANDSCONV_THRESHOLD_STEP'])
     inputs.ns_nbandsconv.num_bands_included    = Int(arg_inputs['NBANDSCONV_NUM_BANDS_INCLUDED'])
 
+    # Capture the launch-time cwd HERE (in the calling process) rather than letting
+    # elaborate_results() call os.getcwd() later - that step may run inside a daemon
+    # worker, whose cwd need not match this directory at all (results would silently
+    # land somewhere unexpected, e.g. the daemon's home directory).
+    inputs.ns_option = AttributeDict()
+    inputs.ns_option.copy_result_locally_path = Str(os.getcwd())
+
     #[4][Submit workchain]###----- ------------ ------------ ------------ ------------ ------------ ------------------------
     print("\nSubmitting VaspmBSECompleteWorkChain...\n")
     print(Helpers_setup_Workchain._build_inputs_summary(inputs))

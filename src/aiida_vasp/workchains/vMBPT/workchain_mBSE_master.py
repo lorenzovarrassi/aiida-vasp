@@ -172,6 +172,16 @@ class VaspmBSECompleteWorkChain(WorkChain):
         spec.output('optical_gap'    ,  valid_type=Float, required=False)
         spec.expose_outputs(cls._mbse_base_wc, include=('dielectrics', 'opticaltransitions')   )
 
+        spec.exit_code(400, 'KPOINTS_CONVERGENCE_FAILED',
+                       message='The k-point convergence sub-workchain (VaspmBSEKptsConvWorkChain) '
+                               'did not finish successfully.')
+        spec.exit_code(401, 'NBANDS_CONVERGENCE_FAILED',
+                       message='The NBANDSV/NBANDSO convergence sub-workchain (VaspmBSENBandsConvWorkChain) '
+                               'did not finish successfully.')
+        spec.exit_code(402, 'FULL_MBSE_FAILED',
+                       message='The final full mBSE sub-workchain (VaspmBSEInitScriptWorkChain) '
+                               'did not finish successfully.')
+
         spec.outline(
             cls.run_kpoints_convergence,
             cls.run_nbands_convergence,
@@ -227,6 +237,13 @@ class VaspmBSECompleteWorkChain(WorkChain):
     #[2] Run the BSE band-subspace (NBANDSV/NBANDSO) convergence, on the SAME
     #    low/cheap k-mesh used to start step 1 - not the converged dense mesh.
     def run_nbands_convergence(self):
+        if not self.ctx.wc_kconv.is_finished_ok:
+            self.report(
+                f"[VaspmBSECompleteWorkChain] k-point convergence WC <{self.ctx.wc_kconv.pk}> "
+                f"did not finish successfully (exit_status={self.ctx.wc_kconv.exit_status}); aborting."
+            )
+            return self.exit_codes.KPOINTS_CONVERGENCE_FAILED
+
         inputs_nbconv = AttributeDict({'ns_converge_BSE': AttributeDict(), 'ns_kpoints': AttributeDict()})
 
         # Take everything the user gave to this master that is relevant
@@ -255,6 +272,13 @@ class VaspmBSECompleteWorkChain(WorkChain):
     # ------------------------------------------------------------------
     #[3] Run the full mBSE calculation on the converged k-mesh and converged NBANDSV/NBANDSO
     def run_full_mbse(self):
+        if not self.ctx.wc_nbconv.is_finished_ok:
+            self.report(
+                f"[VaspmBSECompleteWorkChain] NBands convergence WC <{self.ctx.wc_nbconv.pk}> "
+                f"did not finish successfully (exit_status={self.ctx.wc_nbconv.exit_status}); aborting."
+            )
+            return self.exit_codes.NBANDS_CONVERGENCE_FAILED
+
         inputs_full = AttributeDict( {'ns_option':AttributeDict(),       'ns_parameters':AttributeDict() ,
                                       'ns_optimization':AttributeDict(), 'ns_BSE':AttributeDict(),       }  )
 
@@ -266,6 +290,7 @@ class VaspmBSECompleteWorkChain(WorkChain):
         inputs_full.ns_optimization.set_PRECFOCK_to_Fast = Bool(True)
         inputs_full.ns_optimization.lreal = Bool(True)
         inputs_full.ns_option.calculation_label = Str("mBSE final")
+        inputs_full.ns_option.calculation_tag   = Str("_final")
         inputs_full.ns_parameters.nbseeig = Int(250)
         inputs_full.ns_parameters.ibse = Int(2)
 
@@ -287,6 +312,13 @@ class VaspmBSECompleteWorkChain(WorkChain):
     # ------------------------------------------------------------------
     #[4] wire outputs
     def finalize(self):
+        if not self.ctx.wc_full_mbse.is_finished_ok:
+            self.report(
+                f"[VaspmBSECompleteWorkChain] Final mBSE WC <{self.ctx.wc_full_mbse.pk}> "
+                f"did not finish successfully (exit_status={self.ctx.wc_full_mbse.exit_status}); aborting."
+            )
+            return self.exit_codes.FULL_MBSE_FAILED
+
         # k-mesh + NBANDSV/NBANDSO from the two convergence stages
         self.out('kmesh_converged',   self.ctx.wc_kconv.outputs.kmesh_converged)
         self.out('nbandsv_converged', self.ctx.wc_nbconv.outputs.nbandsv_converged)

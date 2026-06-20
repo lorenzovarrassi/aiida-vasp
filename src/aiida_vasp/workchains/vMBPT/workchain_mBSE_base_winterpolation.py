@@ -197,6 +197,7 @@ class VaspmBSEInitScriptWorkChain(WorkChain):
             spec.input("options" , valid_type=Dict , required=True )
             spec.input("ns_option.copy_result_locally"    , valid_type=Bool       , required=False , default=lambda:Bool(True) )
             spec.input('ns_option.calculation_label'      , valid_type=Str        , required=False , default=lambda: Str("")     , help='The summary printed at the end will be labeled with this string.')
+            spec.input('ns_option.calculation_tag'        , valid_type=Str        , required=False , default=lambda: Str("")     , help='Short suffix appended to the locally-copied result folder name (see copy_result_locally), e.g. "_KPTSconv"/"_NBANDSVOconv"/"_final", to distinguish which stage produced it.')
             spec.input('ns_reference.starting_RemoteData' , valid_type=RemoteData , required=False , help='the DFT ground state wavefunction (WAVECAR) and CHGCAR will be copied from this RemoteData folder as a starting point' )
             spec.input('ns_reference.use_hdf5'            , valid_type=Bool       , required=False , default=lambda: Bool(False) , help='set LH5 and LWAVEH5 to true, i.e. use preferentially HF5 instead of WAVECAR.')
 
@@ -709,7 +710,8 @@ class VaspmBSEInitScriptWorkChain(WorkChain):
         if ("copy_result_locally" in self.inputs.ns_option) and self.inputs.ns_option.copy_result_locally.value:
             kmesh     = mbse_node.inputs.kpoints.get_kpoints_mesh()[0]
             kmesh_str = "".join(str(k) for k in kmesh)
-            foldername = f"3.1_mBSE_k{kmesh_str}_id{self.pid}"
+            tag = str(self.inputs.ns_option.calculation_tag.value or "").strip() if "calculation_tag" in self.inputs.ns_option else ""
+            foldername = f"3.1_mBSE_k{kmesh_str}_id{self.pid}{tag}"
             full_foldername = os.path.join(os.getcwd(), foldername)
             os.makedirs(full_foldername, exist_ok=True)
     

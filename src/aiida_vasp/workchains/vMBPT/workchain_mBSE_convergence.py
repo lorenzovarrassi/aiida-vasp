@@ -256,6 +256,12 @@ class VaspmBSEConvergenceTemplateWorkChain(WorkChain):
     # convergence logs are never ambiguous. Overridden by each child class.
     _conv_label = "generic"
 
+    # Short suffix passed through as ns_option.calculation_tag to every child mBSE
+    # calculation, so VaspmBSEInitScriptWorkChain.elaborate_results can append it to
+    # the locally-copied result folder name and make it obvious which stage produced
+    # it (e.g. "3.1_mBSE_k888_id12345_KPTSconv"). Overridden by each child class.
+    _folder_tag = ""
+
     @classmethod
     def define(cls, spec):
         super().define(spec)
@@ -405,6 +411,7 @@ class VaspmBSEConvergenceTemplateWorkChain(WorkChain):
         # ---- [F] Label ----
         label = self._get_calculation_label(next_kpoints, bse_overrides)
         self.ctx.inputs_mBSEbase.ns_option.calculation_label = Str(label)
+        self.ctx.inputs_mBSEbase.ns_option.calculation_tag   = Str(self._folder_tag)
 
         self.report(f"\n [prepare_run_mBSE] Submitting -> {label}")
         running = self.submit(VaspmBSEInitScriptWorkChain, **self.ctx.inputs_mBSEbase)
@@ -612,23 +619,32 @@ class VaspmBSEConvergenceTemplateWorkChain(WorkChain):
     # Default pretty-print (child may override for a cleaner column layout)
     # --------------------------------------------------------------------------
 
+    # Column widths shared between the header and every data row, so the '|'
+    # separators are guaranteed to line up regardless of field content - never
+    # hand-align the header string independently of the row format below.
+    _COLW = dict(idx=6, pk=8, kmesh=16, nbv=9, nbo=9, ew=24, gap=14, dop=13, dd=19, win=24)
+
     def _prettyprint_summary(self, records, opt_diffs, diel_diffs, meta=None, prefix="  "):
         out = prefix + f"[conv-summary] ({self._conv_label})\n" + prefix + "> Completed mBSE nodes:"
         if not records:
             return out + "    (none yet)"
         if meta is None:
             meta = [None] * len(records)
+        w = self._COLW
         # 'EnWindow_aboveGap[eV]' = energy_window_goal actually passed to _determine_BSE_parameters
         # to derive this record's (NBANDSV, NBANDSO); shows 'fixed' where they are not threshold-derived
         # (e.g. during k-mesh convergence, NBANDSV/NBANDSO stay constant - see _conv_label above).
         # 'diel_window(prev)[eV]' = the [E_min, E_max] energy range actually used when computing
-        # delta_diel(prev) below (see helper_BSEConv_shared._collect_consecutive_optgap_and_diel_differences).
-        out += ("\n" + prefix +
-                "  idx | kmesh          NBANDSV  NBANDSO  EnWindow_aboveGap[eV] |"
-                "  optgap[eV]   delta_opt   delta_diel(prev)  diel_window(prev)[eV]")
-        out += "\n" + prefix + "  " + "-" * 113
+        # Δdiel(vs prev) below (see helper_BSEConv_shared._collect_consecutive_optgap_and_diel_differences).
+        header = (f"{'idx':<{w['idx']}}{'pk':<{w['pk']}}| "
+                  f"{'kmesh':<{w['kmesh']}}{'NBANDSV':<{w['nbv']}}{'NBANDSO':<{w['nbo']}}{'EnWindow_aboveGap[eV]':<{w['ew']}}| "
+                  f"{'optgap[eV]':<{w['gap']}}{'delta_opt':<{w['dop']}}{'Δdiel(vs prev)':<{w['dd']}}{'diel_window(vs prev)[eV]':<{w['win']}}")
+        out += "\n" + prefix + "  " + header
+        out += "\n" + prefix + "  " + "-" * len(header)
         for i, rec in enumerate(records):
             km  = rec.get("kmesh", [0, 0, 0])
+            idx_str = f"[{i:2d}]"
+            pk_str  = str(rec.get("pk", "--"))
             km_str  = f"[{km[0]},{km[1]},{km[2]}]"
             nbv_str = str(rec.get("NBANDSV", "--"))
             nbo_str = str(rec.get("NBANDSO", "--"))
@@ -645,8 +661,10 @@ class VaspmBSEConvergenceTemplateWorkChain(WorkChain):
                 win_str = f"[{e_min:.2f}-{e_max:.2f}]"
             else:
                 win_str = "--"
-            out += (f"\n{prefix}  [{i:2d}] | {km_str:<14}  {nbv_str:<8} {nbo_str:<8} {ew_str:<22} |"
-                    f"  {gap_str:<12}  {dop_str:<11}  {dd_str:<17}  {win_str}")
+            row = (f"{idx_str:<{w['idx']}}{pk_str:<{w['pk']}}| "
+                   f"{km_str:<{w['kmesh']}}{nbv_str:<{w['nbv']}}{nbo_str:<{w['nbo']}}{ew_str:<{w['ew']}}| "
+                   f"{gap_str:<{w['gap']}}{dop_str:<{w['dop']}}{dd_str:<{w['dd']}}{win_str:<{w['win']}}")
+            out += f"\n{prefix}  {row}"
         return out
 
     # --------------------------------------------------------------------------
@@ -764,6 +782,7 @@ class VaspmBSEKptsConvWorkChain(VaspmBSEConvergenceTemplateWorkChain):
     """
 
     _conv_label = "k-mesh (NBANDSV/NBANDSO fixed)"
+    _folder_tag = "_KPTSconv"
 
     @classmethod
     def define(cls, spec):
@@ -833,6 +852,7 @@ class VaspmBSEKptsConvWorkChain(VaspmBSEConvergenceTemplateWorkChain):
 
     def _extract_record_from_finished_wc(self, wc):
         rec = AttributeDict()
+        rec["pk"]      = wc.pk
         rec["kmesh"]   = wc.inputs.kpoints.get_kpoints_mesh()[0]
         rec["NBANDSV"] = int(wc.inputs.ns_BSE.NBANDSV) if hasattr(wc.inputs.ns_BSE, 'NBANDSV') else None
         rec["NBANDSO"] = int(wc.inputs.ns_BSE.NBANDSO) if hasattr(wc.inputs.ns_BSE, 'NBANDSO') else None
@@ -908,6 +928,7 @@ class VaspmBSENBandsConvWorkChain(VaspmBSEConvergenceTemplateWorkChain):
     """
 
     _conv_label = "NBANDSV/NBANDSO (k-mesh fixed)"
+    _folder_tag = "_NBANDSVOconv"
 
     @classmethod
     def define(cls, spec):
@@ -1008,6 +1029,7 @@ class VaspmBSENBandsConvWorkChain(VaspmBSEConvergenceTemplateWorkChain):
 
     def _extract_record_from_finished_wc(self, wc):
         rec = AttributeDict()
+        rec["pk"]      = wc.pk
         rec["kmesh"]   = wc.inputs.kpoints.get_kpoints_mesh()[0]
         rec["NBANDSV"] = int(wc.inputs.ns_BSE.NBANDSV) if hasattr(wc.inputs.ns_BSE, 'NBANDSV') else None
         rec["NBANDSO"] = int(wc.inputs.ns_BSE.NBANDSO) if hasattr(wc.inputs.ns_BSE, 'NBANDSO') else None

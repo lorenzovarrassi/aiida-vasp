@@ -257,12 +257,11 @@ def _determine_BSE_parameters( bandsdata: orm.BandsData,
                     f" < cutoff {cutoff:.3f} eV.\n")
         if v_decide + 1 < n_valence_used:
             next_c = int(np.argmin(transitions_matrix[v_decide + 1, :]))
-            log.append(f"        next valence band v{v_decide+1:02d}'s closest transition is"
+            log.append(f"                next valence band v{v_decide+1:02d}'s closest transition is"
                         f" (v{v_decide+1:02d},c{next_c:02d}) = {transitions_matrix[v_decide+1, next_c]:.3f} eV"
                         f" >= cutoff -> excluded.\n")
         else:
-            log.append(f"        all {n_valence_used} scanned valence bands are needed;"
-                        f" raise num_bands_included to check if more would be required.\n")
+            log.append(f"        all {n_valence_used} scanned valence bands are needed; raise num_bands_included to check if more would be required.\n")
     else:
         log.append("   > NBANDSO=0: no valence band has a transition under the cutoff.\n")
 
@@ -272,12 +271,11 @@ def _determine_BSE_parameters( bandsdata: orm.BandsData,
                     f" < cutoff {cutoff:.3f} eV.\n")
         if c_decide + 1 < n_conduction_used:
             next_v = int(np.argmin(transitions_matrix[:, c_decide + 1]))
-            log.append(f"        next conduction band c{c_decide+1:02d}'s closest transition is"
+            log.append(f"                next conduction band c{c_decide+1:02d}'s closest transition is"
                         f" (v{next_v:02d},c{c_decide+1:02d}) = {transitions_matrix[next_v, c_decide+1]:.3f} eV"
                         f" >= cutoff -> excluded.\n")
         else:
-            log.append(f"        all {n_conduction_used} scanned conduction bands are needed;"
-                        f" raise num_bands_included to check if more would be required.\n")
+            log.append(f"        all {n_conduction_used} scanned conduction bands are needed; raise num_bands_included to check if more would be required.\n")
     else:
         log.append("   > NBANDSV=0: no conduction band has a transition under the cutoff.\n")
 

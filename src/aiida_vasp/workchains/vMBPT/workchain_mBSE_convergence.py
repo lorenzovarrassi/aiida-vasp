@@ -291,6 +291,15 @@ class VaspmBSEConvergenceTemplateWorkChain(WorkChain):
                         "delta_diel > 2 * threshold (accelerates slow convergence); resets back to "
                         "the original step size as soon as delta_diel drops back under that bound, "
                         "to avoid overshooting the convergence threshold.")
+        spec.input('ns_converge.select_earlier_point_at_convergence', valid_type=Bool, required=False,
+                   default=lambda: Bool(False),
+                   help="Convergence is only ever detected by comparing two consecutive points - "
+                        "the LATER point is the one that confirms convergence, but the EARLIER "
+                        "point may already have been 'good enough' on its own. Default (False): "
+                        "report the later point (more refined, the one that actually confirmed "
+                        "convergence - the safer choice). If True: report the earlier (cheaper) "
+                        "point instead, saving the cost of whatever extra calculation it took to "
+                        "confirm convergence, at the cost of a smaller safety margin.")
 
         # ---- BSE screening parameters (passed through to every child calculation) ----
         spec.input('ns_converge_BSE.static_inverse_diel', valid_type=Float, required=True,
@@ -575,10 +584,45 @@ class VaspmBSEConvergenceTemplateWorkChain(WorkChain):
             return exit_code
 
         records = self.ctx.control.get('successful_records', [])
-        if records and records[-1].get('optgap') is not None:
-            optgap_node = Float(records[-1]['optgap'])
-            optgap_node.store()
-            self.out('optical_gap', optgap_node)
+        if records:
+            converged_record = self._get_converged_record()
+            if converged_record.get('optgap') is not None:
+                optgap_node = Float(converged_record['optgap'])
+                optgap_node.store()
+                self.out('optical_gap', optgap_node)
+
+    # --------------------------------------------------------------------------
+    # Internal helper: pick which point of the converged pair to report (concrete, shared)
+    # --------------------------------------------------------------------------
+
+    def _get_converged_record(self):
+        """
+        Only ever called from _store_converged_result, once monitor_convergence has
+        already confirmed convergence - i.e. successful_records has at least 2 entries.
+
+        Controlled by ns_converge.select_earlier_point_at_convergence:
+            False (default) - return successful_records[-1], the LATER point of the
+                               converged pair: more refined/expensive, and the one whose
+                               comparison against the point before it is what actually
+                               confirmed convergence (the safer choice).
+            True            - return successful_records[-2], the EARLIER point: cheaper,
+                               and already "good enough" on its own once the later point
+                               confirmed it barely moved - saves the cost of whatever
+                               extra calculation it took to confirm convergence.
+        """
+        # Cached so a second call (e.g. from elaborate_results, after _store_converged_result
+        # already called this once) returns the same record without re-emitting the report below.
+        if 'converged_record' in self.ctx.control:
+            return self.ctx.control['converged_record']
+        records = self.ctx.control['successful_records']
+        if self.inputs.ns_converge.select_earlier_point_at_convergence.value:
+            self.report("[_get_converged_record] select_earlier_point_at_convergence=True -> "
+                        "reporting the EARLIER (cheaper) point of the converged pair as final.")
+            chosen = records[-2]
+        else:
+            chosen = records[-1]
+        self.ctx.control['converged_record'] = chosen
+        return chosen
 
     # --------------------------------------------------------------------------
     # Internal helper: advance ctx.control['current_value'] (concrete, shared)
@@ -895,11 +939,11 @@ class VaspmBSEKptsConvWorkChain(VaspmBSEConvergenceTemplateWorkChain):
         return tuple(record["kmesh"])
 
     def _store_converged_result(self):
-        last_kmesh = np.array(self.ctx.control['successful_records'][-1]["kmesh"], dtype=int)
+        converged_kmesh = np.array(self._get_converged_record()["kmesh"], dtype=int)
         node = DataFactory('core.array.kpoints')()
-        node.set_kpoints_mesh(last_kmesh)
+        node.set_kpoints_mesh(converged_kmesh)
         self.ctx.control['kmesh_converged'] = node
-        self.ctx.str_log += f"\n    --> Converged k-mesh = {last_kmesh}"
+        self.ctx.str_log += f"\n    --> Converged k-mesh = {converged_kmesh}"
 
     def _output_converged_result(self):
         node = self.ctx.control.get('kmesh_converged')
@@ -1079,12 +1123,12 @@ class VaspmBSENBandsConvWorkChain(VaspmBSEConvergenceTemplateWorkChain):
         return record["optical_window_threshold"]
 
     def _store_converged_result(self):
-        last = self.ctx.control['successful_records'][-1]
-        self.ctx.control['nbandsv_converged'] = last["NBANDSV"]
-        self.ctx.control['nbandso_converged'] = last["NBANDSO"]
-        self.ctx.str_log += (f"\n    --> Converged NBANDSV={last['NBANDSV']}"
-                             f"  NBANDSO={last['NBANDSO']}"
-                             f"  (threshold={last['optical_window_threshold']} eV)")
+        converged_record = self._get_converged_record()
+        self.ctx.control['nbandsv_converged'] = converged_record["NBANDSV"]
+        self.ctx.control['nbandso_converged'] = converged_record["NBANDSO"]
+        self.ctx.str_log += (f"\n    --> Converged NBANDSV={converged_record['NBANDSV']}"
+                             f"  NBANDSO={converged_record['NBANDSO']}"
+                             f"  (threshold={converged_record['optical_window_threshold']} eV)")
 
     def _output_converged_result(self):
         nbv = self.ctx.control.get('nbandsv_converged')

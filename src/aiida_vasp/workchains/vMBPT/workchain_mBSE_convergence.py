@@ -208,16 +208,31 @@ class VaspmBSEConvergenceTemplateWorkChain(WorkChain):
     """
     Template workchain for BSE convergence studies.
 
-    Handles all convergence monitoring logic identically for all child classes:
+    [1] Handles all convergence monitoring logic identically for all child classes:
         - threshold checking (optical gap + dielectric distance)
         - iteration control (single ctx.control['current_value'] slot, advanced
           exactly once per loop iteration, before it is ever consumed)
         - result elaboration and output
 
-    Child classes implement the following abstract methods, all expressed in terms
+    [2] Key internal state is stored in ctx.control, which is an AttributeDict with the following keys:
+        nodes:   for nodes we mean the raw WorkChainNodes objects of the children, which are used to extract
+        records: for records we mean relevant input parameter or computed outputs: kmesh, NBANDSV, NBANDSO, optgap, oscstr, imdiel, energygrid, imdiel_onset
+            successful_records_sorted : list of elaborated records (AttributeDicts) from successful children, sorted                     
+            successful_nodes_sorted   : list of raw WorkChainNodes from successful children, sorted
+
+        values : for value we mean the control variable that is being converged (k-mesh or optical_window_threshold)
+            initial_value          : the starting control value (k-mesh or energy threshold)
+            current_value          : the control value for the next child calculation
+        
+        step : for step we mean the increment to apply to the control variable (k-mesh or energy threshold)    
+            step                   : the step size to increment the control value at the next iteration
+            base_step              : a copy of the original step size, used to reset after dynamic-step doubling
+        
+        last_exit_code_thrown  : if a hard failure occurred, this is set to the ExitCode to return in elaborate_results
+
+    [3] Child classes implement the following abstract methods, all expressed in terms
     of a single scalar/array "control value" (k-mesh array for the Kpts child,
     energy threshold for the NBands child):
-
         _increment_value(last_record)
             Given the last successful record, return the next control value.
             Kpts child  : last_record["kmesh"] + step.
@@ -347,7 +362,7 @@ class VaspmBSEConvergenceTemplateWorkChain(WorkChain):
         control-variable setup to the child via _initialize_convergence_parameter().
         """
         self.ctx.control = AttributeDict()
-        self.ctx.control['successful_records']       = []   # elaborated records, sorted
+        self.ctx.control['successful_records_sorted']       = []   # elaborated records, sorted
         self.ctx.control['successful_nodes_sorted']  = []   # raw WorkChainNodes, sorted
         self.ctx.control['last_exit_code_thrown']    = None
         self.ctx.WC_MBPT = []
@@ -489,14 +504,14 @@ class VaspmBSEConvergenceTemplateWorkChain(WorkChain):
 
         # ---- [2] Collect, extract records, sort ----
         successful_nodes = self._collect_and_sort_successful_nodes(self.ctx.WC_MBPT)
-        successful_records = [self._extract_record_from_finished_wc(wc) for wc in successful_nodes]
+        successful_records_sorted = [self._extract_record_from_finished_wc(wc) for wc in successful_nodes]
         self.ctx.control['successful_nodes_sorted'] = successful_nodes
-        self.ctx.control['successful_records']      = successful_records
-        num_ok = len(successful_records)
+        self.ctx.control['successful_records_sorted']      = successful_records_sorted
+        num_ok = len(successful_records_sorted)
 
         # ---- [3] Consecutive differences ----
         opt_diffs, diel_diffs, meta = helper_BSEConv_shared._collect_consecutive_optgap_and_diel_differences(
-            records     = successful_records,
+            records     = successful_records_sorted,
             window_size = float(self.inputs.ns_converge.dielfunction_window.value),
             diel_metric = self.inputs.ns_converge.dielfunction_distance.value,
         )
@@ -505,7 +520,7 @@ class VaspmBSEConvergenceTemplateWorkChain(WorkChain):
         self.ctx.control['consecutive_diel_meta']          = meta
 
         self.ctx.str_log = (f"\n [monitor_convergence] -- convergence on: {self._conv_label} --\n"
-                            + self._prettyprint_summary(successful_records, opt_diffs, diel_diffs, meta))
+                            + self._prettyprint_summary(successful_records_sorted, opt_diffs, diel_diffs, meta))
 
         # ---- [4] Early exit: not enough calculations yet ----
         if num_ok < min_calcs_required:
@@ -583,7 +598,7 @@ class VaspmBSEConvergenceTemplateWorkChain(WorkChain):
         if exit_code is not None:
             return exit_code
 
-        records = self.ctx.control.get('successful_records', [])
+        records = self.ctx.control.get('successful_records_sorted', [])
         if records:
             converged_record = self._get_converged_record()
             if converged_record.get('optgap') is not None:
@@ -598,14 +613,14 @@ class VaspmBSEConvergenceTemplateWorkChain(WorkChain):
     def _get_converged_record(self):
         """
         Only ever called from _store_converged_result, once monitor_convergence has
-        already confirmed convergence - i.e. successful_records has at least 2 entries.
+        already confirmed convergence - i.e. successful_records_sorted has at least 2 entries.
 
         Controlled by ns_converge.select_earlier_point_at_convergence:
-            False (default) - return successful_records[-1], the LATER point of the
+            False (default) - return successful_records_sorted[-1], the LATER point of the
                                converged pair: more refined/expensive, and the one whose
                                comparison against the point before it is what actually
                                confirmed convergence (the safer choice).
-            True            - return successful_records[-2], the EARLIER point: cheaper,
+            True            - return successful_records_sorted[-2], the EARLIER point: cheaper,
                                and already "good enough" on its own once the later point
                                confirmed it barely moved - saves the cost of whatever
                                extra calculation it took to confirm convergence.
@@ -614,7 +629,7 @@ class VaspmBSEConvergenceTemplateWorkChain(WorkChain):
         # already called this once) returns the same record without re-emitting the report below.
         if 'converged_record' in self.ctx.control:
             return self.ctx.control['converged_record']
-        records = self.ctx.control['successful_records']
+        records = self.ctx.control['successful_records_sorted']
         if self.inputs.ns_converge.select_earlier_point_at_convergence.value:
             self.report("[_get_converged_record] select_earlier_point_at_convergence=True -> "
                         "reporting the EARLIER (cheaper) point of the converged pair as final.")
@@ -638,7 +653,7 @@ class VaspmBSEConvergenceTemplateWorkChain(WorkChain):
         Concrete and identical for every child: the only per-child pieces are
         _increment_value() and _is_value_over_max().
         """
-        records = self.ctx.control.get('successful_records', [])
+        records = self.ctx.control.get('successful_records_sorted', [])
         if not records:
             next_value = deepcopy(self.ctx.control['initial_value'])
         else:
@@ -1027,10 +1042,13 @@ class VaspmBSENBandsConvWorkChain(VaspmBSEConvergenceTemplateWorkChain):
 
     # ---- Band-pair determination ----
 
-    def _nbands_pair_from_threshold(self, threshold_eV):
+    def _nbands_pair_from_threshold(self, threshold_eV, verbose=True):
         """
         Return (NBANDSO, NBANDSV) covering all IPA transitions up to threshold_eV,
         using the physically-motivated helper already used elsewhere in the plugin.
+
+        verbose=False is used by prepare_run_mBSE's redundancy check (below), which
+        needs the pair without re-emitting the (already-logged) band-pair analysis.
         """
         G0W0_gap = (float(self.inputs.ns_converge_BSE.G0W0_gap.value)
                     if 'G0W0_gap' in self.inputs.ns_converge_BSE else None)
@@ -1040,8 +1058,38 @@ class VaspmBSENBandsConvWorkChain(VaspmBSEConvergenceTemplateWorkChain):
             energy_window_goal=float(threshold_eV),
             num_bands_included=self.ctx.control['num_bands_included'],
         )
-        self.report(result['log'])
+        if verbose:
+            self.report(result['log'])
         return int(result['NBANDSO']), int(result['NBANDSV'])
+
+    # ---- Skip redundant calculations ----
+
+    def prepare_run_mBSE(self):
+        """
+        Same as the template's prepare_run_mBSE, except: if the current threshold
+        maps to the SAME (NBANDSV, NBANDSO) pair as the last successful point, the
+        next mBSE calculation would be physically identical to the one we already
+        ran (same BSE subspace -> same dielectric function) - submitting it again
+        only burns VASP time to confirm Δdiel=0, which is already known a priori
+        from _nbands_pair_from_threshold alone. Reuse the previous finished node
+        instead of resubmitting.
+        """
+        value = self.ctx.control['current_value']
+        next_nbandso, next_nbandsv = self._nbands_pair_from_threshold(value, verbose=False)
+        
+        records    = self.ctx.control.get('successful_records_sorted', [])
+        last_nodes = self.ctx.control.get('successful_nodes_sorted', [])
+        if records and (records[-1]['NBANDSV'] == next_nbandsv) and (records[-1]['NBANDSO'] == next_nbandso) :
+            last_node = last_nodes[-1]
+            self.report(
+                f"\n [prepare_run_mBSE] threshold={value:.2f}eV -> (NBANDSV={nbandsv}, NBANDSO={nbandso}),"
+                f" identical to the previous point (pk={last_node.pk}) -> skipping redundant mBSE"
+                f" calculation; reusing pk={last_node.pk} as this iteration's result."
+            )
+            self.ctx.WC_MBPT.append(last_node)
+            return
+
+        return super().prepare_run_mBSE()
 
     # ---- Abstract method implementations ----
 

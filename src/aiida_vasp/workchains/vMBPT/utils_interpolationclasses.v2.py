@@ -673,8 +673,32 @@ class BandsState_InterpOp :
         # 1) The IBZ k-points picked out from the BZ list must equal the separately computed IBZ list.
         # 2) Ensure the IBZ k-points we got from spglib match the BandsState list (up to small numerical noise).
         #    We sort both lists so that order differences don’t matter.
-        assert np.all( spg_direct_BZ[spg_map_BZtoIBZ] == spg_direct_IBZ ) 
-        assert np.all( abs( np.sort(bands_state.kpoints.kpts)  - np.sort(spg_direct_IBZ)  ) <1E-4   ) , "ERROR: The kpoints list saved in self.kpoints and the list (of kpts in the IBZ) returned by spglib differ."
+        def _lexsort_rows(points):
+            # np.sort() on a 2D array sorts each row's columns independently (axis=-1 default),
+            # which does NOT make row order irrelevant - it scrambles each point's own (x,y,z)
+            # coordinates instead. To compare two k-point SETS regardless of row order we must
+            # sort the rows themselves, e.g. lexicographically by (x, then y, then z).
+            points = np.asarray(points)
+            order = np.lexsort(points.T[::-1])
+            return points[order]
+        assert np.all( spg_direct_BZ[spg_map_BZtoIBZ] == spg_direct_IBZ )
+        _sorted_bandsstate_kpts = _lexsort_rows(bands_state.kpoints.kpts)
+        _sorted_spglib_ibz_kpts = _lexsort_rows(spg_direct_IBZ)
+        if (_sorted_bandsstate_kpts.shape != _sorted_spglib_ibz_kpts.shape
+                or not np.all(abs(_sorted_bandsstate_kpts - _sorted_spglib_ibz_kpts) < 1E-4)):
+            # Only printed on failure (this routine runs once per k-point set, but the rest of
+            # this script is already extremely verbose) - dump both lists so a mismatch can be
+            # diagnosed directly from the scheduler output instead of needing to reproduce locally.
+            print("DEBUG [_determine_BZ_IBZ_grid] kpoints mismatch between bands_state and spglib IBZ:")
+            print(f"  bands_state.kpoints.kpts (lexsorted), shape={_sorted_bandsstate_kpts.shape}:")
+            print(_sorted_bandsstate_kpts)
+            print(f"  spglib spg_direct_IBZ (lexsorted), shape={_sorted_spglib_ibz_kpts.shape}:")
+            print(_sorted_spglib_ibz_kpts)
+            if _sorted_bandsstate_kpts.shape == _sorted_spglib_ibz_kpts.shape:
+                print("  abs difference:")
+                print(abs(_sorted_bandsstate_kpts - _sorted_spglib_ibz_kpts))
+            raise AssertionError("ERROR: The kpoints list saved in self.kpoints and the list "
+                                  "(of kpts in the IBZ) returned by spglib differ.")
     
     
         # Create editable copies of the spglib BZ map and BZ k-point list.

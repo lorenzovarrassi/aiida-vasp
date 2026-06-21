@@ -149,27 +149,27 @@ if __name__ == '__main__':
 
     ####- ------------------------ ------------------------ ------------------------- ------------------------ ------------
     #[2][k-point convergence inputs (stage 1)]###------- ------------ ------------ ------------ ----------------------------
-    inputs.ns_kpoints = AttributeDict()
-    inputs.ns_kpoints.starting_mesh = KpointsData()
-    inputs.ns_kpoints.starting_mesh.set_kpoints_mesh(arg_inputs['KMESH_STARTING'])
-    inputs.ns_kpoints.max_mesh = KpointsData()
-    inputs.ns_kpoints.max_mesh.set_kpoints_mesh(arg_inputs['KMESH_MAX'])
-    inputs.ns_kpoints.convergence_threshold = Float(arg_inputs['KPTSCONV_THRESHOLD'])
-
     inputs.ns_converge = AttributeDict()
     inputs.ns_converge.dielfunction_window = Float(arg_inputs['DIELFUNCTION_WINDOW'])
+
+    inputs.ns_converge.kpoints = AttributeDict()
+    inputs.ns_converge.kpoints.starting_mesh = KpointsData()
+    inputs.ns_converge.kpoints.starting_mesh.set_kpoints_mesh(arg_inputs['KMESH_STARTING'])
+    inputs.ns_converge.kpoints.max_mesh = KpointsData()
+    inputs.ns_converge.kpoints.max_mesh.set_kpoints_mesh(arg_inputs['KMESH_MAX'])
+    inputs.ns_converge.kpoints.convergence_threshold = Float(arg_inputs['KPTSCONV_THRESHOLD'])
 
     ####- ------------------------ ------------------------ ------------------------- ------------------------ ------------
     #[3][BSE band-subspace (NBANDSV/NBANDSO) convergence inputs (stage 2)]###--- ------------ ------------ -----------------
     # bandsdata: parsed straight from the same reference vasprun used for the BSE/interpolation
     # inputs above, so it requires no extra reference data beyond what stage [1] already needs.
-    inputs.ns_nbandsconv = AttributeDict()
-    inputs.ns_nbandsconv.bandsdata = Helpers_setup_Workchain._build_bandsdata_from_vasprun(
+    inputs.ns_converge.nbandsvo = AttributeDict()
+    inputs.ns_converge.nbandsvo.bandsdata = Helpers_setup_Workchain._build_bandsdata_from_vasprun(
         local_folder_gw_reference=arg_inputs['PATH_REFERENCEGW'])
-    inputs.ns_nbandsconv.threshold_start       = Float(arg_inputs['NBANDSCONV_THRESHOLD_START'])
-    inputs.ns_nbandsconv.threshold_max         = Float(arg_inputs['NBANDSCONV_THRESHOLD_MAX'])
-    inputs.ns_nbandsconv.threshold_step        = Float(arg_inputs['NBANDSCONV_THRESHOLD_STEP'])
-    inputs.ns_nbandsconv.num_bands_included    = Int(arg_inputs['NBANDSCONV_NUM_BANDS_INCLUDED'])
+    inputs.ns_converge.nbandsvo.threshold_start       = Float(arg_inputs['NBANDSCONV_THRESHOLD_START'])
+    inputs.ns_converge.nbandsvo.threshold_max         = Float(arg_inputs['NBANDSCONV_THRESHOLD_MAX'])
+    inputs.ns_converge.nbandsvo.threshold_step        = Float(arg_inputs['NBANDSCONV_THRESHOLD_STEP'])
+    inputs.ns_converge.nbandsvo.num_bands_included    = Int(arg_inputs['NBANDSCONV_NUM_BANDS_INCLUDED'])
 
     # Capture the launch-time cwd HERE (in the calling process) rather than letting
     # elaborate_results() call os.getcwd() later - that step may run inside a daemon

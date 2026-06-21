@@ -317,11 +317,11 @@ class VaspmBSEConvergenceTemplateWorkChain(WorkChain):
                         "confirm convergence, at the cost of a smaller safety margin.")
 
         # ---- BSE screening parameters (passed through to every child calculation) ----
-        spec.input('ns_converge_BSE.static_inverse_diel', valid_type=Float, required=True,
+        spec.input('ns_converge.static_inverse_diel', valid_type=Float, required=True,
                    help="Required for analytic diagonal screening in mBSE.")
-        spec.input('ns_converge_BSE.screening_parameter', valid_type=Float, required=True,
+        spec.input('ns_converge.screening_parameter', valid_type=Float, required=True,
                    help="Required for analytic diagonal screening in mBSE.")
-        spec.input('ns_converge_BSE.G0W0_gap',            valid_type=Float, required=False,
+        spec.input('ns_converge.G0W0_gap',            valid_type=Float, required=False,
                    help="G0W0 gap used to determine the SCISSOR correction.")
 
         spec.input('ns_reference.starting_RemoteData', valid_type=RemoteData, required=False)
@@ -424,10 +424,10 @@ class VaspmBSEConvergenceTemplateWorkChain(WorkChain):
             setattr(self.ctx.inputs_mBSEbase.ns_BSE, key, val)
 
         # ---- [B.1] BSE screening parameters (always passed through) ----
-        self.ctx.inputs_mBSEbase.ns_BSE.static_inverse_diel = self.inputs.ns_converge_BSE.static_inverse_diel
-        self.ctx.inputs_mBSEbase.ns_BSE.screening_parameter = self.inputs.ns_converge_BSE.screening_parameter
-        if 'G0W0_gap' in self.inputs.ns_converge_BSE:
-            self.ctx.inputs_mBSEbase.ns_BSE.G0W0_gap = self.inputs.ns_converge_BSE.G0W0_gap
+        self.ctx.inputs_mBSEbase.ns_BSE.static_inverse_diel = self.inputs.ns_converge.static_inverse_diel
+        self.ctx.inputs_mBSEbase.ns_BSE.screening_parameter = self.inputs.ns_converge.screening_parameter
+        if 'G0W0_gap' in self.inputs.ns_converge:
+            self.ctx.inputs_mBSEbase.ns_BSE.G0W0_gap = self.inputs.ns_converge.G0W0_gap
 
         # ---- [C] IBSE flag: diagonalize only if eigenvalues are needed ----
         if self.inputs.ns_converge.opticalgap_convergence.value:
@@ -867,21 +867,21 @@ class VaspmBSEKptsConvWorkChain(VaspmBSEConvergenceTemplateWorkChain):
     def define(cls, spec):
         super().define(spec)
 
-        spec.input('ns_kpoints.kmesh.starting_mesh', valid_type=KpointsData, required=True,
+        spec.input('ns_converge.kpoints.starting_mesh', valid_type=KpointsData, required=True,
                    help="Starting k-mesh for the convergence study.")
-        spec.input('ns_kpoints.kmesh.max_mesh',      valid_type=KpointsData, required=True,
+        spec.input('ns_converge.kpoints.max_mesh',      valid_type=KpointsData, required=True,
                    help="Maximum k-mesh; convergence aborts if exceeded.")
         kpoints_step_default = DataFactory('core.array.kpoints')()
         kpoints_step_default.set_kpoints_mesh([1, 1, 1])
-        spec.input('ns_kpoints.kmesh.step', valid_type=KpointsData, required=False,
+        spec.input('ns_converge.kpoints.step', valid_type=KpointsData, required=False,
                    default=lambda: kpoints_step_default,
                    help="k-mesh increment per iteration.")
 
         # Fixed BSE band counts during k-convergence (cheap proxy subspace)
-        spec.input('ns_converge_BSE.NBANDSV', valid_type=Int, required=False,
+        spec.input('ns_converge.kpoints.NBANDSV', valid_type=Int, required=False,
                    default=lambda: Int(2),
                    help="Fixed NBANDSV used throughout k-point convergence.")
-        spec.input('ns_converge_BSE.NBANDSO', valid_type=Int, required=False,
+        spec.input('ns_converge.kpoints.NBANDSO', valid_type=Int, required=False,
                    default=lambda: Int(2),
                    help="Fixed NBANDSO used throughout k-point convergence.")
 
@@ -890,16 +890,16 @@ class VaspmBSEKptsConvWorkChain(VaspmBSEConvergenceTemplateWorkChain):
     # ---- Abstract method implementations ----
 
     def _initialize_convergence_parameter(self):
-        kmesh_start = np.array(self.inputs.ns_kpoints.kmesh.starting_mesh.get_kpoints_mesh()[0], dtype=int)
-        kmesh_max   = np.array(self.inputs.ns_kpoints.kmesh.max_mesh.get_kpoints_mesh()[0],      dtype=int)
-        step_vec    = np.array(self.inputs.ns_kpoints.kmesh.step.get_kpoints_mesh()[0],           dtype=int)
+        kmesh_start = np.array(self.inputs.ns_converge.kpoints.starting_mesh.get_kpoints_mesh()[0], dtype=int)
+        kmesh_max   = np.array(self.inputs.ns_converge.kpoints.max_mesh.get_kpoints_mesh()[0],      dtype=int)
+        step_vec    = np.array(self.inputs.ns_converge.kpoints.step.get_kpoints_mesh()[0],           dtype=int)
 
         self.ctx.control['initial_value']   = kmesh_start
         self.ctx.control['current_value']   = kmesh_start
         self.ctx.control['step']            = step_vec
         self.ctx.control['max_value']       = kmesh_max
-        self.ctx.control['initial_NBANDSV'] = int(self.inputs.ns_converge_BSE.NBANDSV.value)
-        self.ctx.control['initial_NBANDSO'] = int(self.inputs.ns_converge_BSE.NBANDSO.value)
+        self.ctx.control['initial_NBANDSV'] = int(self.inputs.ns_converge.kpoints.NBANDSV.value)
+        self.ctx.control['initial_NBANDSO'] = int(self.inputs.ns_converge.kpoints.NBANDSO.value)
         self.ctx.control['kmesh_converged'] = None
 
         self.report(
@@ -1001,7 +1001,7 @@ class VaspmBSENBandsConvWorkChain(VaspmBSEConvergenceTemplateWorkChain):
     the threshold via that function. Iterating over the threshold is equivalent
     to systematically expanding the BSE subspace in a physically motivated way.
 
-    k-mesh is kept fixed at the value provided via ns_kpoints.kmesh.starting_mesh.
+    k-mesh is kept fixed at the value provided via ns_converge.nbandsvo.starting_mesh.
     This should be a cheap/sparse mesh: the converged k-mesh from
     VaspmBSEKptsConvWorkChain is not required (and is normally not yet available
     when this convergence is run), since the BSE band subspace required to cover
@@ -1016,23 +1016,23 @@ class VaspmBSENBandsConvWorkChain(VaspmBSEConvergenceTemplateWorkChain):
         super().define(spec)
 
         # Fixed k-mesh for the whole convergence - intentionally a cheap/sparse mesh.
-        spec.input('ns_kpoints.kmesh.starting_mesh', valid_type=KpointsData, required=True,
+        spec.input('ns_converge.nbandsvo.starting_mesh', valid_type=KpointsData, required=True,
                    help="Fixed, low-density k-mesh used throughout the NBands convergence.")
 
         # Control variable: optical window threshold iterated over
-        spec.input('ns_nbandsconv.threshold_start', valid_type=Float, required=True,
+        spec.input('ns_converge.nbandsvo.threshold_start', valid_type=Float, required=True,
                    help="Starting optical window threshold (eV) for the first calculation.")
-        spec.input('ns_nbandsconv.threshold_max',   valid_type=Float, required=True,
+        spec.input('ns_converge.nbandsvo.threshold_max',   valid_type=Float, required=True,
                    help="Maximum optical window threshold (eV); convergence aborts if exceeded.")
-        spec.input('ns_nbandsconv.threshold_step',  valid_type=Float, required=False,
+        spec.input('ns_converge.nbandsvo.threshold_step',  valid_type=Float, required=False,
                    default=lambda: Float(1.0),
                    help="Step size (eV) by which the threshold is incremented each iteration.")
 
         # Band-pair determination (wraps _determine_BSE_parameters)
-        spec.input('ns_nbandsconv.bandsdata', valid_type=BandsData, required=True,
+        spec.input('ns_converge.nbandsvo.bandsdata', valid_type=BandsData, required=True,
                    help="DFT band structure (with occupations) used to build the IPA transition "
                         "matrix; see utils_helpers_mBSE._determine_BSE_parameters.")
-        spec.input('ns_nbandsconv.num_bands_included', valid_type=Int, required=False,
+        spec.input('ns_converge.nbandsvo.num_bands_included', valid_type=Int, required=False,
                    default=lambda: Int(20),
                    help="Safety upper bound on valence/conduction bands scanned when "
                         "determining NBANDSV/NBANDSO from the threshold.")
@@ -1050,8 +1050,8 @@ class VaspmBSENBandsConvWorkChain(VaspmBSEConvergenceTemplateWorkChain):
         verbose=False is used by prepare_run_mBSE's redundancy check (below), which
         needs the pair without re-emitting the (already-logged) band-pair analysis.
         """
-        G0W0_gap = (float(self.inputs.ns_converge_BSE.G0W0_gap.value)
-                    if 'G0W0_gap' in self.inputs.ns_converge_BSE else None)
+        G0W0_gap = (float(self.inputs.ns_converge.G0W0_gap.value)
+                    if 'G0W0_gap' in self.inputs.ns_converge else None)
         result = _determine_BSE_parameters(
             bandsdata=self.ctx.bandsdata,
             G0W0_gap=G0W0_gap,
@@ -1082,7 +1082,7 @@ class VaspmBSENBandsConvWorkChain(VaspmBSEConvergenceTemplateWorkChain):
         if records and (records[-1]['NBANDSV'] == next_nbandsv) and (records[-1]['NBANDSO'] == next_nbandso) :
             last_node = last_nodes[-1]
             self.report(
-                f"\n [prepare_run_mBSE] threshold={value:.2f}eV -> (NBANDSV={nbandsv}, NBANDSO={nbandso}),"
+                f"\n [prepare_run_mBSE] threshold={value:.2f}eV -> (NBANDSV={next_nbandsv}, NBANDSO={next_nbandso}),"
                 f" identical to the previous point (pk={last_node.pk}) -> skipping redundant mBSE"
                 f" calculation; reusing pk={last_node.pk} as this iteration's result."
             )
@@ -1094,13 +1094,13 @@ class VaspmBSENBandsConvWorkChain(VaspmBSEConvergenceTemplateWorkChain):
     # ---- Abstract method implementations ----
 
     def _initialize_convergence_parameter(self):
-        kmesh_fixed     = np.array(self.inputs.ns_kpoints.kmesh.starting_mesh.get_kpoints_mesh()[0], dtype=int)
-        threshold_start = float(self.inputs.ns_nbandsconv.threshold_start.value)
-        threshold_max   = float(self.inputs.ns_nbandsconv.threshold_max.value)
-        threshold_step  = float(self.inputs.ns_nbandsconv.threshold_step.value)
+        kmesh_fixed     = np.array(self.inputs.ns_converge.nbandsvo.starting_mesh.get_kpoints_mesh()[0], dtype=int)
+        threshold_start = float(self.inputs.ns_converge.nbandsvo.threshold_start.value)
+        threshold_max   = float(self.inputs.ns_converge.nbandsvo.threshold_max.value)
+        threshold_step  = float(self.inputs.ns_converge.nbandsvo.threshold_step.value)
 
-        self.ctx.bandsdata = self.inputs.ns_nbandsconv.bandsdata
-        self.ctx.control['num_bands_included'] = int(self.inputs.ns_nbandsconv.num_bands_included.value)
+        self.ctx.bandsdata = self.inputs.ns_converge.nbandsvo.bandsdata
+        self.ctx.control['num_bands_included'] = int(self.inputs.ns_converge.nbandsvo.num_bands_included.value)
 
         # Derive initial (NBANDSV, NBANDSO) from starting threshold
         nbandso_start, nbandsv_start = self._nbands_pair_from_threshold(threshold_start)

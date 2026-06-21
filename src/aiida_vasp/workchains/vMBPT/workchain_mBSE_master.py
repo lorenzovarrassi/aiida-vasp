@@ -45,31 +45,38 @@ class VaspmBSECompleteWorkChain(WorkChain):
      ns_BSE_NBANDSV                : Int (optional)
      ns_BSE_NBANDSO                : Int (optional)
      
-   Expose inputs from VaspmBSEKptsConvWorkChain - for k-points convergence control (ns_kpoints namespace)
+   Expose inputs from VaspmBSEKptsConvWorkChain - for k-points convergence control (ns_converge.kpoints namespace)
    We EXCLUDE 'inputs.kpoints' explicitly because in step 1 (k-convergence) kpoints are generated internally
    -> in step 2 (full mBSE) we plug in the converged k-mesh.
-     ns_kpoints.kmesh.starting_mesh : KpointsData    Starting k-mesh for the k-point convergence.
-     ns_kpoints.kmesh.max_mesh      : KpointsData    Maximum k-mesh tested in the convergence.
-     ns_kpoints.kmesh.step          : KpointsData    Step between k-meshes (default = [1,1,1]).
-     ns_kpoints.convergence_threshold : Float        Threshold on |Δ(optical_gap)| between successive meshes.
+     ns_converge.kpoints.starting_mesh         : KpointsData    Starting k-mesh for the k-point convergence.
+     ns_converge.kpoints.max_mesh              : KpointsData    Maximum k-mesh tested in the convergence.
+     ns_converge.kpoints.step                  : KpointsData    Step between k-meshes (default = [1,1,1]).
+     ns_converge.kpoints.convergence_threshold : Float          Threshold on |Δ(optical_gap)| between successive meshes
+                                                                 for THIS stage only (independent from the
+                                                                 nbands-convergence stage's own threshold below).
 
-     ns_converge_BSE.NBANDSO        : Int
-     ns_converge_BSE.NBANDSV        : Int
-     NOTE: the ns_converge_BSE namespace is used exclusively during the k-point convergence stage, while ns_BSE is reserved for the final mBSE calculation.
-           During k-point conv., the goal is to determine a converged k-mesh at minimal computational cost. NBANDSV/O are therefore internally automatically set-up to NBANDSO = NBANDSV = 2, sufficient to track the convergence of the optical onse t,    
-           which serves as a proxy for full convergence. ns_converge_BSE.NBANDSO and ns_converge_BSE.NBANDSV serve to override the standard values.
-           Once the k-mesh is converged, the final mBSE run uses the full ns_BSE parameters, allowing a dense BSE subspace (via optical_energy_window or explicit NBANDSO/V) to compute dielectric functions/optical transitions on the converged k-point grid. 
+     ns_converge.kpoints.NBANDSO        : Int
+     ns_converge.kpoints.NBANDSV        : Int
+     NOTE: ns_converge.kpoints.NBANDSO/NBANDSV are used exclusively during the k-point convergence stage, while ns_BSE is reserved for the final mBSE calculation.
+           During k-point conv., the goal is to determine a converged k-mesh at minimal computational cost. NBANDSV/O are therefore internally automatically set-up to NBANDSO = NBANDSV = 2, sufficient to track the convergence of the optical onse t,
+           which serves as a proxy for full convergence. ns_converge.kpoints.NBANDSO and ns_converge.kpoints.NBANDSV serve to override the standard values.
+           Once the k-mesh is converged, the final mBSE run uses the full ns_BSE parameters, allowing a dense BSE subspace (via optical_energy_window or explicit NBANDSO/V) to compute dielectric functions/optical transitions on the converged k-point grid.
 
-   Expose inputs from VaspmBSENBandsConvWorkChain - for BSE band-subspace convergence (ns_nbandsconv namespace)
-   This stage is run on the SAME low/cheap k-mesh as ns_kpoints.starting_mesh (NOT the converged
+   Expose inputs from VaspmBSENBandsConvWorkChain - for BSE band-subspace convergence (ns_converge.nbandsvo namespace)
+   This stage is run on the SAME low/cheap k-mesh as ns_converge.kpoints.starting_mesh (NOT the converged
    dense mesh from step 1), since the BSE band subspace required to cover a given independent-particle
    transition window does not depend strongly on k-mesh density, and the converged mesh is not yet
    available at this point in the workflow anyway.
-     ns_nbandsconv.threshold_start        : Float  Starting optical-window threshold (eV).
-     ns_nbandsconv.threshold_max          : Float  Maximum threshold (eV); aborts if exceeded.
-     ns_nbandsconv.threshold_step         : Float  Threshold increment (eV) per iteration.
-     ns_nbandsconv.bandsdata              : BandsData  DFT bands (+occupations) for the IPA transition matrix.
-     ns_nbandsconv.num_bands_included     : Int    Safety upper bound on bands scanned (default 20).
+     ns_converge.nbandsvo.convergence_threshold : Float  Threshold for THIS stage only (independent from the
+                                                          k-points-convergence stage's own threshold above).
+     ns_converge.nbandsvo.threshold_start        : Float  Starting optical-window threshold (eV).
+     ns_converge.nbandsvo.threshold_max          : Float  Maximum threshold (eV); aborts if exceeded.
+     ns_converge.nbandsvo.threshold_step         : Float  Threshold increment (eV) per iteration.
+     ns_converge.nbandsvo.bandsdata              : BandsData  DFT bands (+occupations) for the IPA transition matrix.
+     ns_converge.nbandsvo.num_bands_included     : Int    Safety upper bound on bands scanned (default 20).
+
+     ns_converge.static_inverse_diel / .screening_parameter / .G0W0_gap : shared BSE screening params used
+           by BOTH convergence stages - always derived internally from ns_BSE.* (not user-facing here).
 
     Outputs created by the workchain:
         - kmesh_converged     : KpointsData
@@ -141,30 +148,57 @@ class VaspmBSECompleteWorkChain(WorkChain):
         #    ns_optimization.set_PRECFOCK_to_Fast  , valid_type=Bool  , required=False 
         #    ns_optimization.lreal                 , valid_type=Bool  , required=False
         
-        spec.expose_inputs(cls._mbse_kptsconv_wc,  exclude=('ns_kpoints','ns_reference','ns_converge_BSE')      )
+        # NOTE: both expose_inputs calls below touch the shared ns_converge.* namespace (both
+        # children inherit it from the same template base class) - PortNamespace.absorb() rebuilds
+        # a namespace's ENTIRE port dict from scratch every time it is re-exposed (it does not do
+        # an incremental per-leaf merge), so any manual ns_converge.* sub-fields added BETWEEN these
+        # two calls would be silently wiped out by the second one. That's why every manual
+        # spec.input('ns_converge....') call below is deferred until AFTER both expose_inputs calls.
+        spec.expose_inputs(
+            cls._mbse_kptsconv_wc, exclude=(
+                'ns_reference', 'ns_converge.kpoints', 'ns_converge.convergence_threshold',
+                'ns_converge.static_inverse_diel', 'ns_converge.screening_parameter', 'ns_converge.G0W0_gap',
+            )
+        )
         # From VaspmBSEKptsConvWorkChain we expose:
         #    ns_converge.dielfunction_convergence    , valid_type=Bool
         #    ns_converge.opticalgap_convergence      , valid_type=Bool
         #    ns_converge.dielfunction_distance       , valid_type=Str
         #    ns_converge.convergence_dynamic_control , valid_type=Bool
         #    ns_converge.dielfunction_window         , valid_type=Float  NOTE: the NBANDSV and NBANDSO of all mBSE calculations during kpts-convergence are usually determined automatically based on the dielfunction_window parameters
-        spec.input("ns_converge_BSE.NBANDSO"                , valid_type=Int   , required=False , help="number of occupied bands included in the bse matrix for all calculations used for the k-point convergence.")
-        spec.input('ns_converge_BSE.NBANDSV'                , valid_type=Int   , required=False , help="number of unoccupied (virtual) bands included in the bse matrix for all calculations used for the k-point  convergence.")
+
+        spec.expose_inputs(
+            cls._mbse_nbandsconv_wc, exclude=(
+                'ns_reference', 'ns_converge.nbandsvo.starting_mesh', 'ns_converge.convergence_threshold',
+                'ns_converge.static_inverse_diel', 'ns_converge.screening_parameter', 'ns_converge.G0W0_gap',
+            )
+        )
+        # From VaspmBSENBandsConvWorkChain we additionally expose:
+        #    ns_converge.nbandsvo.threshold_start     , valid_type=Float
+        #    ns_converge.nbandsvo.threshold_max       , valid_type=Float
+        #    ns_converge.nbandsvo.threshold_step      , valid_type=Float
+        #    ns_converge.nbandsvo.bandsdata           , valid_type=BandsData
+        #    ns_converge.nbandsvo.num_bands_included  , valid_type=Int
+        # ns_converge.nbandsvo.starting_mesh is excluded above: this stage always reuses
+        # ns_converge.kpoints.starting_mesh internally (see run_nbands_convergence) rather than
+        # asking the user to supply the same low-density mesh a second time under a different name.
+
+        # ---- Manual ns_converge.* additions (deferred until after both expose_inputs calls - see NOTE above) ----
+        # ns_converge.kpoints.*, ns_converge.{kpoints,nbandsvo}.convergence_threshold and the BSE screening
+        # params are excluded from both expose_inputs calls above and redeclared here: each convergence
+        # stage needs its OWN convergence_threshold (independent of the other), the kpoints stage needs
+        # its OWN NBANDSV/NBANDSO/mesh inputs, and the BSE screening params are derived internally from
+        # ns_BSE.* rather than asked of the user a second time here.
+        spec.input("ns_converge.kpoints.NBANDSO"           , valid_type=Int   , required=False , default=lambda: Int(2), help="number of occupied bands included in the bse matrix for all calculations used for the k-point convergence.")
+        spec.input('ns_converge.kpoints.NBANDSV'           , valid_type=Int   , required=False , default=lambda: Int(2), help="number of unoccupied (virtual) bands included in the bse matrix for all calculations used for the k-point  convergence.")
 
         kpoints_step_defaultvalue = KpointsData(); kpoints_step_defaultvalue.set_kpoints_mesh([1, 1, 1])
         kpoints_step_maxvalue = KpointsData();     kpoints_step_maxvalue.set_kpoints_mesh([20, 20, 20])
-        spec.input('ns_kpoints.starting_mesh',   valid_type=KpointsData, required=True,   help="Starting k-mesh for the k-point convergence."         )
-        spec.input('ns_kpoints.max_mesh',        valid_type=KpointsData, required=False,  default=lambda: kpoints_step_maxvalue,     help="Maximum k-mesh to be tested in the convergence."         )
-        spec.input('ns_kpoints.step',            valid_type=KpointsData, required=False,  default=lambda: kpoints_step_defaultvalue, help="Step size for the k-point mesh."    )
-        spec.input('ns_kpoints.convergence_threshold', valid_type=Float, required=False,  default=lambda: Float(0.35), help="Convergence threshold on the optical gap in eV."  )
-
-        spec.expose_inputs(cls._mbse_nbandsconv_wc, exclude=('ns_kpoints', 'ns_reference', 'ns_converge_BSE'))
-        # From VaspmBSENBandsConvWorkChain we additionally expose:
-        #    ns_nbandsconv.threshold_start     , valid_type=Float
-        #    ns_nbandsconv.threshold_max       , valid_type=Float
-        #    ns_nbandsconv.threshold_step      , valid_type=Float
-        #    ns_nbandsconv.bandsdata           , valid_type=BandsData
-        #    ns_nbandsconv.num_bands_included  , valid_type=Int
+        spec.input('ns_converge.kpoints.starting_mesh',   valid_type=KpointsData, required=True,   help="Starting k-mesh for the k-point convergence."         )
+        spec.input('ns_converge.kpoints.max_mesh',        valid_type=KpointsData, required=False,  default=lambda: kpoints_step_maxvalue,     help="Maximum k-mesh to be tested in the convergence."         )
+        spec.input('ns_converge.kpoints.step',            valid_type=KpointsData, required=False,  default=lambda: kpoints_step_defaultvalue, help="Step size for the k-point mesh."    )
+        spec.input('ns_converge.kpoints.convergence_threshold', valid_type=Float, required=False,  default=lambda: Float(0.35), help="Convergence threshold (eV) for the k-point convergence stage only."  )
+        spec.input('ns_converge.nbandsvo.convergence_threshold', valid_type=Float, required=False, default=lambda: Float(0.35), help="Convergence threshold (eV) for the NBANDSV/NBANDSO convergence stage only."  )
 
         spec.output('kmesh_converged',    valid_type=KpointsData)
         spec.output('nbandsv_converged',  valid_type=Int)
@@ -192,39 +226,36 @@ class VaspmBSECompleteWorkChain(WorkChain):
     # ------------------------------------------------------------------
     #[1] Run k-point convergence with NBANDSV/O fixed to 2/2
     def run_kpoints_convergence(self):
-        inputs_kconv = AttributeDict( {'ns_converge_BSE':AttributeDict(), 'ns_kpoints':AttributeDict(), 'ns_converge':AttributeDict(),})
+        # Take everything the user gave to this master that is relevant to
+        # VaspmBSEKptsConvWorkChain: ns_parameters, ns_interpolation, plus the
+        # shared ns_converge.* criteria fields (dielfunction_window, etc.) it exposes.
+        inputs_kconv = AttributeDict(self.exposed_inputs(self._mbse_kptsconv_wc))
+        # exposed_inputs() bookkeeps exposure at the top-level port name ('ns_converge' as a whole),
+        # not per nested leaf - so it returns the FULL self.inputs.ns_converge, including the OTHER
+        # stage's 'nbandsvo' sub-namespace (which lives under the same shared ns_converge parent but
+        # isn't a valid port on VaspmBSEKptsConvWorkChain). Strip it before submitting, or AiiDA's
+        # port validation rejects it as an "Unexpected port" on a non-dynamic namespace.
+        inputs_kconv.ns_converge.pop('nbandsvo', None)
 
-        # Take everything the user gave to this master that is relevant
-        # to VaspmBSEInitScriptWorkChain: code, structure, options,
-        # potential_family/mapping, ns_parameters, ns_interpolation,
-        # ns_BSE, ns_BSE_NBANDSV/O, ...
-        inputs_kconv.update(self.exposed_inputs(self._mbse_kptsconv_wc))
-
-        inputs_kconv.ns_converge_BSE.static_inverse_diel = self.inputs.ns_BSE.static_inverse_diel.value
-        inputs_kconv.ns_converge_BSE.screening_parameter = self.inputs.ns_BSE.screening_parameter.value
-        inputs_kconv.ns_converge_BSE.G0W0_gap            = self.inputs.ns_BSE.G0W0_gap.value
+        inputs_kconv.ns_converge.static_inverse_diel = self.inputs.ns_BSE.static_inverse_diel.value
+        inputs_kconv.ns_converge.screening_parameter = self.inputs.ns_BSE.screening_parameter.value
+        inputs_kconv.ns_converge.G0W0_gap            = self.inputs.ns_BSE.G0W0_gap.value
 
         # BSE overrides ONLY for k-convergence ----
         # Force minimal BSE subspace - the idea is that we want to converge only the onset
         # as use it as proxy for the whole convergence.
         # Setting this overrides the logic based on the "optical_energy_window" input
-        if ("NBANDSV" in self.inputs.ns_converge_BSE) and ("NBANDSO" in self.inputs.ns_converge_BSE) :
-            inputs_kconv.ns_converge_BSE.NBANDSV = self.inputs.ns_converge_BSE.NBANDSV.value
-            inputs_kconv.ns_converge_BSE.NBANDSO = self.inputs.ns_converge_BSE.NBANDSO.value
-        else:
-            inputs_kconv.ns_converge_BSE.NBANDSV = Int(2)
-            inputs_kconv.ns_converge_BSE.NBANDSO = Int(2)
-
-        # Add ns_kpoints namespace as expected by VaspmBSEKptsConvWorkChain
-        inputs_kconv.ns_kpoints.kmesh = AttributeDict()
-        inputs_kconv.ns_kpoints.kmesh.starting_mesh   = self.inputs.ns_kpoints.starting_mesh
-        inputs_kconv.ns_kpoints.kmesh.max_mesh        = self.inputs.ns_kpoints.max_mesh
-        inputs_kconv.ns_kpoints.kmesh.step            = self.inputs.ns_kpoints.step
-        # NOTE: VaspmBSEKptsConvWorkChain declares convergence_threshold under ns_converge
-        # (shared with VaspmBSENBandsConvWorkChain), not under ns_kpoints - only the master's
-        # own public-facing input is named ns_kpoints.convergence_threshold for backward
-        # compatibility; it must be routed to the child's actual ns_converge.* port.
-        inputs_kconv.ns_converge.convergence_threshold = self.inputs.ns_kpoints.convergence_threshold
+        # Always present (default=2 each, see spec.input above) - no need to guess a fallback here.
+        inputs_kconv.ns_converge.kpoints = AttributeDict()
+        inputs_kconv.ns_converge.kpoints.NBANDSV       = self.inputs.ns_converge.kpoints.NBANDSV.value
+        inputs_kconv.ns_converge.kpoints.NBANDSO       = self.inputs.ns_converge.kpoints.NBANDSO.value
+        inputs_kconv.ns_converge.kpoints.starting_mesh = self.inputs.ns_converge.kpoints.starting_mesh
+        inputs_kconv.ns_converge.kpoints.max_mesh      = self.inputs.ns_converge.kpoints.max_mesh
+        inputs_kconv.ns_converge.kpoints.step          = self.inputs.ns_converge.kpoints.step
+        # Each convergence stage gets its OWN independent convergence_threshold at the master's
+        # public-facing level (ns_converge.kpoints.* vs ns_converge.nbandsvo.*, see run_nbands_convergence) -
+        # here we route the kpoints-stage one into the child's shared ns_converge.convergence_threshold port.
+        inputs_kconv.ns_converge.convergence_threshold = self.inputs.ns_converge.kpoints.convergence_threshold
         inputs_kconv.ns_converge.convergence_dynamic_control = Bool(True)
 
         running = self.submit(self._mbse_kptsconv_wc, **inputs_kconv)
@@ -244,28 +275,36 @@ class VaspmBSECompleteWorkChain(WorkChain):
             )
             return self.exit_codes.KPOINTS_CONVERGENCE_FAILED
 
-        inputs_nbconv = AttributeDict({'ns_converge_BSE': AttributeDict(), 'ns_kpoints': AttributeDict()})
+        # Take everything the user gave to this master that is relevant to
+        # VaspmBSENBandsConvWorkChain: ns_converge.* shared criteria fields,
+        # ns_converge.nbandsvo.*, plus whatever VaspmBSEInitScriptWorkChain
+        # inputs it also re-exposes.
+        inputs_nbconv = AttributeDict(self.exposed_inputs(self._mbse_nbandsconv_wc))
+        # Same leakage as in run_kpoints_convergence above, mirrored: strip the OTHER stage's
+        # 'kpoints' sub-namespace, which isn't a valid port on VaspmBSENBandsConvWorkChain.
+        inputs_nbconv.ns_converge.pop('kpoints', None)
 
-        # Take everything the user gave to this master that is relevant
-        # to VaspmBSENBandsConvWorkChain: ns_converge.*, ns_nbandsconv.*,
-        # plus whatever VaspmBSEInitScriptWorkChain inputs it also re-exposes.
-        inputs_nbconv.update(self.exposed_inputs(self._mbse_nbandsconv_wc))
-
-        inputs_nbconv.ns_converge_BSE.static_inverse_diel = self.inputs.ns_BSE.static_inverse_diel.value
-        inputs_nbconv.ns_converge_BSE.screening_parameter = self.inputs.ns_BSE.screening_parameter.value
-        inputs_nbconv.ns_converge_BSE.G0W0_gap            = self.inputs.ns_BSE.G0W0_gap.value
+        inputs_nbconv.ns_converge.static_inverse_diel = self.inputs.ns_BSE.static_inverse_diel.value
+        inputs_nbconv.ns_converge.screening_parameter = self.inputs.ns_BSE.screening_parameter.value
+        inputs_nbconv.ns_converge.G0W0_gap            = self.inputs.ns_BSE.G0W0_gap.value
+        # Independent convergence_threshold for this stage - see the matching comment in
+        # run_kpoints_convergence above. Read from the LEAKED nbandsvo blob (still on self.inputs,
+        # untouched) into the child's BARE ns_converge.convergence_threshold port, then drop the
+        # master-only nbandsvo.convergence_threshold copy below - the child's own nbandsvo
+        # sub-namespace has no such leaf (see the pop right below).
+        inputs_nbconv.ns_converge.convergence_threshold = self.inputs.ns_converge.nbandsvo.convergence_threshold
+        inputs_nbconv.ns_converge.nbandsvo.pop('convergence_threshold', None)
 
         # Fixed, low-density k-mesh: reuse the same starting_mesh given for the
         # k-point convergence study (step 1). The BSE band subspace needed to
         # cover a given IPA transition window is roughly k-mesh independent, so
         # there is no need to wait for kmesh_converged from step 1.
-        inputs_nbconv.ns_kpoints.kmesh = AttributeDict()
-        inputs_nbconv.ns_kpoints.kmesh.starting_mesh = self.inputs.ns_kpoints.starting_mesh
+        inputs_nbconv.ns_converge.nbandsvo.starting_mesh = self.inputs.ns_converge.kpoints.starting_mesh
 
         running = self.submit(self._mbse_nbandsconv_wc, **inputs_nbconv)
         self.report(
             f"[VaspmBSECompleteWorkChain] Launched NBands convergence WC <{running.pk}> "
-            f"on fixed k-mesh {self.inputs.ns_kpoints.starting_mesh.get_kpoints_mesh()[0]}"
+            f"on fixed k-mesh {self.inputs.ns_converge.kpoints.starting_mesh.get_kpoints_mesh()[0]}"
         )
         return ToContext(wc_nbconv=running)
 

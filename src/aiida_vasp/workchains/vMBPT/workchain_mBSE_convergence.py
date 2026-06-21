@@ -287,7 +287,10 @@ class VaspmBSEConvergenceTemplateWorkChain(WorkChain):
                    help="Energy window (eV) above dielectric onset used for convergence evaluation.")
         spec.input('ns_converge.convergence_dynamic_control', valid_type=Bool,  required=False,
                    default=lambda: Bool(False),
-                   help="Double step size when delta_diel > 2 * threshold (accelerates slow convergence).")
+                   help="Use a flat 2x base step size (never compounded further) when "
+                        "delta_diel > 2 * threshold (accelerates slow convergence); resets back to "
+                        "the original step size as soon as delta_diel drops back under that bound, "
+                        "to avoid overshooting the convergence threshold.")
 
         # ---- BSE screening parameters (passed through to every child calculation) ----
         spec.input('ns_converge_BSE.static_inverse_diel', valid_type=Float, required=True,
@@ -355,7 +358,16 @@ class VaspmBSEConvergenceTemplateWorkChain(WorkChain):
 
         # ---- Delegate control-variable initialization to child ----
         # Must set, at minimum: ctx.control['initial_value'], ['current_value'], ['step']
-        return self._initialize_convergence_parameter()
+        result = self._initialize_convergence_parameter()
+
+        # Snapshot the step size right after initialization, before any dynamic-step
+        # doubling can touch it. Used by monitor_convergence (step [7]) to reset back
+        # to fine-grained steps once delta_diel drops back under 2x the threshold,
+        # instead of letting the doubling compound indefinitely.
+        if 'step' in self.ctx.control:
+            self.ctx.control['base_step'] = deepcopy(self.ctx.control['step'])
+
+        return result
 
     # --------------------------------------------------------------------------
     # prepare_run_mBSE
@@ -530,11 +542,19 @@ class VaspmBSEConvergenceTemplateWorkChain(WorkChain):
             self._store_converged_result()
             return False
 
-        # ---- [7] Not converged: optionally double step, then advance ----
-        if (self.inputs.ns_converge.convergence_dynamic_control.value
-                and cs.flag_is_diel_larger_2_times_threshold):
-            self.ctx.str_log += "\n  > [dynamic-step] Large delta_diel -> doubling step"
-            self._apply_dynamic_step()
+        # ---- [7] Not converged: dynamic step control, then advance ----
+        # While delta_diel stays > 2x threshold, use a flat 2x base step (never
+        # compounded further across consecutive "still large" iterations) to
+        # accelerate through the slowly-converging region. As soon as it drops back
+        # under that bound, reset to the original (fine-grained) step so the loop
+        # doesn't overshoot the convergence threshold with an oversized step.
+        if self.inputs.ns_converge.convergence_dynamic_control.value and cs.delta_diel is not None:
+            if cs.flag_is_diel_larger_2_times_threshold:
+                self.ctx.str_log += "\n  > [dynamic-step] Large delta_diel -> step = 2x base (flat, not compounded)"
+                self._apply_dynamic_step()
+            elif 'base_step' in self.ctx.control:
+                self.ctx.str_log += "\n  > [dynamic-step] delta_diel back under 2x threshold -> resetting step to base"
+                self.ctx.control['step'] = deepcopy(self.ctx.control['base_step'])
 
         return self._advance_to_next_or_abort(num_ok)
 
@@ -891,7 +911,9 @@ class VaspmBSEKptsConvWorkChain(VaspmBSEConvergenceTemplateWorkChain):
             return self.exit_codes.CONVERGENCE_NOT_FOUND
 
     def _apply_dynamic_step(self):
-        self.ctx.control['step'] = np.array(self.ctx.control['step']) * 2
+        # Always derived from base_step (never the current step) so consecutive
+        # "still large" iterations don't compound into 2x, 4x, 8x... - flat 2x base.
+        self.ctx.control['step'] = np.array(self.ctx.control['base_step']) * 2
 
     def _get_calculation_label(self, kpoints, bse_overrides):
         km = kpoints.get_kpoints_mesh()[0]
@@ -1079,7 +1101,9 @@ class VaspmBSENBandsConvWorkChain(VaspmBSEConvergenceTemplateWorkChain):
             return self.exit_codes.CONVERGENCE_NOT_FOUND
 
     def _apply_dynamic_step(self):
-        self.ctx.control['step'] = float(self.ctx.control['step']) * 2
+        # Always derived from base_step (never the current step) so consecutive
+        # "still large" iterations don't compound into 2x, 4x, 8x... - flat 2x base.
+        self.ctx.control['step'] = float(self.ctx.control['base_step']) * 2
 
     def _get_calculation_label(self, kpoints, bse_overrides):
         thr = self.ctx.control['current_value']

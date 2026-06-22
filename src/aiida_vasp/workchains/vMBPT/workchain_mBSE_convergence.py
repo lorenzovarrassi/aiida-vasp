@@ -877,13 +877,14 @@ class VaspmBSEKptsConvWorkChain(VaspmBSEConvergenceTemplateWorkChain):
                    default=lambda: kpoints_step_default,
                    help="k-mesh increment per iteration.")
 
-        # Fixed BSE band counts during k-convergence (cheap proxy subspace)
-        spec.input('ns_converge.kpoints.NBANDSV', valid_type=Int, required=False,
+        # Fixed BSE band counts during k-convergence (cheap proxy subspace, NOT the final
+        # production BSE subspace - see ns_converge.nbandsvo.* for that).
+        spec.input('ns_converge.kpoints.NBANDSV_fixed_for_convergence', valid_type=Int, required=False,
                    default=lambda: Int(2),
-                   help="Fixed NBANDSV used throughout k-point convergence.")
-        spec.input('ns_converge.kpoints.NBANDSO', valid_type=Int, required=False,
+                   help="Fixed NBANDSV used throughout k-point convergence (cheap proxy, not the final value).")
+        spec.input('ns_converge.kpoints.NBANDSO_fixed_for_convergence', valid_type=Int, required=False,
                    default=lambda: Int(2),
-                   help="Fixed NBANDSO used throughout k-point convergence.")
+                   help="Fixed NBANDSO used throughout k-point convergence (cheap proxy, not the final value).")
 
         spec.output('kmesh_converged', valid_type=KpointsData, required=True)
 
@@ -898,8 +899,8 @@ class VaspmBSEKptsConvWorkChain(VaspmBSEConvergenceTemplateWorkChain):
         self.ctx.control['current_value']   = kmesh_start
         self.ctx.control['step']            = step_vec
         self.ctx.control['max_value']       = kmesh_max
-        self.ctx.control['initial_NBANDSV'] = int(self.inputs.ns_converge.kpoints.NBANDSV.value)
-        self.ctx.control['initial_NBANDSO'] = int(self.inputs.ns_converge.kpoints.NBANDSO.value)
+        self.ctx.control['initial_NBANDSV'] = int(self.inputs.ns_converge.kpoints.NBANDSV_fixed_for_convergence.value)
+        self.ctx.control['initial_NBANDSO'] = int(self.inputs.ns_converge.kpoints.NBANDSO_fixed_for_convergence.value)
         self.ctx.control['kmesh_converged'] = None
 
         self.report(
@@ -1001,7 +1002,7 @@ class VaspmBSENBandsConvWorkChain(VaspmBSEConvergenceTemplateWorkChain):
     the threshold via that function. Iterating over the threshold is equivalent
     to systematically expanding the BSE subspace in a physically motivated way.
 
-    k-mesh is kept fixed at the value provided via ns_converge.nbandsvo.starting_mesh.
+    k-mesh is kept fixed at the value provided via ns_converge.nbandsvo.kmesh_fixed_for_convergence.
     This should be a cheap/sparse mesh: the converged k-mesh from
     VaspmBSEKptsConvWorkChain is not required (and is normally not yet available
     when this convergence is run), since the BSE band subspace required to cover
@@ -1016,8 +1017,9 @@ class VaspmBSENBandsConvWorkChain(VaspmBSEConvergenceTemplateWorkChain):
         super().define(spec)
 
         # Fixed k-mesh for the whole convergence - intentionally a cheap/sparse mesh.
-        spec.input('ns_converge.nbandsvo.starting_mesh', valid_type=KpointsData, required=True,
-                   help="Fixed, low-density k-mesh used throughout the NBands convergence.")
+        spec.input('ns_converge.nbandsvo.kmesh_fixed_for_convergence', valid_type=KpointsData, required=True,
+                   help="Fixed, low-density k-mesh used throughout the NBands convergence "
+                        "(cheap proxy, not the final production k-mesh).")
 
         # Control variable: optical window threshold iterated over
         spec.input('ns_converge.nbandsvo.threshold_start', valid_type=Float, required=True,
@@ -1094,7 +1096,7 @@ class VaspmBSENBandsConvWorkChain(VaspmBSEConvergenceTemplateWorkChain):
     # ---- Abstract method implementations ----
 
     def _initialize_convergence_parameter(self):
-        kmesh_fixed     = np.array(self.inputs.ns_converge.nbandsvo.starting_mesh.get_kpoints_mesh()[0], dtype=int)
+        kmesh_fixed     = np.array(self.inputs.ns_converge.nbandsvo.kmesh_fixed_for_convergence.get_kpoints_mesh()[0], dtype=int)
         threshold_start = float(self.inputs.ns_converge.nbandsvo.threshold_start.value)
         threshold_max   = float(self.inputs.ns_converge.nbandsvo.threshold_max.value)
         threshold_step  = float(self.inputs.ns_converge.nbandsvo.threshold_step.value)

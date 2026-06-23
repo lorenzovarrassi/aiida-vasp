@@ -1,6 +1,8 @@
 # pylint: disable=too-many-arguments
 
 from aiida.orm import SinglefileData, Str, Dict
+from aiida.orm.nodes.data.base import to_aiida_type
+from aiida.engine.processes.workchains.restart import process_handler, ProcessHandlerReport
 
 from aiida_vasp.workchains.v2.vasp     import VaspWorkChain
 from aiida_vasp.calcs.vasp2wInitScript import Vasp2wInitScriptCalculation
@@ -69,6 +71,12 @@ class VaspInitScriptWorkChain(VaspWorkChain):
             spec.input("init_script_call_command", valid_type=Str, required=False,help=("Shell command(s) appended to options.prepend_text in the job script. "
                                                                                         "Use this to run 'script_init.py' (or other init actions) BEFORE VASP starts. "
                                                                                         "Example: 'source activate aiida-vasp\\npython3 script_init.py --help'" ), )
+            spec.input("extraresources_fallback_options", valid_type=Dict, required=False, serializer=to_aiida_type,
+                       help=("Alternative scheduler options Dict (same shape as 'options': account/qos/"
+                             "resources/queue_name/max_memory_kb/max_wallclock_seconds/custom_scheduler_commands), "
+                             "used ONLY for the single retry that handler_unfinished_calc_generic grants after an "
+                             "ERROR_DID_NOT_FINISH (exit 700) failure - e.g. an OOM kill. If not supplied, the retry "
+                             "resubmits with the original options unchanged, exactly as before this input existed."))
 
 
     def init_inputs(self):
@@ -77,7 +85,7 @@ class VaspInitScriptWorkChain(VaspWorkChain):
         if exit_code is not None:
             return exit_code
 
-        #[2]Forward our extra input so the CalcJob sees it
+        #[2]Forward our extra input so self.ctx.inputs : so the CalcJob sees it
         if 'local_init_script' in self.inputs:
             self.ctx.inputs.local_initscript = self.inputs.local_init_script
         if 'local_files_to_copy_to_remote_submission_folder' in self.inputs:
@@ -103,4 +111,21 @@ class VaspInitScriptWorkChain(VaspWorkChain):
 
             #[3.3]
             self.ctx.inputs.metadata['options']["prepend_text"] = merged_prepend_text
-        return None        
+        return None
+
+    @process_handler(priority=900)
+    def handler_unfinished_calc_generic(self, node):
+        """
+        Defers to VaspWorkChain's generic handler for ERROR_DID_NOT_FINISH (exit 700) for all
+        of its existing logic (single retry, then abort on a second consecutive failure). The
+        only addition: when that handler grants the retry (no exit_code set) and
+        `extraresources_fallback_options` was supplied, swap it in for ctx.inputs.metadata['options']
+        before the retry - so the one retry attempt runs with larger resources instead of repeating
+        the same failure.
+        """
+        report = super().handler_unfinished_calc_generic(node)
+        if report is not None and report.exit_code.status == 0 and 'extraresources_fallback_options' in self.inputs:
+            self.report("Calculation did not finish (exit 700) - retrying with extraresources_fallback_options "
+                         "(larger scheduler resources) instead of the original options.")
+            self.ctx.inputs.metadata['options'] = self.inputs.extraresources_fallback_options.get_dict()
+        return report

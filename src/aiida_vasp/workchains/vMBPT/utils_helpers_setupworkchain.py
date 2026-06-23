@@ -208,6 +208,10 @@ class Helpers_setup_Workchain :
         # Inside aiida/schedulers/plugin/slurm.html AiiDA calculates memory using multiple of 1024 : mem={physical_memory_kb // 1024}'
         # For slurm, default units are megabytes.
         memory_GB_per_node = int( mem_GB_per_task * tasks_per_node )
+        if memory_GB_per_node > max_mem_GB_per_node_available:
+            print(f"INFO : [_build_slurm_options] requested memory_GB_per_node={memory_GB_per_node} "
+                  f"exceeds max_mem_GB_per_node_available={max_mem_GB_per_node_available} for this cluster/partition "
+                  f"- clamping down to {max_mem_GB_per_node_available}.")
         memory_GB_per_node = min( memory_GB_per_node , max_mem_GB_per_node_available )
         memory_MB_per_node = memory_GB_per_node * 1000
         physical_memory_kb = memory_MB_per_node * 1024 

@@ -150,8 +150,8 @@ class VaspmBSEInitScriptWorkChain(WorkChain):
     def define(cls, spec):
             super(VaspmBSEInitScriptWorkChain, cls).define(spec) 
 
-            spec.expose_inputs( cls._vasp_workchain            , exclude=('parameters','settings','options')) 
-            spec.expose_inputs( cls._vasp_initscript_workchain , exclude=('parameters','settings','options')) 
+            spec.expose_inputs( cls._vasp_workchain            , exclude=('parameters','settings','options'))
+            spec.expose_inputs( cls._vasp_initscript_workchain , exclude=('parameters','settings','options','extraresources_fallback_options'))
 
 
             spec.input('ns_parameters.encut'                  , valid_type=Float , required=False , help='Cutoff energy for the wavefunction in eV. ENCUT variable in VASP.')  #ns stands for namespace
@@ -195,6 +195,12 @@ class VaspmBSEInitScriptWorkChain(WorkChain):
                                                                                                  'NBANDSV/NBANDSO should be passed together; cannot define only one of those two.')        )
 
             spec.input("options" , valid_type=Dict , required=True )
+            spec.input("extraresources_fallback_options", valid_type=Dict, required=False,
+                       help=("Optional larger scheduler-options profile. Used ONLY for the mBSE init-script "
+                             "stage's single automatic retry after an ERROR_DID_NOT_FINISH (exit 700) failure "
+                             "(e.g. OOM) - every other calculation, and the first attempt of this one, still "
+                             "uses 'options'. If not supplied, that retry behaves exactly as before (same "
+                             "options, unchanged)."))
             spec.input("ns_option.copy_result_locally"    , valid_type=Bool       , required=False , default=lambda:Bool(True) )
             spec.input('ns_option.calculation_label'      , valid_type=Str        , required=False , default=lambda: Str("")     , help='The summary printed at the end will be labeled with this string.')
             spec.input('ns_option.calculation_tag'        , valid_type=Str        , required=False , default=lambda: Str("")     , help='Short suffix appended to the locally-copied result folder name (see copy_result_locally), e.g. "_KPTSconv"/"_NBANDSVOconv"/"_final", to distinguish which stage produced it.')
@@ -369,10 +375,10 @@ class VaspmBSEInitScriptWorkChain(WorkChain):
         # any other state: nothing to prepare
         return
 
-    def __build_options_entry(self, prepend_text=""):
+    def __build_options_entry(self, prepend_text="", input_dict=None):
         """helper to construct a Python dict (and not AiiDA Dict) for the scheduler options
-        starting from self.inputs.options."""
-        input_opts = self.inputs.options.get_dict()
+        starting from `input_dict` (an AiiDA Dict), defaulting to self.inputs.options."""
+        input_opts = (input_dict if input_dict is not None else self.inputs.options).get_dict()
         out = {}
         for k in ("account", "qos", "resources", "queue_name", "max_memory_kb", "max_wallclock_seconds"):
             if k in input_opts:
@@ -464,6 +470,8 @@ class VaspmBSEInitScriptWorkChain(WorkChain):
 
         #[3] Options
         inputs.options = self.__build_options_entry()
+        if 'extraresources_fallback_options' in self.inputs:
+            inputs.extraresources_fallback_options = self.__build_options_entry(input_dict=self.inputs.extraresources_fallback_options)
         return inputs
 
     def __add_inputs_mBSE_incar(self, inputs):

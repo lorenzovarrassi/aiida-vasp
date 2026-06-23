@@ -36,3 +36,5 @@ EIGENVAL
 vaspout.h5
 POT
 dryrun.yaml
+01_AiiDA.code-workspace
+*.code-workspace

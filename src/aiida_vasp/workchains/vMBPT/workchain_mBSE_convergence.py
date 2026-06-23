@@ -643,21 +643,60 @@ class VaspmBSEConvergenceTemplateWorkChain(WorkChain):
     # Internal helper: advance ctx.control['current_value'] (concrete, shared)
     # --------------------------------------------------------------------------
 
+    # Hardcoded safety cap on consecutive silent skips while walking past a plateau of
+    # redundant candidates (same derived calculation as the last accepted record). Not
+    # configurable - this is a structural safety net, not a tunable. Allows checking up
+    # to 5 distinct candidates (the first one plus 4 step-bumps) before giving up.
+    _MAX_REDUNDANT_SKIPS = 4
+
     def _advance_to_next_or_abort(self, num_ok):
         """
         Compute the next control value (from the last successful record, or the
-        initial value if there isn't one yet). If it exceeds the child's maximum,
-        abort with CONVERGENCE_NOT_FOUND; otherwise commit it to
-        ctx.control['current_value'] so prepare_run_mBSE picks it up next.
+        initial value if there isn't one yet). If the candidate would be redundant
+        (see _is_redundant_candidate) - i.e. it maps to the same underlying
+        calculation as the last accepted record - silently advance past it by
+        `step` (not by re-deriving from records[-1], which would go nowhere, since
+        _increment_value depends only on records[-1] which never changes during
+        this walk) and retry, up to _MAX_REDUNDANT_SKIPS times. If that cap is hit,
+        or the candidate exceeds the maximum while still inside the redundant
+        plateau, treat this as CONVERGED (the last accepted record is the genuine
+        answer) rather than aborting - a deliberate exception to the normal
+        "over max -> CONVERGENCE_NOT_FOUND" rule below, justified because every
+        candidate in the plateau would produce a result identical to a value we
+        have already verified.
 
         Concrete and identical for every child: the only per-child pieces are
-        _increment_value() and _is_value_over_max().
+        _increment_value(), _is_value_over_max(), and (for the redundant-plateau
+        walk) _is_redundant_candidate().
         """
         records = self.ctx.control.get('successful_records_sorted', [])
         if not records:
             next_value = deepcopy(self.ctx.control['initial_value'])
         else:
             next_value = self._increment_value(records[-1])
+
+            # ---- Redundant-candidate plateau walk ----
+            last_record = records[-1]
+            skip_count = 0
+            while self._is_redundant_candidate(next_value, last_record):
+                skip_count += 1
+                if skip_count > self._MAX_REDUNDANT_SKIPS:
+                    self.report(
+                        self.ctx.str_log +
+                        f"\n    --> {self._MAX_REDUNDANT_SKIPS + 1} consecutive redundant "
+                        f"candidates (same calculation as the last accepted point) - "
+                        f"treating as CONVERGED on the last accepted point instead of "
+                        f"continuing to advance.")
+                    return self._declare_converged_on_last_record()
+                next_value = next_value + self.ctx.control['step']
+                if self._is_value_over_max(next_value):
+                    self.report(
+                        self.ctx.str_log +
+                        f"\n    --> redundant-candidate walk reached the maximum "
+                        f"({next_value}) while still inside a same-calculation "
+                        f"plateau - treating as CONVERGED on the last accepted "
+                        f"point instead of aborting.")
+                    return self._declare_converged_on_last_record()
 
         over_max = self._is_value_over_max(next_value)
 
@@ -666,6 +705,23 @@ class VaspmBSEConvergenceTemplateWorkChain(WorkChain):
 
         return helper_BSEConv_shared._return_next_or_abort(
             self, over_max, str(next_value), _set)
+
+    def _declare_converged_on_last_record(self):
+        """
+        Declare convergence using the last accepted record as the unambiguous answer -
+        used only by the redundant-candidate plateau-exhaustion path above. Unlike
+        genuine Δ-based convergence (where records[-2] and records[-1] are two
+        different real calculations and select_earlier_point_at_convergence
+        meaningfully picks between them), there is only ONE relevant record here, so
+        we pre-seed the _get_converged_record() cache directly with records[-1],
+        unconditionally - bypassing select_earlier_point_at_convergence entirely,
+        since records[-2] (if it even exists) would be a smaller/wrong, unrelated
+        point from earlier history.
+        """
+        records = self.ctx.control['successful_records_sorted']
+        self.ctx.control['converged_record'] = records[-1]
+        self._store_converged_result()
+        return False
 
     # --------------------------------------------------------------------------
     # Internal helper: collect + sort successful nodes (uses child's sort key)
@@ -837,6 +893,15 @@ class VaspmBSEConvergenceTemplateWorkChain(WorkChain):
         Default no-op; subclass overrides if meaningful.
         """
         pass
+
+    def _is_redundant_candidate(self, value, last_record):
+        """
+        Return True if `value` would produce a calculation result indistinguishable
+        from `last_record`'s (e.g. same derived (NBANDSV, NBANDSO) pair for the NBands
+        child). Default: never redundant. Subclass overrides if its control variable
+        can map many-to-one onto the same physical calculation.
+        """
+        return False
 
     def _get_calculation_label(self, kpoints, bse_overrides):
         """Human-readable label for the child calculation. Subclass may override."""
@@ -1049,8 +1114,8 @@ class VaspmBSENBandsConvWorkChain(VaspmBSEConvergenceTemplateWorkChain):
         Return (NBANDSO, NBANDSV) covering all IPA transitions up to threshold_eV,
         using the physically-motivated helper already used elsewhere in the plugin.
 
-        verbose=False is used by prepare_run_mBSE's redundancy check (below), which
-        needs the pair without re-emitting the (already-logged) band-pair analysis.
+        verbose=False is used by _is_redundant_candidate (below), which needs the
+        pair without re-emitting the (already-logged) band-pair analysis.
         """
         G0W0_gap = (float(self.inputs.ns_converge.G0W0_gap.value)
                     if 'G0W0_gap' in self.inputs.ns_converge else None)
@@ -1065,33 +1130,17 @@ class VaspmBSENBandsConvWorkChain(VaspmBSEConvergenceTemplateWorkChain):
         return int(result['NBANDSO']), int(result['NBANDSV'])
 
     # ---- Skip redundant calculations ----
+    # (the actual skip-and-walk lives in the shared _advance_to_next_or_abort in the
+    # template base class - this child only needs to say what counts as "redundant")
 
-    def prepare_run_mBSE(self):
+    def _is_redundant_candidate(self, value, last_record):
         """
-        Same as the template's prepare_run_mBSE, except: if the current threshold
-        maps to the SAME (NBANDSV, NBANDSO) pair as the last successful point, the
-        next mBSE calculation would be physically identical to the one we already
-        ran (same BSE subspace -> same dielectric function) - submitting it again
-        only burns VASP time to confirm Δdiel=0, which is already known a priori
-        from _nbands_pair_from_threshold alone. Reuse the previous finished node
-        instead of resubmitting.
+        True if `value` (a candidate threshold) maps to the same (NBANDSO, NBANDSV)
+        pair as last_record - i.e. submitting it would be physically identical to a
+        calculation we already ran and accepted.
         """
-        value = self.ctx.control['current_value']
         next_nbandso, next_nbandsv = self._nbands_pair_from_threshold(value, verbose=False)
-        
-        records    = self.ctx.control.get('successful_records_sorted', [])
-        last_nodes = self.ctx.control.get('successful_nodes_sorted', [])
-        if records and (records[-1]['NBANDSV'] == next_nbandsv) and (records[-1]['NBANDSO'] == next_nbandso) :
-            last_node = last_nodes[-1]
-            self.report(
-                f"\n [prepare_run_mBSE] threshold={value:.2f}eV -> (NBANDSV={next_nbandsv}, NBANDSO={next_nbandso}),"
-                f" identical to the previous point (pk={last_node.pk}) -> skipping redundant mBSE"
-                f" calculation; reusing pk={last_node.pk} as this iteration's result."
-            )
-            self.ctx.WC_MBPT.append(last_node)
-            return
-
-        return super().prepare_run_mBSE()
+        return (next_nbandsv == last_record['NBANDSV']) and (next_nbandso == last_record['NBANDSO'])
 
     # ---- Abstract method implementations ----
 

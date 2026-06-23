@@ -182,6 +182,7 @@ class VaspmBSECompleteWorkChain(WorkChain):
         spec.expose_inputs(
             cls._mbse_kptsconv_wc, exclude=(
                 'ns_reference', 'ns_converge.kpoints', 'ns_converge.convergence_threshold',
+                'ns_converge.select_earlier_point_at_convergence',
                 'ns_converge.static_inverse_diel', 'ns_converge.screening_parameter', 'ns_converge.G0W0_gap',
             )
         )
@@ -195,6 +196,7 @@ class VaspmBSECompleteWorkChain(WorkChain):
         spec.expose_inputs(
             cls._mbse_nbandsconv_wc, exclude=(
                 'ns_reference', 'ns_converge.nbandsvo.kmesh_fixed_for_convergence', 'ns_converge.convergence_threshold',
+                'ns_converge.select_earlier_point_at_convergence',
                 'ns_converge.static_inverse_diel', 'ns_converge.screening_parameter', 'ns_converge.G0W0_gap',
             )
         )
@@ -226,6 +228,10 @@ class VaspmBSECompleteWorkChain(WorkChain):
         spec.input('ns_converge.kpoints.max_mesh',        valid_type=KpointsData, required=False,  default=lambda: kpoints_step_maxvalue,     help="Maximum k-mesh to be tested in the convergence."         )
         spec.input('ns_converge.kpoints.step',            valid_type=KpointsData, required=False,  default=lambda: kpoints_step_defaultvalue, help="Step size for the k-point mesh."    )
         spec.input('ns_converge.kpoints.convergence_threshold', valid_type=Float, required=False,  default=lambda: Float(0.35), help="Convergence threshold (eV) for the k-point convergence stage only."  )
+        spec.input('ns_converge.kpoints.select_earlier_point_at_convergence', valid_type=Bool,
+                   required=False, default=lambda: Bool(False),
+                   help="Prefer the earlier/cheaper point of the converged k-mesh pair "
+                        "over the later/safer one, for the k-point convergence stage only.")
 
         # Fixed, low-density k-mesh used throughout the NBANDSV/NBANDSO convergence stage. NOT
         # declared with a static default (AiiDA can't reference another input's value at spec-build
@@ -237,6 +243,11 @@ class VaspmBSECompleteWorkChain(WorkChain):
                         "proxy, not the final production mesh). Defaults to "
                         "ns_converge.kpoints.starting_mesh if not supplied.")
         spec.input('ns_converge.nbandsvo.convergence_threshold', valid_type=Float, required=False, default=lambda: Float(0.35), help="Convergence threshold (eV) for the NBANDSV/NBANDSO convergence stage only."  )
+        spec.input('ns_converge.nbandsvo.select_earlier_point_at_convergence', valid_type=Bool,
+                   required=False, default=lambda: Bool(False),
+                   help="Prefer the earlier/cheaper point of the converged NBANDSV/NBANDSO "
+                        "pair over the later/safer one, for the NBANDSV/NBANDSO convergence "
+                        "stage only.")
 
         # ---- Per-stage enable/disable switches ----
         # If a stage is disabled, its sub-workchain is never submitted; the corresponding
@@ -345,6 +356,8 @@ class VaspmBSECompleteWorkChain(WorkChain):
         # public-facing level (ns_converge.kpoints.* vs ns_converge.nbandsvo.*, see run_nbands_convergence) -
         # here we route the kpoints-stage one into the child's shared ns_converge.convergence_threshold port.
         inputs_kconv.ns_converge.convergence_threshold = self.inputs.ns_converge.kpoints.convergence_threshold
+        # Same per-stage-split treatment as convergence_threshold above.
+        inputs_kconv.ns_converge.select_earlier_point_at_convergence = self.inputs.ns_converge.kpoints.select_earlier_point_at_convergence
         inputs_kconv.ns_converge.convergence_dynamic_control = Bool(True)
 
         running = self.submit(self._mbse_kptsconv_wc, **inputs_kconv)
@@ -404,6 +417,8 @@ class VaspmBSECompleteWorkChain(WorkChain):
         # run_kpoints_convergence above. Read from the master's own ns_converge.nbandsvo.* (NOT
         # the leaked exposed_inputs blob) into the child's BARE ns_converge.convergence_threshold port.
         inputs_nbconv.ns_converge.convergence_threshold = self.inputs.ns_converge.nbandsvo.convergence_threshold
+        # Same per-stage-split treatment as convergence_threshold above.
+        inputs_nbconv.ns_converge.select_earlier_point_at_convergence = self.inputs.ns_converge.nbandsvo.select_earlier_point_at_convergence
 
         # Rebuild ns_converge.nbandsvo from scratch with an explicit allowlist of only the fields
         # VaspmBSENBandsConvWorkChain actually has - mirrors how run_kpoints_convergence rebuilds

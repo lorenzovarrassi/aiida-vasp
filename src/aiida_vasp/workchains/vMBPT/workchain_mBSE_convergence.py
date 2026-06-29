@@ -75,6 +75,13 @@ class helper_BSEConv_shared:
         def __L2(a, b, e):
             return np.sqrt(np.trapz(np.mean((a - b) ** 2, axis=1), e))
 
+        def __L2_relative(a, b, e):
+            """L2 distance normalized by the previous curve's own L2 norm over the same
+            window, so the threshold means 'X% disagreement' instead of an absolute eV·ε2
+            number - insensitive to absolute peak height, unlike plain L2_distance."""
+            norm_prev = np.sqrt(np.trapz(np.mean(a ** 2, axis=1), e))
+            return __L2(a, b, e) / norm_prev if norm_prev > 0 else __L2(a, b, e)
+
         def __L1(a, b, e):
             return np.trapz(np.mean(np.abs(a - b), axis=1), e)
 
@@ -85,7 +92,8 @@ class helper_BSEConv_shared:
             if np.sum(f2) > 0: f2 /= np.sum(f2)
             return wasserstein_distance(e, e, f1, f2)
 
-        metric_map = {"L2_distance": __L2, "L1_distance": __L1, "Wasserstein": __Wasserstein}
+        metric_map = {"L2_distance": __L2, "L1_distance": __L1, "Wasserstein": __Wasserstein,
+                      "L2_relative": __L2_relative}
         if method not in metric_map:
             raise ValueError(f"Unknown method '{method}'. Choose from: {list(metric_map.keys())}")
         distance = metric_map[method](id1, id2, egrid)
@@ -286,8 +294,13 @@ class VaspmBSEConvergenceTemplateWorkChain(WorkChain):
 
         # ---- Convergence criteria (identical for all child classes, never overridden) ----
         spec.input('ns_converge.convergence_threshold',       valid_type=Float, required=False,
-                   default=lambda: Float(0.35),
-                   help="Convergence threshold (eV) applied to both optical gap and dielectric distance.")
+                   default=lambda: Float(0.05),
+                   help="Convergence threshold applied to both optical gap and dielectric distance. "
+                        "Units/scale depend on dielfunction_distance: absolute eV·ε2 for "
+                        "L2_distance/L1_distance; fractional/dimensionless for L2_relative (default "
+                        "metric) and Wasserstein. Default 0.05 assumes L2_relative (5% relative "
+                        "disagreement) - if you enable opticalgap_convergence or switch "
+                        "dielfunction_distance to an absolute metric, set this explicitly.")
         spec.input('ns_converge.dielfunction_convergence',    valid_type=Bool,  required=False,
                    default=lambda: Bool(True),
                    help="Enable convergence check based on imaginary dielectric function.")
@@ -295,8 +308,11 @@ class VaspmBSEConvergenceTemplateWorkChain(WorkChain):
                    default=lambda: Bool(False),
                    help="Enable convergence check based on optical gap.")
         spec.input('ns_converge.dielfunction_distance',       valid_type=Str,   required=False,
-                   default=lambda: Str("L2_distance"),
-                   help="Metric for dielectric convergence: 'L2_distance', 'L1_distance', 'Wasserstein'.")
+                   default=lambda: Str("L2_relative"),
+                   help="Metric for dielectric convergence: 'L2_relative' (default - L2_distance "
+                        "normalized by the previous curve's own L2 norm over the window; threshold is "
+                        "a relative/fractional disagreement, insensitive to absolute peak height), "
+                        "'L2_distance', 'L1_distance', 'Wasserstein'.")
         spec.input('ns_converge.dielfunction_window',         valid_type=Float, required=False,
                    default=lambda: Float(3.5),
                    help="Energy window (eV) above dielectric onset used for convergence evaluation.")

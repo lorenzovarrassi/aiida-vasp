@@ -354,7 +354,7 @@ class VaspmBSEConvergenceTemplateWorkChain(WorkChain):
                        message='The selected feature is not yet implemented.')
         spec.exit_code(303, 'UNSUPPORTED_DIELFUNCTION_METRIC',
                        message="Unsupported metric in ns_converge.dielfunction_distance. "
-                               "Allowed: 'L2_distance', 'L1_distance', 'Wasserstein'.")
+                               "Allowed: 'L2_distance', 'L1_distance', 'Wasserstein', 'L2_relative'.")
         spec.exit_code(304, 'NO_CONVERGENCE_REQUESTED',
                        message='Both dielfunction_convergence and opticalgap_convergence are disabled.')
         spec.exit_code(305, 'INVALID_MBSE_CONVERGE_PARAMETERS',
@@ -384,7 +384,7 @@ class VaspmBSEConvergenceTemplateWorkChain(WorkChain):
         self.ctx.WC_MBPT = []
 
         # ---- Validate shared ns_converge inputs ----
-        allowed_metrics = ["L2_distance", "L1_distance", "Wasserstein"]
+        allowed_metrics = ["L2_distance", "L1_distance", "Wasserstein", "L2_relative"]
         if self.inputs.ns_converge.dielfunction_distance.value not in allowed_metrics:
             self.ctx.control['last_exit_code_thrown'] = self.exit_codes.UNSUPPORTED_DIELFUNCTION_METRIC
             return self.ctx.control['last_exit_code_thrown']

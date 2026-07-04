@@ -308,7 +308,7 @@ class VaspmBSEConvergenceTemplateWorkChain(WorkChain):
                    default=lambda: Bool(False),
                    help="Enable convergence check based on optical gap.")
         spec.input('ns_converge.dielfunction_distance',       valid_type=Str,   required=False,
-                   default=lambda: Str("L2_relative"),
+                   default=lambda: Str("L2_distance"),
                    help="Metric for dielectric convergence: 'L2_relative' (default - L2_distance "
                         "normalized by the previous curve's own L2 norm over the window; threshold is "
                         "a relative/fractional disagreement, insensitive to absolute peak height), "

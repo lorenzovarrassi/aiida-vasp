@@ -677,7 +677,7 @@ class VaspDFTGWWorkChain(WorkChain):
                 incar['incar']['nelm']    = 1    
                         
             inputs.parameters = Dict(dict=incar) 
-            prepared_inputs = prepare_process_inputs(inputs , namespaces=['dynamics','verify'])
+            prepared_inputs = prepare_process_inputs(inputs , namespaces=['calc','dynamics','verify'])
             return prepared_inputs
 
         def _prepare_inputs_G0W0(self, restart_folder):
@@ -723,7 +723,7 @@ class VaspDFTGWWorkChain(WorkChain):
                 incar['incar']['lreal'] = '.FALSE.'
                                 
             inputs.parameters = Dict(dict=incar) 
-            prepared_inputs = prepare_process_inputs(inputs , namespaces=['dynamics','verify'])
+            prepared_inputs = prepare_process_inputs(inputs , namespaces=['calc','dynamics','verify'])
             return prepared_inputs
 	
         ##[HELPER FUNCTIONS for update_state and validate_step] - should be kept here as it uses self

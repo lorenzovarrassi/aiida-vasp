@@ -791,7 +791,7 @@ class VaspG0W0BasisExtrWorkChain(WorkChain):
             extrap_qpc_QPc[sp]  = ns_gaps_qpc_sp_extr
         
         
-        extrapolated = Dict(dict={"gaps": ns_gaps_G0W0_sp_extr, "gaps_QPc": ns_gaps_qpc_sp_extr, })
+        extrapolated = Dict(dict={"gaps": extrap_gap_G0W0, "gaps_QPc": extrap_qpc_QPc, })
         extrapolated.store()
         self.out("extrapolated", extrapolated)
         # [5b] Custom final report

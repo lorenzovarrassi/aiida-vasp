@@ -89,15 +89,13 @@ class VaspGWWorkChain(VaspWorkChain):
     def handle_gw_exception(self, node):
         """  Escalate GW parameters if the previous GW calculation failed.
         """
-        ##print("\n\n TESTESTEST handle_gw_failure \n\n")
-        self.report("\n\n TESTESTEST handle_gw_failure \n\n")
-        
-        self.report(f'VaspGWWorkChain handler triggered for node {node.pk}')
-
-        #if node.is_finished_ok:
-        #    return None
         if not node.is_excepted:
             return None
+
+        self.report(
+            f'GW VaspCalculation<{node.pk}> excepted; '
+            'attempting recovery with OMEGATL=16000'
+        )
     
         # count restarts
         self.ctx.gw_iteration = self.ctx.get('gw_iteration', 0) + 1

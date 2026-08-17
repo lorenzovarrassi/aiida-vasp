@@ -493,14 +493,14 @@ class VaspG0W0CompleteWorkChain(WorkChain):
                 extrap_gaps_NV = extrNV.outputs.extrapolated.get_dict()["gaps"]
                 ns_gaps_NV     = extrNV.outputs.ns_gaps_G0W0.get_dict()
 
-            correction_NV = AttributeDict({sp: AttributeDict() for sp in spin_labels})
-            for sp in spin_labels:
-                for key in ("Dir", "Ind", "Gam"):
-                    correction_NV[sp][key] = float(extrap_gaps_NV[sp][key]) - float(ns_gaps_NV[sp][key][0])
-
-            node_NV = Dict(dict=correction_NV)
-            node_NV.store()
-            self.out("Correction_NormViolation", node_NV) 
+                correction_NV = AttributeDict({sp: AttributeDict() for sp in spin_labels})
+                for sp in spin_labels:
+                    for key in ("Dir", "Ind", "Gam"):
+                        correction_NV[sp][key] = float(extrap_gaps_NV[sp][key]) - float(ns_gaps_NV[sp][key][0])
+    
+                node_NV = Dict(dict=correction_NV)
+                node_NV.store()
+                self.out("Correction_NormViolation", node_NV) 
           
             def __copy_remote_to_local(self, remote_data, label):
                 import os

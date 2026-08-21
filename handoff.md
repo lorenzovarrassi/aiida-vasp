@@ -59,8 +59,8 @@ below, used throughout every phase.
   directory. This keeps real job submissions on `support_GWBSE_rebased`
   completely unaffected while this branch is worked on.
 - New sibling plugin repos `aiida-vasp-gwconv/` and `aiida-vasp-qpcorrection/`
-  under `01_AiiDA/AiiDA_Develop/` (git-initialized, not yet committed as of
-  this writing - see Phase checklist).
+  under `01_AiiDA/AiiDA_Develop/` (git-initialized; scaffolding committed in
+  Phase 0 as `e5ea4bc`/`db82390`).
 - No historical AiiDA database provenance to preserve (confirmed: nothing
   stored in the `lvarras_aiida` profile needs to stay loadable) - no
   backward-compat import shims required.
@@ -88,24 +88,55 @@ below, used throughout every phase.
   else. Confirmed not currently used in real submissions
   (`local_gw_reference_folder` branch), but planned for future use, which is
   why it's being fixed rather than left alone.
+- **Phase 1 step 3 (the straddling-file split) ripples further than the
+  plan text originally called out.** `VaspmBSECompleteWorkChain`
+  (`workchain_mBSE_master.py`) and `VaspmBSEConvergenceTemplateWorkChain`
+  (`workchain_mBSE_convergence.py`) - both bucket B - both do
+  `spec.expose_inputs(VaspmBSEInitScriptWorkChain, ...)`, so they derive
+  their exposed inputs *dynamically* from whatever the base class currently
+  declares. No code changes were needed in either file for structural
+  correctness (confirmed: both still import and build `.spec()` cleanly
+  after `ns_interpolation.*` was removed) - but any caller that previously
+  supplied `ns_interpolation.*` values to them will now fail at input-
+  validation time. Separately, `utils_helpers_setupworkchain.py`'s
+  `Helpers_setup_Workchain._build_interpolation_inputs` (a bucket-A shared
+  helper) becomes orphaned - it still builds an `ns_interpolation`-shaped
+  dict, but nothing accepts that namespace anymore anywhere in this repo.
+  Left as inert dead code for now (not deleted) since Phase 3's new
+  orchestrating workchain/launch script will likely want to reference or
+  adapt its local/remote GW-reference-folder branch logic when rebuilding
+  the interpolation call site. This means `example_launch_mBSE_complete.py`
+  and all `submit_workchain_mBSEinterpolation*.py` scripts are stale from
+  this commit onward until Phase 3 delivers `VaspQPCorrectedWorkChain` as
+  their replacement - already anticipated by the plan for
+  `submit_workchain_mBSEinterpolation.py` specifically, but not for the
+  other two `_master(_vsc5)` scripts (which go through
+  `VaspmBSECompleteWorkChain`) or for the shared helper.
+- Replaced the old `not ns_interpolation.use_interpolation` scissor toggle
+  in `__add_inputs_mBSE_incar` with an explicit `ns_BSE.use_scissor` input
+  (default `False`, behaviorally identical to the old default since
+  `use_interpolation` defaulted to `True`). This is a new, independent input
+  - not a straight rename - since the interpolation decision no longer
+  lives on this class at all.
 
 ## Pre-existing bugs to fix (Phase 1, each an isolated commit)
 
-1. `calcs/vasp.py` - `vdw_kernel` input declared (`define()`) but its
-   copy-to-remote logic in `write_additional()` was deleted in fork commit
-   `9b9d069f`. Restore the copy logic.
-2. `workchain_wrapper_VaspWorkchain_G0W0.py` imports `VaspCalculation` via
-   `from aiida_vasp.calcs.vasp2wInitScript import VaspCalculation`
-   (transitive re-export) instead of `from aiida_vasp.calcs.vasp import
-   VaspCalculation`. Fix the import.
+1. **[Fixed, `eee74e3f`]** `calcs/vasp.py` - `vdw_kernel` input declared
+   (`define()`) but its copy-to-remote logic in `write_additional()` was
+   deleted in fork commit `9b9d069f`. Restored the copy logic verbatim from
+   that commit's pre-deletion state.
+2. **[Fixed, `9d8684e4`]** `workchain_wrapper_VaspWorkchain_G0W0.py` imported
+   `VaspCalculation` via `from aiida_vasp.calcs.vasp2wInitScript import
+   VaspCalculation` (transitive re-export) instead of `from
+   aiida_vasp.calcs.vasp import VaspCalculation`. Fixed the import.
 3. `workchain_G0W0_Wannierization.py` has a broken import (`from
    workchain_BasisExtrapolation import input_magnetic_moment_tomagmom` - no
    such module; real one is `utils_helpers_extrapolation.py`) and is
    otherwise unreferenced anywhere. Fix-and-move-to-gwconv or delete - your
    call at Phase 2 execution time (intent not recoverable from code).
-4. Delete `utils_calcfunctions.py` (dead duplicate of
-   `utils_helpers_extrapolation.py`, unreferenced anywhere).
-5. **[Found during Phase-0 harness build]**
+4. **[Fixed, `728befbe`]** Deleted `utils_calcfunctions.py` (dead duplicate
+   of `utils_helpers_extrapolation.py`, unreferenced anywhere).
+5. **[Fixed, `bab6cd50`]** **[Found during Phase-0 harness build]**
    `workchain_mBSE_base_winterpolation.py`'s
    `__prepare_inputs_G0W0interpolation` (~line 690-697) passes
    `--path_sparse_GW`/`--sparse_GW_filename` **swapped** relative to what
@@ -121,7 +152,13 @@ below, used throughout every phase.
    discards the 1st), which is presumably why it's gone unnoticed - but the
    `local_gw_reference_folder` branch is genuinely broken today. Fix: swap
    the two `str(args_interpolation[...])` values in the f-string/concat that
-   builds `str_launch_command`.
+   builds `str_launch_command`. Verified via the harness: the only diff vs.
+   the pre-fix baseline (both variants) was the two values trading places.
+   Note: this whole method was removed from the class two commits later
+   (Phase 1 step 3's split), so this fix and its dedicated golden baselines
+   (`phase1_post_bug5fix_baseline_*.json`) are now historical record only -
+   the corresponding logic will need to be rebuilt (correctly, per this
+   fix) wherever Phase 3 reconstructs the interpolation call.
 
 **Minor/cosmetic, optional**: `utils_helpers_setupworkchain.py:526` has
 `"\[POTENTIALS]"` - an invalid escape sequence (`SyntaxWarning` under Python
@@ -131,35 +168,41 @@ opportunistically if touching that file for other reasons, not urgent.
 ## Regression-safety mechanism: golden-file harness
 
 `regression_harness/harness_vMBPT_inputs.py` (this worktree) calls
-`VaspmBSEInitScriptWorkChain`'s pure input-building methods
-(`__prepare_inputs_DFT`, `__prepare_inputs_mBSE_base`,
-`__prepare_inputs_G0W0interpolation`, `__add_inputs_mBSE_incar`) directly
+`VaspmBSEInitScriptWorkChain`'s pure input-building methods directly
 against a fixed synthetic fixture - no daemon, no submission, nothing
-stored. Two variants exercise the two mutually-exclusive GW-reference
-branches (`remote_gw_reference_folder` / `local_gw_reference_folder`).
+stored.
 
 Run it:
 ```
 source ~/venv_AiiDA_20251209/bin/activate
 cd <this worktree>
 PYTHONPATH=$(pwd)/src python regression_harness/harness_vMBPT_inputs.py \
-    regression_harness/golden/<label>.json [remote|local]
+    regression_harness/golden/<label>.json
 ```
 
-Baselines captured so far (pre any Phase-1 change, on the state this branch
-was created from):
-- `regression_harness/golden/phase0_pre_bugfix_baseline_remote.json`
-- `regression_harness/golden/phase0_pre_bugfix_baseline_local.json`
+Baselines, in order (each documents one step in this history):
+- `phase0_pre_bugfix_baseline_{remote,local}.json` - pre any Phase-1 change,
+  two variants exercising the (now-removed)
+  `remote_gw_reference_folder`/`local_gw_reference_folder` branches of
+  `__prepare_inputs_G0W0interpolation`.
+- `phase1_post_bug5fix_baseline_{remote,local}.json` - immediately after
+  bug 5's fix, same two variants; only diff vs. the baselines above is the
+  swapped-args fix.
+- `phase1_post_split_baseline.json` - after Phase 1 step 3 removed
+  `ns_interpolation.*`/`__prepare_inputs_G0W0interpolation` entirely. No
+  more remote/local variant (that branch point no longer exists on this
+  class). Confirmed byte-identical to the two baselines above once the
+  now-absent interpolation-only keys (`init_script_call_command`,
+  `local_init_script`, `local_files_to_copy_to_remote_submission_folder`,
+  `local_SinglefileData_tocopy_toremote`) are excluded from the comparison.
+  **This is the current baseline going forward** - the harness itself no
+  longer accepts a `[remote|local]` CLI argument.
 
 **How to use in later phases**: after any change that could plausibly touch
-this logic, rerun the harness into a new file and diff against the most
-recent golden baseline. Bug fixes should show up as *exactly* the intended
-diff (e.g. bug 5's fix should flip the two args in
-`init_script_call_command` and nothing else); pure refactors (e.g. the
-Phase-1 step-3 split of `workchain_mBSE_base_winterpolation.py`) should show
-*zero* diff in `dft_inputs`/the non-interpolation parts of `mbse_inputs`.
-Once a diff is confirmed correct-and-intended, re-capture it as the new
-golden baseline for subsequent steps to diff against.
+this logic, rerun the harness into a new file and diff against
+`phase1_post_split_baseline.json`. Any diff should be *exactly* the
+intended change, nothing else. Once confirmed correct-and-intended,
+re-capture it as the new baseline for subsequent steps to diff against.
 
 For Phase 3's deepest verification (interpolation numerics moving into
 `WavecarQPModificationCalculation`), this extends to a real OUTCAR+WAVECAR
@@ -172,17 +215,26 @@ see Open items.
       scaffolded (pyproject.toml, package skeleton, README, .gitignore;
       both verified `pip install -e . --no-deps` cleanly); golden-file
       harness built and validated end-to-end; pre-bugfix golden baselines
-      captured (both variants); this handoff.md written.
-      **Not yet done in Phase 0**: committing this branch's new files, and
-      committing the two new repos' initial scaffolding (pending your
-      review of this phase before I commit).
-- [ ] **Phase 1** (aiida-vasp): fix bugs 1/2/5 as isolated commits (verify
-      via harness after each - bug 5's diff should be exactly the arg swap);
-      decide bug 3/4 disposition; register `aiida.workflows` entry points
-      for bucket-A classes; split `workchain_mBSE_base_winterpolation.py`
-      (strip `ns_interpolation.*`, verify zero diff on the non-interpolation
-      harness output); update `workchains/__init__.py`; update launch-script
-      imports as needed.
+      captured (both variants); this handoff.md written. All committed
+      (`4a69af05` this repo, `e5ea4bc` gwconv, `db82390` qpcorrection).
+- [x] **Phase 1** (aiida-vasp): fixed bugs 1 (`eee74e3f`), 2 (`9d8684e4`),
+      4 (`728befbe`), 5 (`bab6cd50`, verified via harness - diff was exactly
+      the arg swap) as isolated commits; bug 3 (Wannierization) deferred to
+      Phase 2 per plan. Registered `aiida.workflows` entry points for the 3
+      bucket-A classes (`dc180faf`) plus the slimmed mBSE class
+      (`vasp.gw.mbse`, added alongside the split commit). Split
+      `workchain_mBSE_base_winterpolation.py` (`d470bd0d`) - stripped
+      `ns_interpolation.*`, verified byte-identical harness output on
+      everything except the now-removed interpolation-only keys; see
+      Decisions log for the wider ripple this uncovered
+      (`VaspmBSECompleteWorkChain`/`VaspmBSEConvergenceTemplateWorkChain`'s
+      dynamic `expose_inputs`, the now-orphaned
+      `Helpers_setup_Workchain._build_interpolation_inputs`, the new
+      `ns_BSE.use_scissor` input). Rewrote `workchains/__init__.py`
+      (`5c32cd14`) to export only bucket-A classes (also fixed two latent
+      `__all__`/star-import bugs found along the way). None of the 7 real
+      launch scripts needed import updates (none go through
+      `workchains/__init__.py` - confirmed by inspection).
 - [ ] **Phase 2** (aiida-vasp-gwconv): move bucket-B files + extrapolation
       calcfunctions; resolve bug 3 (Wannierization); register entry points;
       update the 5 affected launch scripts; verify installs + imports.
@@ -195,9 +247,16 @@ see Open items.
 
 ## Known risks & mitigations
 
-- **Straddling-file split (Phase 1 step 3)** is the highest-risk step in
-  aiida-vasp itself - mitigated by the golden harness's zero-diff check on
-  everything except the interpolation-specific fields.
+- **Straddling-file split (Phase 1 step 3)** was the highest-risk step in
+  aiida-vasp itself - done (`d470bd0d`), verified via the golden harness's
+  zero-diff check on everything except the interpolation-specific fields.
+- **Launch scripts now stale until Phase 3**: `example_launch_mBSE_complete.py`
+  and all `submit_workchain_mBSEinterpolation*.py` scripts (3 of them) will
+  fail at input-validation time if run today, since they build an
+  `ns_interpolation` namespace that no longer exists on
+  `VaspmBSEInitScriptWorkChain` (or, transitively, on
+  `VaspmBSECompleteWorkChain`). This is expected and deferred to Phase 3's
+  `VaspQPCorrectedWorkChain` - do not "fix" these scripts before then.
 - **Interpolation-to-CalcJob migration (Phase 3)** is the highest-risk step
   overall - mitigated by capturing a real numerical (patched-eigenvalues)
   golden fixture *before* writing the new CalcJob, per the harness section

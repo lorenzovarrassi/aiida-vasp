@@ -3,7 +3,7 @@
 from aiida.orm import Dict
 
 from aiida_vasp.workchains.v2.vasp     import VaspWorkChain
-from aiida_vasp.calcs.vasp2wInitScript import VaspCalculation
+from aiida_vasp.calcs.vasp import VaspCalculation
 from aiida.engine import process_handler, ProcessHandlerReport
 
 class VaspGWWorkChain(VaspWorkChain):

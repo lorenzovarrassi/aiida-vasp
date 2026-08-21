@@ -4,14 +4,20 @@ input-building logic (workchain_mBSE_base_winterpolation.py).
 
 Purpose
 -------
-`__prepare_inputs_DFT`, `__prepare_inputs_mBSE_base`,
-`__prepare_inputs_G0W0interpolation`, and `__add_inputs_mBSE_incar` are pure
-functions over lightweight AiiDA nodes: they build a Python dict (INCAR) or a
-shell command string (prepend_text), and never submit/run anything. This
+`__prepare_inputs_DFT`, `__prepare_inputs_mBSE_base`, and
+`__add_inputs_mBSE_incar` are pure functions over lightweight AiiDA nodes:
+they build a Python dict (INCAR), and never submit/run anything. This
 script calls them directly against one fixed, synthetic fixture (no daemon,
 no cluster, nothing stored to the database) and captures their output as
 JSON. Run it before and after each refactor step; diff the two JSON files.
 Any unintended diff is a regression signal.
+
+As of Phase 1's straddling-file split, `__prepare_inputs_G0W0interpolation`
+no longer exists on this class (that logic - and its own golden coverage -
+moves to aiida-vasp-qpcorrection in Phase 3); this harness now only covers
+the two bucket-A methods that remain. See phase0_pre_bugfix_baseline_*.json
+and phase1_post_bug5fix_baseline_*.json in golden/ for the historical,
+pre-split captures of the interpolation-specific output.
 
 Usage
 -----
@@ -23,7 +29,6 @@ Requires the real `lvarras_aiida` AiiDA profile to be loadable (for
 `load_profile()` at import time in the target module) but performs no
 `.store()` calls anywhere - nothing is written to the database.
 """
-import importlib
 import json
 import os.path
 import sys
@@ -98,14 +103,8 @@ class _FakeDFTNode:
 FIXTURES_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "fixtures")
 
 
-def build_fixture(variant="remote"):
-    """One fixed, representative set of synthetic inputs (same every run).
-
-    `variant` selects which of the two mutually-exclusive GW-reference
-    branches is exercised: "remote" (remote_gw_reference_folder) or "local"
-    (local_gw_reference_folder) - see __prepare_inputs_G0W0interpolation.
-    """
-    assert variant in ("remote", "local")
+def build_fixture():
+    """One fixed, representative set of synthetic inputs (same every run)."""
     structure = orm.StructureData(cell=[[4.5, 0, 0], [0, 4.5, 0], [0, 0, 4.5]])
     structure.append_atom(position=(0, 0, 0), symbols="Ga")
     structure.append_atom(position=(2.25, 2.25, 2.25), symbols="N")
@@ -124,24 +123,6 @@ def build_fixture(variant="remote"):
 
     dft_node = _FakeDFTNode()
     dft_node.outputs.bands = bands
-
-    path_default_script = os.path.join(
-        importlib.import_module("aiida_vasp").__path__[0],
-        "workchains/vMBPT/utils_interpolationclasses.v2.py",
-    )
-
-    ns_interpolation = {
-        "use_interpolation": orm.Bool(True),
-        "nbandsgw_to_interpolate": orm.Int(8),
-        "python_sourcing_env_command": orm.Str("source activate aiida-vasp"),
-        "local_initscript": orm.SinglefileData(file=path_default_script),
-    }
-    if variant == "remote":
-        ns_interpolation["remote_gw_reference_folder"] = _FakeRemoteFolder("/remote/scratch/gw_ref")
-        ns_interpolation["gw_reference_filename"] = orm.Str("OUTCAR")
-    else:
-        ns_interpolation["local_gw_reference_folder"] = orm.Str(FIXTURES_DIR)
-        ns_interpolation["gw_reference_filename"] = orm.Str("dummy_OUTCAR.3")
 
     fake_self = _Harness()
     fake_self.inputs = AttributeDict(
@@ -168,9 +149,9 @@ def build_fixture(variant="remote"):
                     "screening_parameter": orm.Float(0.2),
                     "G0W0_gap": orm.Float(3.5),
                     "optical_energy_window": orm.Float(3.0),
+                    "use_scissor": orm.Bool(False),
                 }
             ),
-            "ns_interpolation": AttributeDict(ns_interpolation),
             "ns_option": AttributeDict(
                 {
                     "copy_result_locally": orm.Bool(True),
@@ -223,17 +204,15 @@ def to_jsonable(obj):
     return repr(obj)
 
 
-def run_harness(variant="remote"):
-    fake_self = build_fixture(variant=variant)
+def run_harness():
+    fake_self = build_fixture()
 
     m_dft = _get_mangled("prepare_inputs_DFT")
     m_mbse_base = _get_mangled("prepare_inputs_mBSE_base")
-    m_interp = _get_mangled("prepare_inputs_G0W0interpolation")
     m_incar = _get_mangled("add_inputs_mBSE_incar")
 
     out_dft = m_dft(fake_self)
     out_mbse = m_mbse_base(fake_self)
-    out_mbse = m_interp(fake_self, out_mbse)
     out_mbse = m_incar(fake_self, out_mbse)
 
     return {
@@ -243,16 +222,15 @@ def run_harness(variant="remote"):
 
 
 def main():
-    if len(sys.argv) not in (2, 3):
-        print(f"Usage: {sys.argv[0]} <output_json_path> [remote|local]", file=sys.stderr)
+    if len(sys.argv) != 2:
+        print(f"Usage: {sys.argv[0]} <output_json_path>", file=sys.stderr)
         sys.exit(1)
     out_path = sys.argv[1]
-    variant = sys.argv[2] if len(sys.argv) == 3 else "remote"
-    result = run_harness(variant=variant)
+    result = run_harness()
     os.makedirs(os.path.dirname(out_path) or ".", exist_ok=True)
     with open(out_path, "w", encoding="utf-8") as fhandle:
         json.dump(result, fhandle, indent=2, sort_keys=True)
-    print(f"Wrote {out_path} (variant={variant})")
+    print(f"Wrote {out_path}")
 
 
 if __name__ == "__main__":

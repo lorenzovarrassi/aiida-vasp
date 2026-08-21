@@ -1,10 +1,9 @@
-import importlib
 import numpy as np
 from copy import deepcopy
 from aiida import orm
 import os.path
 from enum import Enum, auto
-from aiida.orm import Code, Int, Float, Str, Dict, Bool , List , RemoteData , ArrayData , BandsData , XyData , SinglefileData
+from aiida.orm import Code, Int, Float, Str, Dict, Bool , List , RemoteData , ArrayData , BandsData , XyData
 from aiida.plugins import DataFactory, WorkflowFactory
 from aiida.engine  import WorkChain, calcfunction , ToContext , append_ , submit, while_ , if_ , submit, run
 from aiida_vasp.utils.workchains  import prepare_process_inputs
@@ -61,26 +60,19 @@ class VaspmBSEInitScriptWorkChain(WorkChain):
         ibse                   : Int (optional - default=2)
         kpar                   : Int (optional - default=1 / from gpu if used)
     
-    Namespace ns_interpolation:
-        G0W0_reference              : RemoteData     (REQUIRED)
-        nbandsgw_to_interpolate     : Int            (optional but critical if interpolation used)
-                Number of GW bands used for interpolation.
-        local_initscript            : SinglefileData (optional)
-                Python script copied into the remote sandbox as 'script_init.py'.
-                Executed BEFORE VASP to perform interpolation of GW corrections.
-        gw_reference_filename      : Str
-                Filename ofhte OUTCAR inside either FolderData or RemoteData that 
-                will be passed to the interpolation script.
-        [ GW reference source (two mutually exclusive branches)] 
-        remote_gw_reference_folder    : RemoteData (optional)
-                Path on the FODLER ON THE REMOTE COMPUTER where the GW results reside.
-                This folder must already contain the OUTCAR / vasprun used for QP data.
-                The interpolation script will read them from that remote folder without copying.
-        local_gw_reference_folder     : Str (optional)
-                Absolute path on LOCAL computer (where the AiiDA daemon runs) containing 
-                OUTCAR / vasprun. These files will be copied into the remote sandbox 
-                before execution and passed to the interpolation from that.
-  
+    Note on QP correction: this workchain no longer performs WAVECAR/GW
+    interpolation itself - it consumes whatever restart_folder RemoteData it
+    is given for the mBSE step (already QP-corrected upstream, or not) via
+    the generic prepend-script mechanism exposed from VaspInitScriptWorkChain
+    (local_init_script / local_files_to_copy_to_remote_submission_folder /
+    init_script_call_command, all optional pass-through inputs). If no
+    external QP correction is supplied, set ns_BSE.use_scissor=True to apply
+    an internal SCISSOR approximation instead (see _determine_BSE_parameters).
+    (Formerly this was driven by an ns_interpolation.* input namespace with
+    its own local/remote GW-reference-folder branches and an
+    __prepare_inputs_G0W0interpolation step; that logic moved out - see
+    handoff.md's decisions log.)
+
     Namespace ns_BSE:
         static_inverse_diel       : Float  (REQUIRED)
         screening_parameter       : Float  (REQUIRED)
@@ -104,8 +96,9 @@ class VaspmBSEInitScriptWorkChain(WorkChain):
         - Stores output remote_folder, bands, kpoints, structure
         - Returns ToContext(finishedWC_DFTgr_NSP)
    
-    Step 2: Interpolate GW corrections into WAVECAR OR apply a SCISSOR
-            using a python script placed into the remote job folder (`script_init.py`)
+    Step 2: Consume whatever restart_folder is produced by DFT (already
+            QP-corrected upstream, or not) OR apply a SCISSOR approximation
+            if ns_BSE.use_scissor is set
     Step 3: Launch a BSE calculation with model screening parameters
               (AEXX, HFSCREEN) and with NBANDSV/NBANDSO built automatically
               via _determine_BSE_parameters()
@@ -113,11 +106,6 @@ class VaspmBSEInitScriptWorkChain(WorkChain):
         - Builds inputs for VaspInitScriptWorkChain
         - Defines parser settings (retrieve BSEFATBAND, vaspout.h5)
         - Determines restart_folder from the DFT step
-        - Prepares interpolation arguments:
-             The filename of the GW files (OUTCAR/WAVECAR) which will be used as reference
-             The path where those filename reside (either locally or remotely)
-             nbandsgw_dense : number of bands to interpolate QP corrections and apply
-             interpolation_script (default: script_init.py)
         - Builds INCAR for BSE run:
              algo=TDHF, lmodelhf, nbseeig, ismear, prec
         - Fills AEXX, HFSCREEN
@@ -126,8 +114,7 @@ class VaspmBSEInitScriptWorkChain(WorkChain):
                 required to include all IPA transitions below optical_energy_window
              2. DFT bands are used; if G0W0_gap is passed a scissor is applied to
                 DFT bands before determining all IPA transitions
-        - Injects SCISSOR if interpolation script is disabled; require G0W0_gap
-        - Passes prepend_text with python script call
+        - Injects SCISSOR if ns_BSE.use_scissor is set; requires G0W0_gap
         - Submits workchain
       
     Step 4: Retrieve dielectric function and optical transitions and copy
@@ -162,24 +149,6 @@ class VaspmBSEInitScriptWorkChain(WorkChain):
             spec.input('ns_parameters.nbseeig'                , valid_type=Int   , required=False , default=lambda: Int(50), help="Number of BSE eigenvectors written to BSEFATBAND.")          
 
 
-            path_interpolationscript_default = os.path.join( importlib.import_module('aiida_vasp').__path__[0] , "workchains/vMBPT/utils_interpolationclasses.v2.py")
-            SFData_default = SinglefileData( file=path_interpolationscript_default ) 
-            spec.input("ns_interpolation.local_initscript"           , valid_type=SinglefileData , required=False , default=lambda:SFData_default ,
-                                                                       help=("A SinglefileData containing the interpolation python script - Copied to remote sandbox as script_init.py"
-                                                                        +" - Default provided via SFData_default"))
-            spec.input("ns_interpolation.use_interpolation"          , valid_type=Bool       , required=True , default=lambda:Bool(True) )
-            spec.input("ns_interpolation.nbandsgw_to_interpolate"    , valid_type=Int        , required=False )
-            spec.input("ns_interpolation.remote_gw_reference_folder" , valid_type=RemoteData , required=False ,
-                                                                       help=("The GW OUTCAR / vasprun.xml references are inside a single folder on the remote machine " 
-                                                                         +"- the RemoteData arguments points to that existing folder - Interpolation script will read from that location.") )
-            spec.input("ns_interpolation.local_gw_reference_folder"  , valid_type=Str        , required=False ,
-                                                                       help=("The GW OUTCAR / vasprun.xml references are inside a single folder on the local machine - the Str argument is "
-                                                                          +"the absolute path of that existing folder - The file will be copied into the remote sandbox folder.") )
-            spec.input("ns_interpolation.gw_reference_filename"      , valid_type=Str        , required=False  ,  
-                                                                       help="The filename inside the RemoteData or FolderData that will be supplied to the interpolation script as reference for the QP corrections (must be an OUTCAR of a G0W0 calculation).")
-            spec.input("ns_interpolation.python_sourcing_env_command", valid_type=Str        , required=True  , default=lambda:Str("source activate aiida-vasp"),
-                                                                       help="Command which will be added to the jobscript - should load a venv/conda env which contains numpy - scipy - pymatgen - spglib")
-            
             spec.input('ns_optimization.lreal'                , valid_type=Bool  , required=False , default=lambda: Bool(True) , help='lreal value to be used in all calculations. If True sets to Auto, otherwise False') 
             spec.input("ns_optimization.set_PRECFOCK_to_Fast" , valid_type=Bool  , required=False , default=lambda: Bool(True) , help=('The use of Precfock=Fast depends on the cell dimension, Precfock=Fast is set if volume>350'
                                                                                                                                         'If True set PRECFOCK=Fast in the mBSE calculation; if False, always set it to default.') )
@@ -191,8 +160,12 @@ class VaspmBSEInitScriptWorkChain(WorkChain):
             spec.input("ns_BSE.OMEGAMAX"             , valid_type=Float , required=False , help='Required for analytic diagonal screening in mBSE.' )
             spec.input("ns_BSE.NBANDSV"              , valid_type=Int   , required=False , help=('Force NBANDSV value in the INCAR; override the determination of NBANDSV via target energy window.' 
                                                                                                  'NBANDSV/NBANDSO should be passed together; cannot define only one of those two.')        )
-            spec.input("ns_BSE.NBANDSO"              , valid_type=Int   , required=False , help=('Force NBANDSO value in the INCAR; override the determination of NBANDSO via target energy window.' 
+            spec.input("ns_BSE.NBANDSO"              , valid_type=Int   , required=False , help=('Force NBANDSO value in the INCAR; override the determination of NBANDSO via target energy window.'
                                                                                                  'NBANDSV/NBANDSO should be passed together; cannot define only one of those two.')        )
+            spec.input("ns_BSE.use_scissor"          , valid_type=Bool  , required=False , default=lambda: Bool(False),
+                                                                       help=('Apply a SCISSOR approximation (from _determine_BSE_parameters) instead of relying on an '
+                                                                         +'externally QP-corrected restart_folder. Leave False when the restart_folder already carries '
+                                                                         +'QP-corrected eigenvalues (e.g. from an upstream WAVECAR interpolation/GP-prediction step).') )
 
             spec.input("options" , valid_type=Dict , required=True )
             spec.input("extraresources_fallback_options", valid_type=Dict, required=False,
@@ -362,10 +335,7 @@ class VaspmBSEInitScriptWorkChain(WorkChain):
     
         if state == MbseState.MBSE_PENDING:
             inputs = self.__prepare_inputs_mBSE_base()
-    
-            # Add interpolation stage (mutates `inputs`, sets local_initscript, files, options.prepend_text)
-            inputs = self.__prepare_inputs_G0W0interpolation(inputs)
-    
+
             # Add INCAR (mutates `inputs.parameters`)
             inputs = self.__add_inputs_mBSE_incar(inputs)
     
@@ -586,10 +556,10 @@ class VaspmBSEInitScriptWorkChain(WorkChain):
             incar["incar"]["kpar"] = num_GPU_perNode * num_nodes
             self.ctx.log +=  ("\n"+f"     > Optimization: Using a total of {num_GPU_perNode * num_nodes} GPUs : automatically se KPAR to #(total GPUs)")
 
-        #[5.5] BSE scissor if interpolation disabled
-        if not self.inputs.ns_interpolation.use_interpolation.value:
+        #[5.5] BSE scissor, if explicitly requested (no external QP correction supplied)
+        if self.inputs.ns_BSE.use_scissor.value:
             incar["incar"]["scissor"] = BSE_params_estimated["SCISSOR"]
-            self.ctx.log +=  ("\n"+f"     > Override: Interpolation disabled from workchain input, setting SCISSOR to {incar["incar"]["scissor"]}")
+            self.ctx.log +=  ("\n"+f"     > Override: ns_BSE.use_scissor is set, setting SCISSOR to {incar["incar"]["scissor"]}")
         self.report(self.ctx.log)
         
         #[6] parameters regarding HDF5 use
@@ -610,98 +580,7 @@ class VaspmBSEInitScriptWorkChain(WorkChain):
         inputs.parameters = incar
         return inputs
 
-    def __prepare_inputs_G0W0interpolation(self, inputs):
-        """ This functions manages the interpolation related arguments.
-        The interpolation script will be inserted inside the jobscript (via options.prepend_text ) and run just before the VASP executable
-        - The first part of the function manages to copy the script file inside the remote folder where the job will be run 
-        ( and renamed script_init.py ). 
-        Internally it uses the input.settings['ADDITIONAL_LOCAL_COPY_LIST'] or input.settings['ADDITIONAL_REMOTE_COPY_LIST'] 
-        to copy the interpolation script inside the folder on the remote cluster where the calculation will be run.
-        - The second part manages the input to interpolation script.
-        The interpolation stage requires two mandatory argument and one optional:
-        1]path_dense_DFT_toInterp : path to the REMOTE folder with the WAVECAR which will be modified in place by adding
-                                    interpolated QP correction to its eigenvalues (without modifying the orbitals);
-                                    It's used because we want to apply to the current WAVECAR before launching VASP.
-        2]path_sparse_GW :          path on the REMOTE CLUSTER where the folder with GW POSCAR, OUTCAR resides.
-        Thus this second part will set the inputs and the flag to copy the files via 
-          - local_initscript
-          - optional local_files_to_copy_to_remote_submission_folder
-        """
-        flag_use_interp = self.inputs.ns_interpolation.use_interpolation.value
-        flag_has_local  = "local_gw_reference_folder"  in self.inputs.ns_interpolation
-        flag_has_remote = "remote_gw_reference_folder" in self.inputs.ns_interpolation
-
-        #[Preliminary] Initial checks
-        # First for what regards the Branch selection logic; the two branches are mutually excelusive
-        if flag_use_interp and flag_has_local and flag_has_remote:
-            raise ValueError("local_gw_reference_folder and remote_gw_reference_folder are mutually exclusive.")
-
-        #[Preliminary] Creates the required dict
-        args_interpolation = AttributeDict()
-        # Ensure the dynamic namespace exists (even if we don’t use it)
-        if "local_files_to_copy_to_remote_submission_folder" not in inputs:
-            inputs.local_files_to_copy_to_remote_submission_folder = AttributeDict()
-
-
-        #[1]the interpolation script
-        #The workchain _vasp_initscript_workchain is simply a wrapper to Vasp2wInitScriptCalculation.
-        #First thing, 'interpolation_script_remote_filename' is the name of the script inside the remote folder
-        # convention from your CalcJob: local_init_script is staged as script_init.py
-        args_interpolation['interpolation_script_remote_filename']= "script_init.py"
-        #Then the SinglefileData inputs.local_initscript defines the script file on the local machine (i.e. the machine where
-        #AiiDA and this workchain actually runs) which will be copied by the AiIDA-transport inside the remote folder.
-        #self.inputs.ns_interpolation.local_initscript has a default value is the interpolation script
-        #localed in aiida_vasp.workchains.vMBPT.utils_interpolationclasses.v2.py  
-        #We simply pass that; if needed, it could be overriden.
-        inputs.local_init_script = self.inputs.ns_interpolation.local_initscript
-
-        #[1] nbandsgw - 1st argument for aiida_vasp.workchains.vMBPT.utils_interpolationclasses.v2.py  
-        args_interpolation['nbandsgw_to_interpolate'] = (
-                    self.inputs.ns_interpolation.nbandsgw_to_interpolate.value
-                    if "nbandsgw_to_interpolate" in self.inputs.ns_interpolation else None )
-        
-        #[2]  #BRANCH A – LOCAL GW FOLDER (preferred)
-        # Create a dynamic namespace: each key becomes a remote filename
-        inputs.local_SinglefileData_tocopy_toremote = AttributeDict()
-
-        if flag_use_interp and flag_has_local : 
-            #The interpolation script extracts the QP correction from the OUTCAR of a G0W0 run (conventionally on a sparse k-mesh)
-            #sparse_local_filename  is the name of the file on the local machine (i.e. the machine where
-            #AiiDA and this workchain actually runs)
-            
-            local_gw_reference_file_name = ( self.inputs.ns_interpolation.gw_reference_filename.value
-                                            if "gw_reference_filename" in self.inputs.ns_interpolation else 'OUTCAR.3'  )
-            local_gw_reference_file_path  = self.inputs.ns_interpolation.local_gw_reference_folder.value
-            local_gw_reference_file_abspath = os.path.join(local_gw_reference_file_path , local_gw_reference_file_name )
-            #This to sanitize - and will be the name that the file has in the remote folder
-            remote_file_name = "CopiedFromLocal_" + local_gw_reference_file_name.replace(".", "_")
-            #Initializing a SinglefileData validates the existence of the file, this we do not need to do manually
-            inputs.local_files_to_copy_to_remote_submission_folder[remote_file_name] = SinglefileData(file=local_gw_reference_file_abspath)
-            args_interpolation['path_sparse_GW_remote_file_path'] = "./"
-            args_interpolation['path_sparse_GW_remote_file_name'] = remote_file_name
-
-        elif flag_use_interp and flag_has_remote:
-            remote_folder_node    = self.inputs.ns_interpolation.remote_gw_reference_folder
-            args_interpolation['path_sparse_GW_remote_file_path'] = remote_folder_node.get_remote_path()
-            args_interpolation['path_sparse_GW_remote_file_name']  = ( self.inputs.ns_interpolation.gw_reference_filename.value
-                                                                       if "gw_reference_filename" in self.inputs.ns_interpolation else 'OUTCAR'  )
-
-        #The command TO RUN THE INTERPOLATION SCRIPT is added to inputs.options.prepend_text = str_prepend_command
-        if flag_use_interp :
-            sourcing_cmd = str(self.inputs.ns_interpolation.python_sourcing_env_command.value or "").strip()
-            str_launch_command =( f"{sourcing_cmd}"+"\n"
-                                   "python3 "                   +str(args_interpolation['interpolation_script_remote_filename'])+"  "
-                                   "--path_sparse_GW "          +str(args_interpolation['path_sparse_GW_remote_file_path'])     +"  "
-                                   "--sparse_GW_filename "      +str(args_interpolation['path_sparse_GW_remote_file_name'])     +"  "
-                                   "--path_dense_DFT_toInterp " +str("./")                                                      +"  "
-                                   "--nbandsgw_dense "          +str(args_interpolation['nbandsgw_to_interpolate']) ) 
-        else: str_launch_command = ""
-        inputs.init_script_call_command = str_launch_command
-        # Optional: store for later reporting/debugging
-        self.ctx.args_interpolation = args_interpolation
-        return inputs      
-        
-    def elaborate_results(self):  
+    def elaborate_results(self):
         """Collect outputs from the final mBSE workchain and optionally copy files locally."""
         mbse_node = self._last_wc_node("MBSE")
         if mbse_node is None or not mbse_node.is_finished_ok:
@@ -766,8 +645,11 @@ class VaspmBSEInitScriptWorkChain(WorkChain):
                scissor  =  _get_incar_par(wc_node.inputs.parameters, "scissor")
                aexx     =  _get_incar_par(wc_node.inputs.parameters, "aexx")
                hfscreen =  _get_incar_par(wc_node.inputs.parameters, "hfscreen")
-               prepend_text = "\n"+wc_node.inputs.init_script_call_command.value
-               prepend_text = prepend_text.replace("\n","\n       ")
+               try:
+                   prepend_text = "\n"+wc_node.inputs.init_script_call_command.value
+                   prepend_text = prepend_text.replace("\n","\n       ")
+               except Exception:
+                   prepend_text = ""
            # --- kpoints ---
            mesh = offset = nkpts = None
            try:

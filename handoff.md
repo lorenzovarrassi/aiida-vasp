@@ -32,11 +32,11 @@ below, used throughout every phase.
   `input_magnetic_moment_tomagmom` from `utils_helpers_extrapolation.py`).
   `VaspmBSEInitScriptWorkChain` is slimmed to only consume a `restart_folder`
   RemoteData - it no longer builds interpolation `prepend_text` itself.
-- **aiida-vasp-gwconv**: convergence templates + master orchestrators
-  (`VaspmBSEConvergenceTemplateWorkChain` + 2 children,
+- **aiida-vasp-gwconv** *(done, Phase 2)*: convergence templates + master
+  orchestrators (`VaspmBSEConvergenceTemplateWorkChain` + 2 children,
   `VaspmBSECompleteWorkChain`, `VaspG0W0KptsConvWorkChain`,
   `VaspG0W0BasisExtrWorkChain`, `VaspG0W0CompleteWorkChain`) + the
-  extrapolation calcfunctions.
+  extrapolation calcfunctions + `wkc_Wannier` (Wannierization, fixed+kept).
 - **aiida-vasp-qpcorrection**: `GPModelData` (orm.Data, mirrors
   `ArchiveData`'s store()-override pattern), `WavecarQPModificationCalculation`
   (CalcJob, mirrors `VaspCalcBase`/`remote_copy_restart_folder`, mutually
@@ -143,11 +143,14 @@ below, used throughout every phase.
    `VaspCalculation` via `from aiida_vasp.calcs.vasp2wInitScript import
    VaspCalculation` (transitive re-export) instead of `from
    aiida_vasp.calcs.vasp import VaspCalculation`. Fixed the import.
-3. `workchain_G0W0_Wannierization.py` has a broken import (`from
-   workchain_BasisExtrapolation import input_magnetic_moment_tomagmom` - no
-   such module; real one is `utils_helpers_extrapolation.py`) and is
-   otherwise unreferenced anywhere. Fix-and-move-to-gwconv or delete - your
-   call at Phase 2 execution time (intent not recoverable from code).
+3. **[Fixed, moved to gwconv `2d9933f`]** `workchain_G0W0_Wannierization.py`
+   had a broken import (`from workchain_BasisExtrapolation import
+   input_magnetic_moment_tomagmom` - no such module; real one is
+   `utils_helpers_extrapolation.py`, and post-split lives in aiida-vasp).
+   User's explicit call: fix and move to gwconv rather than delete (it's a
+   real, standalone DFT+Wannier90 workchain, just unwired). Fixed the import
+   to `aiida_vasp.workchains.vMBPT.utils_helpers_extrapolation` while
+   moving; registered as `vasp.gw.wannierization`.
 4. **[Fixed, `728befbe`]** Deleted `utils_calcfunctions.py` (dead duplicate
    of `utils_helpers_extrapolation.py`, unreferenced anywhere).
 5. **[Fixed, `bab6cd50`]** **[Found during Phase-0 harness build]**
@@ -252,9 +255,26 @@ see Open items.
       `__all__`/star-import bugs found along the way). None of the 7 real
       launch scripts needed import updates (none go through
       `workchains/__init__.py` - confirmed by inspection).
-- [ ] **Phase 2** (aiida-vasp-gwconv): move bucket-B files + extrapolation
-      calcfunctions; resolve bug 3 (Wannierization); register entry points;
-      update the 5 affected launch scripts; verify installs + imports.
+- [x] **Phase 2** (aiida-vasp-gwconv): moved bucket-B files + extrapolation
+      calcfunctions (aiida-vasp side: `919c4b57`; gwconv side: `2d9933f`).
+      Bug 3 resolved (fixed + moved, see above). Registered 8
+      `aiida.workflows` entry points (`vasp.gw.mbse_convergence_template`,
+      `vasp.gw.mbse_kpts_conv`, `vasp.gw.mbse_nbands_conv`,
+      `vasp.gw.mbse_complete`, `vasp.gw.g0w0_kpts_conv`,
+      `vasp.gw.g0w0_basis_extr`, `vasp.gw.g0w0_complete`,
+      `vasp.gw.wannierization`) - all verified via `verdi plugin list` and
+      `.spec()` build. Updated all 6 affected launch scripts under
+      `AiiDALAB_Container/AiiDA_SetupScripts/` (one more than the plan's
+      count of 5 - `submit_workchain_mBSEinterpolation_kptsConv.py` was
+      also affected) - **these live in a separate, much larger outer git
+      repo (root `09-Project-DBMBPT_ML`, not this worktree) and were left
+      as uncommitted edits there pending the user's explicit sign-off**,
+      per git safety practice of not committing in a repo outside what was
+      asked without confirmation. Verified: both packages import cleanly,
+      `from ... import *` succeeds on both, all 8 new entry points load
+      and build `.spec()`, all 6 launch scripts' new import targets
+      resolve, golden harness output unchanged (this phase touches nothing
+      it exercises).
 - [ ] **Phase 3** (aiida-vasp-qpcorrection): extract interpolation numerics
       (no behavior change); build/capture the OUTCAR+WAVECAR golden fixture;
       `GPModelData`; `WavecarQPModificationCalculation` (verify against
@@ -287,8 +307,11 @@ see Open items.
 
 ## Open items deferred
 
-- Wannierization (`workchain_G0W0_Wannierization.py`) keep-and-fix vs delete
-  - decide at Phase 2 execution time.
+- **[Resolved in Phase 2]** Wannierization kept, fixed, and moved to gwconv
+  - see bug 3 above.
+- **New from Phase 2**: get the user's sign-off on the 6 launch-script edits
+  under `AiiDALAB_Container/AiiDA_SetupScripts/` (separate outer repo) and
+  commit them there if approved - left uncommitted intentionally.
 - GP model adapter API - blocked on `Models_Base` project stabilizing.
 - OUTCAR+WAVECAR reference fixture for Phase 3's numerical golden check -
   check `test_data/` for something reusable before creating one from

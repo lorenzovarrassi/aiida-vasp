@@ -721,6 +721,62 @@ conclusion for the input-harness does not automatically carry over to it.
         script (`submit_workchain_mBSEinterpolation.py`) still needs
         updating to use the new WorkChains once they're actually usable
         end-to-end.
+      - [~] **Golden-fixture check, partial (2026-08-21)** - no GW OUTCAR
+        exists anywhere in either repo's test data (checked both
+        `aiida-vasp-dev` and `aiida-vasp-dev-refactor`'s `tests/test_data/`),
+        so the full OUTCAR+WAVECAR interpolation fixture from item 2 above
+        is still not built. Two REAL (non-synthetic) checks were possible
+        with what already exists, using `tests/test_data/test_relax_wc/out/`
+        (a real, non-GW VASP run with a real ~4.4MB WAVECAR, Si2, 10x10x10
+        Gamma mesh, 8 symmetry ops, 171 IBZ k-points) - one very
+        reassuring, one a genuine open concern:
+        - **`wavefun_correct/run.py`'s WAVECAR read/write: strongly
+          verified.** Parsed the real WAVECAR with the ported
+          `parse_wavecar` and cross-checked every eigenvalue/occupation/
+          k-point against pymatgen's own independent `Wavecar` reader -
+          exact match (max abs diff 0.0). A zero-correction read-modify-
+          write round trip reproduced the original file **byte-for-byte**.
+          Applying a random per-band correction and writing it back
+          produced a file whose corrected eigenvalues, unchanged
+          occupations, and unchanged k-points pymatgen's independent
+          reader also confirms exactly. This is the trickiest, most
+          fragile part of the whole extraction (hand-rolled binary format)
+          and it held up completely under real-data, independently
+          cross-checked testing.
+        - **`interpolation/run.py`'s spglib IBZ->BZ reconstruction: a real
+          , unresolved discrepancy.** Feeding this real fixture's actual
+          structure + [10,10,10] mesh + the WAVECAR's own real IBZ
+          k-points into `determine_ibz_to_edged_bz` fails the ported
+          consistency assert: spglib's own reconstructed IBZ set (171
+          points, same count) is NOT the same *set* of points as the ones
+          VASP itself wrote out, even though both independently agree the
+          structure has exactly 8 symmetry operations (VASP's own
+          `INISYM`/`GETGRP` log says so, and spglib's spacegroup lookup
+          agrees: `Imma`, order 8). Ruled out `is_time_reversal` mismatch -
+          this spglib version already defaults `is_time_reversal=True`,
+          same as assumed. Most likely explanation (not yet confirmed):
+          VASP and spglib choosing different periodic-image representatives
+          for k-points sitting exactly on a Brillouin-zone boundary
+          (mesh=10 is even, so several IBZ points land exactly on the ±0.5
+          face) - i.e. a boundary-representative convention mismatch, not a
+          symmetry-detection mismatch. **This assert is ported verbatim
+          from the original `_determine_BZ_IBZ_grid` (v2.py:684-701) - it
+          is not a bug introduced by this extraction, but a pre-existing
+          assumption in the original script that had (as far as this
+          session could tell) never actually been exercised against a
+          low-symmetry, even-mesh real system before.** The one available
+          real fixture happens to be exactly that (an intentionally
+          slightly-distorted relaxation test structure, 8 ops, mesh=10) -
+          not necessarily representative of a typical GW+interpolation
+          production system (which would normally use a fully-relaxed,
+          higher-symmetry structure). Needs a dedicated follow-up: either
+          (a) find/build a higher-symmetry, odd-mesh real fixture and
+          confirm the assert passes there (which would confine this to an
+          edge case), or (b) work out the actual boundary-convention
+          mismatch and fix `determine_ibz_to_edged_bz` to tolerate it
+          (e.g. compare k-points modulo 1, not via exact tolerance
+          equality, before asserting). Do not trust the interpolation path
+          for a real run until one of these lands.
       - [x] **Post-scaffolding bug pass (2026-08-21)** - a dedicated review
         pass over the qpcorrection scaffolding (not caught by the FSM golden
         harness, since that harness never constructs real AiiDA input

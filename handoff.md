@@ -28,11 +28,38 @@ Branch: `refactor/split-vmbpt` (worktree at `../aiida-vasp-dev-refactor`, off
   this is fixed.** The WAVECAR read/write half
   (`wavefun_correct/run.py`) is unaffected and separately verified against
   real data - see the "Golden-fixture check" entry in the Phase 3 checklist
-  below for full detail. Candidate fixes, neither attempted yet: (a) find/
-  build a higher-symmetry, odd-mesh real fixture to confirm this is an edge
-  case, or (b) make the consistency check tolerant of the boundary
-  convention (e.g. compare k-points modulo 1 instead of exact tolerance
-  equality) before asserting.
+  below for full detail. Candidate fixes: (a) find/build a higher-symmetry,
+  odd-mesh real fixture to confirm this is an edge case, or (b) make the
+  consistency check tolerant of the boundary convention (e.g. compare
+  k-points modulo 1 instead of exact tolerance equality) before asserting.
+  **Update (2026-08-21, later same day): hypothesis (a) confirmed on a
+  second real fixture.** User pointed at a real, previously-untried GW
+  reference run: `01_NewMats/query_20251210/248-DD_AcOF-F43m-mp36526/
+  2-Dense/2.2-GW/` (cubic `F-43m` #216, 6x6x6 mesh, 16 IBZ k-points, 32
+  QP-corrected bands - a real production-style GW calculation, much
+  higher-symmetry than `test_relax_wc`'s deliberately-distorted `Imma`
+  test structure). Fed this real structure+mesh+IBZ-kpoints into
+  `determine_ibz_to_edged_bz`: **the consistency assert passed cleanly**
+  (`bz_kpts_modified` came out shape `(343, 3)`, no exception). So the
+  failure is not universal - it reproduces on the low-symmetry, even-mesh
+  `test_relax_wc` fixture but not on this higher-symmetry, also-even-mesh
+  (6x6x6) one, which weakens an "any even mesh triggers it" reading and
+  points more specifically at the *combination* of low symmetry (order 8)
+  + boundary k-points, not mesh parity alone. Still not fixed - a real
+  low-symmetry production system could still hit this - but confirms the
+  interpolation path is not broken in general, just unproven on a case
+  shaped like the one that failed. Fix (b) (tolerant boundary-point
+  comparison) is still the recommended next step, now with concrete
+  evidence a real low-symmetry system could trigger this in production,
+  not just a theoretical risk.
+  **Also new from this fixture**: it is a real GW OUTCAR (previously none
+  existed in either repo's test_data) - used to verify the new
+  `Helpers_setup_Workchain._build_bandsdata_qpcorrection_from_outcar`
+  helper (see Phase 3 checklist below) bit-exact against hand-checked raw
+  OUTCAR text. No dense-mesh DFT sibling run exists next to it in this
+  material's folder tree, so it does not close the still-open
+  OUTCAR+WAVECAR sparse-to-dense interpolation numerical fixture (Phase 3
+  checklist item), only the OUTCAR-parsing half.
 
 ## Goal
 
@@ -914,6 +941,67 @@ conclusion for the input-harness does not automatically carry over to it.
           below (the golden fixture), still not started - do not treat
           this extraction as trustworthy for a real physics run until that
           check has been done.
+      - [x] **Last launch script updated + new OUTCAR-QP helper (2026-08-21)**:
+        `AiiDALAB_Container/AiiDA_SetupScripts/submit_workchain_mBSEinterpolation.py`
+        (the one remaining stale script, per Open items) rewritten to use
+        `WorkflowFactory('qpcorrection.qp_interpolation_workchain')`
+        (`VaspQPInterpolationWorkChain`) instead of the old
+        `VaspmBSEInitScriptWorkChain` + `ns_interpolation.*`. Lives in a
+        separate outer git repo (`09-Project-DBMBPT_ML`, not this
+        worktree) - left as an uncommitted edit there, same convention as
+        the Phase 2 launch-script edits (pending user sign-off).
+        - **New helper**: `Helpers_setup_Workchain._build_bandsdata_qpcorrection_from_outcar`
+          (`utils_helpers_setupworkchain.py`) - a scoped port of the
+          original monolithic script's `parse_outcar_spinUnpol`
+          (`utils_interpolationclasses.v2.py:52-200`), needed because that
+          OUTCAR-QP-shift parsing was never carried into the CalcJob split
+          (`QpInterpolationCalculation`'s `bandsdata_g0w0` input expects a
+          pre-built `BandsData`, not a raw OUTCAR path) - closes a real gap
+          only surfaced by actually trying to finish this launch script.
+          Extracts VASP's own `QP shifts <psi_nk| G(iteration)W_0
+          |psi_nk>` section (`E_QP - E_KS` per band/k-point) plus the
+          sparse mesh dims (`generate k-points for:` line) into
+          `(BandsData, KpointsData)`. **Verified against real data**: user
+          pointed at a real GW OUTCAR,
+          `01_NewMats/query_20251210/248-DD_AcOF-F43m-mp36526/2-Dense/2.2-GW/`
+          (cubic F-43m, 6x6x6 mesh, 16 IBZ k-points, 32 QP bands) - parsed
+          cleanly (correct shapes, no NaNs), and its first 3 bands at
+          k-point 1 were hand-checked directly against the raw OUTCAR text
+          (`QP-energies - KS-energies`): exact match
+          (-1.7056/-2.9536/-1.773 eV). This is the strongest verification
+          this helper could get without a second independent parser to
+          diff against, and it passed cleanly.
+        - **Same real fixture also used to test the BUG-NOT-YET-FIXED
+          spglib IBZ discrepancy above** - see that section for the
+          result (assert passes on this higher-symmetry structure).
+        - **New design gap surfaced, not fixed here**: `VaspDFTGWWorkChain`'s
+          `'2DFTvo'` and `'3G0W0'` phases share one skip flag
+          (`ns_option.run_2DFTvo_3G0W0`) - there is no way today to run
+          DFTvo (needed for `bandsdata_dft_dense`, the interpolation
+          target) while skipping the actual dense-mesh G0W0 run. The
+          original monolithic `VaspmBSEInitScriptWorkChain` never ran
+          G0W0 itself at all - it only ever interpolated from an external
+          sparse reference - so this is a real behavior change: the new
+          launch script now also runs a real, redundant dense G0W0 job
+          alongside the interpolation-based correction. Documented inline
+          in the script and here rather than fixed, since decoupling the
+          two phases' skip logic is a `VaspDFTGWWorkChain` (bucket-A) FSM
+          change, with its own regression-verification burden (the
+          control-flow golden harness would need new scenarios) - not a
+          launch-script-level fix. See Known risks below.
+        - Also confirmed the new `VaspQPInterpolationWorkChain` chain
+          needs an actual ground-state DFT (`ns_option.run_1DFTgr=True`)
+          or an externally-supplied `ns_reference.starting_RemoteData` -
+          unlike the old flat workchain, which ran one DFT step directly
+          with no separate "ground state -> restart" split. The rewritten
+          script sets `run_1DFTgr=True`.
+        - Fixed the pre-existing cosmetic `SyntaxWarning` (invalid `\[`
+          escape, noted as "optional, fix opportunistically" under
+          Pre-existing bugs above) in `utils_helpers_setupworkchain.py`
+          while already touching this file for the new helper.
+        - Golden harness re-run after touching this file: unchanged vs.
+          `phase1_post_split_baseline.json` (the new helper isn't
+          exercised by anything the harness's input-building methods call).
 
 ## Known risks & mitigations
 
@@ -921,12 +1009,27 @@ conclusion for the input-harness does not automatically carry over to it.
   aiida-vasp itself - done (`d470bd0d`), verified via the golden harness's
   zero-diff check on everything except the interpolation-specific fields.
 - **Launch scripts now stale until Phase 3**: `example_launch_mBSE_complete.py`
-  and all `submit_workchain_mBSEinterpolation*.py` scripts (3 of them) will
-  fail at input-validation time if run today, since they build an
-  `ns_interpolation` namespace that no longer exists on
+  and the two `submit_workchain_mBSEinterpolation_master*.py` scripts (they
+  go through `VaspmBSECompleteWorkChain`, still bucket B/unrelated to this
+  fix) will still fail at input-validation time if run today, since they
+  build an `ns_interpolation` namespace that no longer exists on
   `VaspmBSEInitScriptWorkChain` (or, transitively, on
-  `VaspmBSECompleteWorkChain`). This is expected and deferred to Phase 3's
-  `VaspQPCorrectedWorkChain` - do not "fix" these scripts before then.
+  `VaspmBSECompleteWorkChain`). **[Resolved]** the third one,
+  `submit_workchain_mBSEinterpolation.py` (the standalone, non-`_master`
+  one) - rewritten to use `VaspQPInterpolationWorkChain`, see Phase 3
+  checklist's "Last launch script updated" entry above.
+- **DFTvo/G0W0 skip-flag coupling (new, 2026-08-21)**: `VaspDFTGWWorkChain`'s
+  `'2DFTvo'` and `'3G0W0'` phases share a single skip flag
+  (`ns_option.run_2DFTvo_3G0W0`) - there is no way to run DFTvo (needed for
+  the interpolation phase's dense-mesh target/resize reference) while
+  skipping the actual dense G0W0 run. This means `VaspQPInterpolationWorkChain`
+  cannot yet reproduce the original monolithic workflow's actual point
+  (avoid ever running a dense G0W0, rely purely on interpolation from a
+  cheap sparse reference) - today it always also runs a real, redundant
+  dense G0W0 alongside the interpolation. Not fixed - would require
+  decoupling the two phases' `skip_if` in the bucket-A FSM (its own
+  regression-verification burden via the control-flow golden harness).
+  Surfaced while finishing the last launch script, not by inspection alone.
 - **Interpolation-to-CalcJob migration (Phase 3)** is the highest-risk step
   overall - mitigated by capturing a real numerical (patched-eigenvalues)
   golden fixture *before* writing the new CalcJob, per the harness section
@@ -955,13 +1058,23 @@ conclusion for the input-harness does not automatically carry over to it.
 
 - **[Resolved in Phase 2]** Wannierization kept, fixed, and moved to gwconv
   - see bug 3 above.
-- **New from Phase 2**: get the user's sign-off on the 6 launch-script edits
-  under `AiiDALAB_Container/AiiDA_SetupScripts/` (separate outer repo) and
+- **New from Phase 2/3**: get the user's sign-off on the 7 launch-script edits
+  under `AiiDALAB_Container/AiiDA_SetupScripts/` (separate outer repo, the 6
+  from Phase 2 plus `submit_workchain_mBSEinterpolation.py` from Phase 3) and
   commit them there if approved - left uncommitted intentionally.
 - GP model adapter API - blocked on `Models_Base` project stabilizing.
-- OUTCAR+WAVECAR reference fixture for Phase 3's numerical golden check -
-  check `test_data/` for something reusable before creating one from
-  scratch.
+- OUTCAR+WAVECAR reference fixture for Phase 3's numerical sparse-to-dense
+  golden check - still not found. The real GW OUTCAR at
+  `01_NewMats/query_20251210/248-DD_AcOF-F43m-mp36526/2-Dense/2.2-GW/`
+  (used above to verify the new OUTCAR-QP-shift helper and re-test the
+  spglib IBZ discrepancy) has no dense-mesh DFT sibling run anywhere in its
+  folder tree, so it only closes the OUTCAR-parsing half, not the full
+  sparse->dense interpolation numerical check.
+- **DFTvo/G0W0 skip-flag coupling** (new, see Known risks above) - decouple
+  `VaspDFTGWWorkChain`'s `'2DFTvo'`/`'3G0W0'` skip logic so
+  `VaspQPInterpolationWorkChain` can actually skip the dense G0W0 run (the
+  original point of using interpolation at all), not just append correction
+  phases after a redundant real one.
 - Whether `mock-vasp`/`dryrun-vasp` (`aiida_vasp/commands/`) are worth
   reusing for any part of the harness - inspected during Phase-0 prep
   (`dryrun_vasp.py`): they require an actual `vasp_std` executable and

@@ -463,6 +463,108 @@ class Helpers_setup_Workchain :
         bandsdata.store()
         return bandsdata
 
+    # -------------------------------------------------------------------------
+    #[7.2] Build the sparse-mesh QP-correction BandsData + KpointsData needed by
+    #      aiida-vasp-qpcorrection's VaspQPInterpolationWorkChain (ns_qpcorrection.*)
+    #      from a raw, externally-run (non-AiiDA-tracked) GW OUTCAR.
+    @staticmethod
+    def _build_bandsdata_qpcorrection_from_outcar(local_folder_gw_reference: str,
+                                                  gw_reference_filename_outcar: str = 'OUTCAR.3',
+                                                  ) -> tuple[orm.BandsData, orm.KpointsData]:
+        """
+        Parse the "QP shifts <psi_nk| G(iteration)W_0 |psi_nk>" section of a raw,
+        externally-run (non–spin-polarized) GW OUTCAR and wrap the resulting
+        sparse-mesh QP correction (E_G0W0 - E_DFT, VASP's own "QPC" column) into
+        a stored BandsData, plus a KpointsData carrying the sparse mesh dims read
+        from the same OUTCAR (`generate k-points for:` line).
+
+        Faithful, scoped port of `BandsState_IO.parse_outcar_spinUnpol` (aiida-vasp-
+        dev's `utils_interpolationclasses.v2.py:52-200`) - restricted to exactly
+        what `QpInterpolationCalculation`'s `bandsdata_g0w0`/`kpoints_mesh_sparse`
+        inputs need (the QPC eigenvalue-correction array + IBZ k-points + mesh),
+        dropping the BandsState/structure/misc wrapping the original built around
+        it. Spin-unpolarized only - the original script never had a spin-polarized
+        variant either.
+
+        CAVEAT: not yet verified against a real GW OUTCAR (none exists in either
+        repo's test_data - see handoff.md) - treat as a careful-but-unverified
+        translation until such a fixture-based check has been done, same caveat
+        as `scripts/interpolation/run.py` and `scripts/wavefun_correct/run.py`.
+        """
+        from itertools import islice
+
+        outcar_path = os.path.join(local_folder_gw_reference, gw_reference_filename_outcar)
+        if not os.path.isfile(outcar_path):
+            raise ValueError(f"[_build_bandsdata_qpcorrection_from_outcar] OUTCAR not found: {outcar_path}")
+
+        c_nkpts = None
+        lineidx_starts_gw, lineidx_kpts_ibz = [], []
+        bs_kpts_mesh = None
+        with open(outcar_path, "r") as fobj:
+            for idx, line in enumerate(fobj):
+                if "NKPTS" in line:
+                    c_nkpts = int(line.split()[3])
+                elif "QP shifts <psi_nk| G(iteration)W_0 |psi_nk>" in line:
+                    lineidx_starts_gw.append(idx)
+                elif "generate k-points for:" in line:
+                    bs_kpts_mesh = list(map(int, line.split()[3:6]))
+                elif "Subroutine IBZKPT returns following result" in line:
+                    lineidx_kpts_ibz.append(idx)
+        if c_nkpts is None:
+            raise ValueError(f"Could not find NKPTS in OUTCAR: {outcar_path}")
+        if not lineidx_kpts_ibz:
+            raise ValueError(f"Could not find IBZKPT section in OUTCAR: {outcar_path}")
+        if not lineidx_starts_gw:
+            raise ValueError(
+                f"No 'QP shifts <psi_nk| G(iteration)W_0 |psi_nk>' section found in OUTCAR: {outcar_path} "
+                "- this does not look like a GW OUTCAR."
+            )
+
+        bs_kpts_list = []
+        with open(outcar_path, "r") as fobj:
+            for i, line in enumerate(fobj):
+                if lineidx_kpts_ibz[0] + 6 < i < lineidx_kpts_ibz[0] + c_nkpts + 7:
+                    bs_kpts_list.append(list(map(float, line.split()[:3])))
+        bs_kpts_list = np.array(bs_kpts_list)
+
+        kpts_lines = np.zeros(c_nkpts, dtype=int)
+        lineidx_start_after = lineidx_starts_gw[0]
+        with open(outcar_path, "r") as fobj:
+            for ln, line in enumerate(islice(fobj, lineidx_start_after, None), start=lineidx_start_after):
+                s = line.strip()
+                if not s.startswith("k-point"):
+                    continue
+                parts = s.replace("+", "").split()
+                if len(parts) < 6 or parts[2] != ":":
+                    continue
+                ik = int(parts[1])
+                if 1 <= ik <= c_nkpts:
+                    kpts_lines[ik - 1] = ln
+                    if ik == c_nkpts:
+                        break
+
+        c_nbands_printed = kpts_lines[1] - kpts_lines[0] - 4
+
+        qpc = np.zeros((c_nkpts, c_nbands_printed))
+        for ik in range(c_nkpts):
+            with open(outcar_path, "r") as fobj:
+                for line in islice(fobj, kpts_lines[ik] + 3, kpts_lines[ik] + c_nbands_printed + 3):
+                    ls = line.split()
+                    if len(ls) < 8:
+                        continue
+                    ib = int(ls[0]) - 1
+                    qpc[ik, ib] = float(ls[2]) - float(ls[1])  # E_GW - E_DFT
+
+        bandsdata_qpc = orm.BandsData()
+        bandsdata_qpc.set_kpoints(bs_kpts_list)
+        bandsdata_qpc.set_bands(qpc, units='eV')
+        bandsdata_qpc.store()
+
+        kpoints_mesh_sparse = orm.KpointsData()
+        kpoints_mesh_sparse.set_kpoints_mesh(bs_kpts_mesh)
+
+        return bandsdata_qpc, kpoints_mesh_sparse
+
 
     # -------------------------------------------------------------------------
     #[8] Pretty print
@@ -523,7 +625,7 @@ class Helpers_setup_Workchain :
     
         # ---- POTENTIALS ----
         if "potential_family" in inputs:
-            lines.append("\[POTENTIALS]")
+            lines.append("\n[POTENTIALS]")
             lines.append(f"- family: {Helpers_setup_Workchain._unwrap_aiida(inputs.potential_family)}")
     
         if "potential_mapping" in inputs:

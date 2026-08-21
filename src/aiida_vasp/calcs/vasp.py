@@ -464,6 +464,12 @@ class VaspCalculation(VaspCalcBase):
                 if 'WAVECAR' not in remote_copy_fnames:
                     raise FileNotFoundError(f'Could not find WAVECAR in {remote_folder.get_remote_path()}')
 
+        # Process the vdw_kernel input
+        if 'vdw_kernel' in self.inputs:
+            calcinfo.local_copy_list.append(
+                (self.inputs.vdw_kernel.uuid, self.inputs.vdw_kernel.filename, 'vdw_kernel.bindat')
+            )
+
     def write_incar(self, dst, validate_tags=True):  # pylint: disable=unused-argument
         """
         Write the INCAR.

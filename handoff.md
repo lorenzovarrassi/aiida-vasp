@@ -721,6 +721,45 @@ conclusion for the input-harness does not automatically carry over to it.
         project (unchanged from before); the last launch script
         (`submit_workchain_mBSEinterpolation.py`) still needs updating to
         use the new WorkChains once they're actually usable end-to-end.
+      - [x] **Post-scaffolding bug pass (2026-08-21)** - a dedicated review
+        pass over the qpcorrection scaffolding (not caught by the FSM golden
+        harness, since that harness never constructs real AiiDA input
+        validation) found and fixed 4 real bugs, all now verified via a
+        fresh `WorkflowFactory`/`CalculationFactory`/`DataFactory` spec-build
+        check:
+        1. **Missing `metadata.options.resources`/`metadata.computer` for
+           the '4correction'/'5patch' CalcJob phases**, in both
+           `qp_interpolation_workchain.py` and `qp_gp_workchain.py`. These
+           two ports are unconditionally required by AiiDA's `CalcJob`
+           (resources always; computer whenever the Code has no bound
+           computer, true for every `PortableCode` here) - phases 1-3 get
+           them for free via `expose_inputs(WorkflowFactory('vasp.vasp'))`,
+           but phases 4/5 had no such plumbing at all, so any real run would
+           have hard-failed the moment `execute_step` tried to submit phase
+           '4correction'. Fixed by exposing just the `metadata` namespace of
+           each of the 3 new CalcJobs under dedicated `ns_correction_step`/
+           `ns_patch_step` namespaces (mirrors how phases 1-3 already get
+           their metadata/options from the user), and building each phase's
+           `inputs` dict from that exposed namespace plus the
+           computed/physics-specific keys.
+        2. **`WavefunEigenCorrectCalculation`'s `remote_copy_list`** used
+           `self.node.computer.uuid` as the copy's source computer without
+           checking it actually matches `original_folder.computer` - unlike
+           `VaspCalcBase.remote_copy_restart_folder` (the pattern it claims
+           to mirror), which raises `ValidationError` in exactly this case.
+           Since a `PortableCode` has no bound computer, nothing stopped a
+           caller from submitting with `metadata.computer` pointing at a
+           different machine than the WAVECAR's `original_folder`, which
+           would have failed confusingly (wrong path on the wrong machine)
+           instead of failing clearly. Fixed by adding the same explicit
+           `computer.pk` equality check + `ValidationError`.
+        3. **`gp_model` input typed as generic `orm.Data`** instead of
+           `GPModelData`, in both `QpGPPredictionCalculation.define()` and
+           `VaspQPGPCorrectionWorkChain.define()` - AiiDA's own validation
+           would have accepted any Data node, only failing later with a raw
+           `AttributeError` deep inside `prepare_for_submission` instead of
+           a clear input-validation error. Fixed by importing and using
+           `GPModelData` as the `valid_type` in both places.
 
 ## Known risks & mitigations
 

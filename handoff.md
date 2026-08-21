@@ -702,25 +702,25 @@ conclusion for the input-harness does not automatically carry over to it.
           directly (confirmed the bundled `run.sh`/`run.py` files are picked
           up correctly) without storing it, consistent with the "no writes"
           convention followed throughout this whole refactor.
-      - [ ] **Not yet started - the two substantial remaining pieces**:
-        1. **Interpolation numerics extraction**: pull the actual WAVECAR-
-           patching/interpolation math out of aiida-vasp-dev's
-           `utils_interpolationclasses.v2.py` (1458 lines; v1/v3/v4 are dead
-           history, confirmed not migrated) into the three placeholder
-           scripts above. This is real, careful, domain-specific physics
-           code motion deserving its own dedicated pass - not attempted yet.
-        2. **OUTCAR+WAVECAR numerical golden fixture**: locate or build the
-           minimal reference case, capture the current (pre-CalcJob)
-           mechanism's patched-eigenvalues output against it, then verify
-           the extracted numerics reproduce it exactly once (1) is done -
-           per the plan's "deepest, hardest-to-verify part" section.
-        Also still open: registering the entry points' real behavior isn't
-        exercisable until (1)/(2) land (only the plumbing/contract is
-        verified so far, not correctness of any actual interpolation); GP
-        model adapter API still blocked on the separate `Models_Base`
-        project (unchanged from before); the last launch script
-        (`submit_workchain_mBSEinterpolation.py`) still needs updating to
-        use the new WorkChains once they're actually usable end-to-end.
+      - [x] **Interpolation numerics extraction** - done, see the dedicated
+        entry below (2026-08-21). GP prediction's own script
+        (`scripts/gp_predict/run.py`) remains a placeholder - still blocked
+        on the separate `Models_Base` project's API stabilizing, unchanged.
+      - [ ] **Not yet started - the one substantial remaining piece**:
+        **OUTCAR+WAVECAR numerical golden fixture**: locate or build the
+        minimal reference case, capture the current (pre-CalcJob) mechanism's
+        patched-eigenvalues output against it, then verify the extracted
+        numerics reproduce it exactly - per the plan's "deepest,
+        hardest-to-verify part" section. Without this, the extraction above
+        is only smoke-tested (real code, runs correctly on synthetic data),
+        not proven numerically identical to the original script on a real
+        system - treat it as unverified for real physics use until this
+        fixture check lands.
+        Also still open: GP model adapter API still blocked on the separate
+        `Models_Base` project (unchanged from before); the last launch
+        script (`submit_workchain_mBSEinterpolation.py`) still needs
+        updating to use the new WorkChains once they're actually usable
+        end-to-end.
       - [x] **Post-scaffolding bug pass (2026-08-21)** - a dedicated review
         pass over the qpcorrection scaffolding (not caught by the FSM golden
         harness, since that harness never constructs real AiiDA input
@@ -760,6 +760,74 @@ conclusion for the input-harness does not automatically carry over to it.
            `AttributeError` deep inside `prepare_for_submission` instead of
            a clear input-validation error. Fixed by importing and using
            `GPModelData` as the `valid_type` in both places.
+      - [x] **Interpolation numerics extraction (2026-08-21)** - pulled the
+        actual WAVECAR-patching/interpolation math out of aiida-vasp-dev's
+        `utils_interpolationclasses.v2.py` (1458 lines) into the two
+        placeholder scripts, replacing their stub bodies with real,
+        self-contained CLI implementations (each script bundles its own
+        copy of whatever numerics it needs - no code sharing between the
+        two PortableCode sandboxes, since each is uploaded as an
+        independent file tree):
+        - `scripts/interpolation/run.py`: ports
+          `BandsState_InterpOp._determine_BZ_IBZ_grid` (spglib IBZ->BZ
+          reconstruction incl. the boundary "nova" duplication for k+G on
+          zone edges), `_map_bands_fromIBZ_toEdgedBZ`,
+          `_interpolate_bands_fromCoarseToFineEdgedKmesh` (griddata linear/
+          rbf/regular interpolation + nearest-neighbor NaN fallback + delta
+          correction) and `resize_nbandsState_toTargetBand`, operating on
+          plain numpy arrays instead of the original's `BandsState`/
+          `KpointsData` dataclasses.
+        - `scripts/wavefun_correct/run.py`: ports
+          `BandsState_IO.parse_bands_from_WAVECAR` (manual binary read),
+          `BandsState_IO.write_bands_to_WAVECAR` (manual binary rewrite,
+          eigenvalues only) and `BandsState_InterpOp.apply_QP_correction`
+          (the clip/pad band-window logic), kept deliberately
+          engine-agnostic (full clip/pad logic retained, not simplified
+          away) since this same CalcJob is shared by both the
+          interpolation and GP paths.
+        - **A real design gap only became visible from reading the actual
+          numerics**: the original single-file script read the dense
+          target k-mesh (interpolation target) and DFT reference bands
+          directly out of the very WAVECAR it was patching - implicit,
+          since interpolation and WAVECAR-patching were one step. Once
+          split into two CalcJobs, `QpInterpolationCalculation` had no way
+          to know the dense mesh at all. Fixed by adding 3 new required
+          inputs to `QpInterpolationCalculation`: `structure` (for spglib),
+          `kpoints_mesh_sparse` (the coarse mesh's grid dims, needed by
+          spglib - not recoverable from a plain `BandsData`), and
+          `bandsdata_dft_dense` (dense-mesh target k-points + NBANDS).
+          `VaspQPInterpolationWorkChain._build_interpolation_inputs` wires
+          `bandsdata_dft_dense` from the DFTvo phase's own `bands` output
+          (already computed earlier in the same chain - no new user input
+          needed for it) and `structure` from the top-level `structure`
+          input (already exposed via `vasp.vasp`); `kpoints_mesh_sparse` is
+          a genuinely new `ns_qpcorrection.*` user input, since the sparse
+          G0W0 reference is an external/historical calculation, not one
+          run within this chain. Also clarified (doc + help text, no field
+          rename) that `bandsdata_g0w0`/`ns_qpcorrection.bandsdata_g0w0`
+          must be the sparse-mesh **QP correction** (E_G0W0-E_DFT, e.g. a
+          `VaspDFTGWWorkChain.bands_QPc` output run on a coarse mesh), not
+          raw GW eigenvalues - the original script interpolates the
+          correction, not the raw GW energies.
+        - **Verified so far**: both scripts smoke-tested standalone as real
+          subprocess CLI invocations (matching the exact `cmdline_params`
+          each CalcJob builds) - `interpolation/run.py` against a synthetic
+          cubic structure with real spglib IBZ meshes (2x2x2 sparse ->
+          4x4x4 dense, no NaN, correct output shape/resize); `wavefun_correct
+          /run.py` against a synthetic hand-built fake WAVECAR binary
+          (parse -> apply_qp_correction -> write -> re-parse round-trip,
+          eigenvalues/occupations/kpoints all matched exactly). All 5
+          AiiDA process specs (3 CalcJobs + 2 WorkChains) still build
+          cleanly via `CalculationFactory`/`WorkflowFactory` after the new
+          inputs were added.
+        - **NOT verified**: real numerical correctness against an actual
+          VASP OUTCAR+WAVECAR pair - the smoke tests above only prove the
+          *code* runs and is internally self-consistent (shapes, no
+          crashes, round-trips), not that it reproduces the *original
+          script's own* numbers on a real system. That is exactly item 2
+          below (the golden fixture), still not started - do not treat
+          this extraction as trustworthy for a real physics run until that
+          check has been done.
 
 ## Known risks & mitigations
 

@@ -319,14 +319,18 @@ class VaspDFTGWWorkChain(WorkChain):
             self.ctx.phase_status = None   # meaningful only once phase_idx is in range
             self.ctx.terminal = None       # None while iterating; TerminalState once done
 
-            #[2] Workflow state container
+            #[2] Workflow state container. `submitted`/`retries` are seeded
+            # generically from self._PHASES (rather than hardcoded phase-name
+            # literals) specifically so a subclass extending _PHASES with its
+            # own appended phases needs NO initialize() override at all for
+            # this bookkeeping - it's covered here, once, for any phase list.
             self.ctx.state_WC = AttributeDict({
                 'starting_RemoteData': None,   # External restart folder (if provided)
                 'restart_folders': AttributeDict({
                     'for_2DFTvo': None,             # RemoteData with WAVECAR + CHGCAR
-                    'for_3G0W0':  None,         }), # RemoteData with WAVECAR + WAVEDER 
-                'submitted': AttributeDict({'1DFTgr':[], '2DFTvo':[], '3G0W0':[], }),  # Submitted DFTgr/DFTvo/G0W0 workchains
-                'retries':   AttributeDict({'1DFTgr':0, '2DFTvo':0, '3G0W0': 0,   }),     
+                    'for_3G0W0':  None,         }), # RemoteData with WAVECAR + WAVEDER
+                'submitted': AttributeDict({phase.key: [] for phase in self._PHASES}),
+                'retries':   AttributeDict({phase.key: 0  for phase in self._PHASES}),
                 })
 
             #[3] Store optional external starting RemoteData

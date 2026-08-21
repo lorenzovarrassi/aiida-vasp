@@ -1,0 +1,118 @@
+{
+  "dft_inputs": {
+    "clean_workdir": false,
+    "options": {
+      "account": "acct1",
+      "max_wallclock_seconds": 3600,
+      "qos": "normal",
+      "queue_name": "batch",
+      "resources": {
+        "num_machines": 1,
+        "num_mpiprocs_per_machine": 4
+      }
+    },
+    "parameters": {
+      "incar": {
+        "algo": "Normal",
+        "ediff": 1e-07,
+        "encut": 400.0,
+        "ismear": 0,
+        "lcharg": ".TRUE.",
+        "lchargh5": ".FALSE.",
+        "lh5": ".FALSE.",
+        "lmaxmix": 4,
+        "loptics": ".TRUE.",
+        "lwave": ".TRUE.",
+        "lwaveh5": ".FALSE.",
+        "nelm": 200,
+        "prec": "Accurate",
+        "sigma": 0.02
+      }
+    },
+    "settings": {
+      "parser_settings": {
+        "include_node": [
+          "bands",
+          "kpoints",
+          "structure",
+          "maximum_number_pw"
+        ]
+      }
+    }
+  },
+  "mbse_inputs": {
+    "clean_workdir": false,
+    "init_script_call_command": "source activate aiida-vasp\npython3 script_init.py  --path_sparse_GW OUTCAR  --sparse_GW_filename /remote/scratch/gw_ref  --path_dense_DFT_toInterp ./  --nbandsgw_dense 8",
+    "keep_last_workdir": true,
+    "local_SinglefileData_tocopy_toremote": {},
+    "local_files_to_copy_to_remote_submission_folder": {},
+    "local_init_script": "<SinglefileData filename='utils_interpolationclasses.v2.py'>",
+    "options": {
+      "account": "acct1",
+      "max_wallclock_seconds": 3600,
+      "qos": "normal",
+      "queue_name": "batch",
+      "resources": {
+        "num_machines": 1,
+        "num_mpiprocs_per_machine": 4
+      }
+    },
+    "parameters": {
+      "incar": {
+        "aexx": 0.1,
+        "algo": "TDHF",
+        "antires": 0,
+        "encut": 400.0,
+        "hfscreen": 0.2,
+        "ibse": 2,
+        "ismear": 0,
+        "ispin": 1,
+        "lcharg": ".TRUE.",
+        "lchargh5": ".FALSE.",
+        "lh5": ".FALSE.",
+        "lmodelhf": ".TRUE.",
+        "lreal": "Auto",
+        "lwave": ".TRUE.",
+        "lwaveh5": ".FALSE.",
+        "nbands": 10,
+        "nbandso": 5,
+        "nbandsv": 5,
+        "nbseeig": 50,
+        "omegamax": 6.5,
+        "prec": "NORMAL",
+        "precfock": "Fast",
+        "sigma": 0.02
+      }
+    },
+    "restart_folder": "<FakeRemoteFolder /remote/scratch/dft_restart>",
+    "settings": {
+      "ADDITIONAL_REMOTE_COPY_LIST": [
+        "CONTCAR",
+        "CHGCAR",
+        "WAVECAR",
+        "WAVEDER"
+      ],
+      "ADDITIONAL_RETRIEVE_LIST": [
+        "BSEFATBAND",
+        "vaspout.h5",
+        "_aiidasubmit.sh",
+        "POSCAR",
+        "POTCAR",
+        "KPOINTS",
+        "script_init.py",
+        "INCAR",
+        "CopiedFromLocal_OUTCAR_3"
+      ],
+      "parser_settings": {
+        "exclude_node": [
+          "bands"
+        ],
+        "include_node": [
+          "kpoints",
+          "dielectrics",
+          "opticaltransitions"
+        ]
+      }
+    }
+  }
+}

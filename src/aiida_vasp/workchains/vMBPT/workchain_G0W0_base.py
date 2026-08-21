@@ -11,6 +11,8 @@ import warnings
 from sklearn.linear_model import LinearRegression
 from aiida_vasp.utils.workchains import site_magnetization_to_magmom
 from enum import Enum, auto
+from dataclasses import dataclass
+from typing import Callable, ClassVar, Tuple
 
 from .utils_helpers_extrapolation import  input_magnetic_moment_tomagmom
 from .workchain_wrapper_VaspWorkchain_G0W0 import VaspGWWorkChain
@@ -105,24 +107,88 @@ from .workchain_wrapper_VaspWorkchain_G0W0 import VaspGWWorkChain
     #  └─ execute_step()
     # Note: errors are handled using process_handler inside the various wrapper. 
 
-class state_execution_enum(Enum):
-        INIT = auto()
-        DFTGR_PENDING = auto()    # Need to run DFTgr
-        DFTGR_RUNNING = auto()    # DFTgr submitted, waiting
-        DFTGR_DONE    = auto()
+class PhaseStatus(Enum):
+        """ Status of whichever phase is currently active. Generic across ANY
+        phase - unlike the old state_execution_enum (one flat member per
+        (phase, status) pair, e.g. DFTGR_PENDING/DFTGR_RUNNING/DFTGR_DONE),
+        this never grows new members as phases are added, since standard
+        Python Enum classes cannot be extended with new members via
+        subclassing. Which *phase* is active lives separately, in
+        ctx.phase_idx (an index into the class's _PHASES list) - see
+        WorkflowPhase below. """
+        PENDING = auto()   # Need to submit this phase
+        RUNNING = auto()   # Submitted, waiting for it to finish
 
-        DFTVO_PENDING = auto()    # Need to run DFTvo
-        DFTVO_RUNNING = auto()    # DFTvo submitted, waiting
-        DFTVO_DONE    = auto()
 
-        G0W0_PENDING  = auto()    # Need to run G0W0
-        G0W0_RUNNING  = auto()    # G0W0 submitted, waiting
-        COMPLETE = auto()         # All done successfully
-        FAILED   = auto()         # Unrecoverable error
+class TerminalState(Enum):
+        """ Workflow-level terminal outcomes - independent of which phase was
+        running when they were reached. """
+        COMPLETE = auto()   # All phases done successfully (or skipped)
+        FAILED   = auto()   # Unrecoverable error
 
         #Explicit recovery state, which is currently unused
         # but template for eventual extensions
         RECOVERY = auto()   # Attempt to fix previous failure
+
+
+@dataclass(frozen=True)
+class WorkflowPhase:
+        """ One step of the generic DFT/GW FSM (and, in subclasses that extend
+        _PHASES, of any further phases they append - e.g. QP-correction +
+        WAVECAR-patch + BSE). Replaces what used to be hardcoded, per-named-
+        phase branches inside update_state/execute_step/validate_step/
+        prepare_step - those four methods are now phase-agnostic loops over
+        self._PHASES[self.ctx.phase_idx], so a subclass can add new phases
+        purely additively (_PHASES = Base._PHASES + [...]), with zero method
+        overriding needed in the subclass itself.
+
+        key                : phase identifier, e.g. '1DFTgr'. Also used, exactly
+                             as before, as the dict key into
+                             ctx.state_WC.submitted/retries and into
+                             ctx._next_workchain (which class to submit for
+                             this phase - still a runtime dict built in
+                             initialize(), so subclasses can still override the
+                             submitted class per-phase without touching
+                             _PHASES itself, exactly as '3G0W0' already does
+                             today by mapping to VaspGWWorkChain instead of
+                             the raw 'vasp.vasp' process).
+        build_inputs       : self -> dict of inputs to submit. Replaces
+                             prepare_step's old per-phase branch.
+        capture_outputs    : (self, finished_node) -> None. Stashes whatever
+                             ctx state the NEXT phase's build_inputs/
+                             get_restart_folder will need. Replaces
+                             update_state's old per-phase "stash
+                             restart_folder" branch.
+        get_restart_folder : self -> RemoteData|None. The restart folder this
+                             phase would use, so validate_step can generically
+                             check it (existence + required files) without any
+                             per-phase branching, before build_inputs is ever
+                             called.
+        required_files     : files validate_step must find on
+                             get_restart_folder(self) before this phase may be
+                             submitted. Empty = no check (matches '1DFTgr'
+                             today, which has no validate_step branch at all).
+        missing_files_exit_code_name : name of the exit_code to return if
+                             required_files validation fails. Unused if
+                             required_files is empty.
+        skip_if            : self -> bool. If True, this phase is skipped
+                             entirely (no submission, capture_outputs not
+                             called) - replaces the old
+                             run_1DFTgr/run_2DFTvo_3G0W0 skip logic.
+        seed_restart_if_skipped : self -> None. Called once, only if skip_if
+                             was True, to seed whatever ctx state the NEXT
+                             phase's get_restart_folder/build_inputs needs -
+                             replaces the old INIT-time special case of using
+                             ns_reference.starting_RemoteData directly as
+                             DFTvo's restart folder when DFTgr is skipped. """
+        key: str
+        build_inputs: Callable
+        capture_outputs: Callable
+        get_restart_folder: Callable = staticmethod(lambda self: None)
+        required_files: Tuple[str, ...] = ()
+        missing_files_exit_code_name: str = ''
+        skip_if: Callable = staticmethod(lambda self: False)
+        seed_restart_if_skipped: Callable = staticmethod(lambda self: None)
 
 class VaspDFTGWWorkChain(WorkChain):
         @classmethod
@@ -203,14 +269,55 @@ class VaspDFTGWWorkChain(WorkChain):
                     #cls.clean_remoteFolder_DFT,
                 )
 
+        #[Generic phase list - DFT/GW only here; QP-correction subclasses in
+        # aiida-vasp-qpcorrection extend this additively, e.g.:
+        #     _PHASES = VaspDFTGWWorkChain._PHASES + [<correction>, <patch>, <BSE>]
+        # with no method overriding needed. See WorkflowPhase's docstring above.]
+        _PHASES: ClassVar[Tuple['WorkflowPhase', ...]] = (
+            WorkflowPhase(
+                key='1DFTgr',
+                get_restart_folder=lambda self: self.ctx.state_WC.starting_RemoteData,
+                build_inputs=lambda self: self._prepare_inputs_DFT(
+                    restart_folder=self.ctx.state_WC.starting_RemoteData, calc_type='1DFTgr'),
+                capture_outputs=lambda self, node: self.ctx.state_WC.restart_folders.__setitem__(
+                    'for_2DFTvo', node.outputs.remote_folder),
+                skip_if=lambda self: not self.inputs.ns_option.run_1DFTgr.value,
+                seed_restart_if_skipped=lambda self: self.ctx.state_WC.restart_folders.__setitem__(
+                    'for_2DFTvo', self.ctx.state_WC.starting_RemoteData),
+            ),
+            WorkflowPhase(
+                key='2DFTvo',
+                get_restart_folder=lambda self: self.ctx.state_WC.restart_folders.for_2DFTvo,
+                required_files=('WAVECAR',),
+                missing_files_exit_code_name='NO_STARTING_WAVECAR_forDFTvo',
+                build_inputs=lambda self: self._prepare_inputs_DFT(
+                    restart_folder=self.ctx.state_WC.restart_folders.for_2DFTvo, calc_type='2DFTvo'),
+                capture_outputs=lambda self, node: self.ctx.state_WC.restart_folders.__setitem__(
+                    'for_3G0W0', node.outputs.remote_folder),
+                skip_if=lambda self: not self.inputs.ns_option.run_2DFTvo_3G0W0.value,
+            ),
+            WorkflowPhase(
+                key='3G0W0',
+                get_restart_folder=lambda self: self.ctx.state_WC.restart_folders.for_3G0W0,
+                required_files=('WAVECAR', 'WAVEDER'),
+                missing_files_exit_code_name='NO_STARTING_WAVECAR_WAVEDER_forG0W0',
+                build_inputs=lambda self: self._prepare_inputs_G0W0(
+                    restart_folder=self.ctx.state_WC.restart_folders.for_3G0W0),
+                capture_outputs=lambda self, node: None,
+                skip_if=lambda self: not self.inputs.ns_option.run_2DFTvo_3G0W0.value,
+            ),
+        )
+
         def initialize(self):
             """ Initialize workflow context.
-                This sets up: - the explicit Finite-state-machine like execution state
+                This sets up: - the generic phase-index FSM position
                             - the workflow state container (state_WC)
                 No logic is executed here.     """
 
-            #[1] Explicit workflow execution state (FSM)
-            self.ctx.state_execution = state_execution_enum.INIT
+            #[1] Generic phase-index FSM position (see _PHASES/WorkflowPhase above)
+            self.ctx.phase_idx = -1        # -1 = not yet started
+            self.ctx.phase_status = None   # meaningful only once phase_idx is in range
+            self.ctx.terminal = None       # None while iterating; TerminalState once done
 
             #[2] Workflow state container
             self.ctx.state_WC = AttributeDict({
@@ -244,123 +351,84 @@ class VaspDFTGWWorkChain(WorkChain):
             
         def should_wc_continue(self) -> bool:
             """ Determine whether the workflow should continue looping. """
-            return self.ctx.state_execution not in { state_execution_enum.COMPLETE, state_execution_enum.FAILED, }
+            return self.ctx.terminal is None
+
+        def _advance_to_first_runnable_phase(self):
+            """ Move ctx.phase_idx forward past any leading phases whose
+            skip_if(self) is True, running each skipped phase's
+            seed_restart_if_skipped hook once (this is what lets a later
+            phase pick up e.g. ns_reference.starting_RemoteData directly when
+            an earlier phase - DFTgr - is skipped, replacing the old INIT-time
+            special case). Called both at INIT (phase_idx -1 -> 0) and after
+            each phase completes. Sets ctx.terminal=COMPLETE once every phase
+            is skipped/done - the single, generic "all done" transition that
+            replaces every old per-phase "-> COMPLETE" branch. """
+            phases = self._PHASES
+            while self.ctx.phase_idx < len(phases) and phases[self.ctx.phase_idx].skip_if(self):
+                phases[self.ctx.phase_idx].seed_restart_if_skipped(self)
+                self.ctx.phase_idx += 1
+            if self.ctx.phase_idx >= len(phases):
+                self.ctx.terminal = TerminalState.COMPLETE
+            else:
+                self.ctx.phase_status = PhaseStatus.PENDING
 
         def update_state(self):
             """ Update the Finite-State-Machine execution state.
             This method:
-            - inspects the current execution_state
-            - inspects last submitted workchains (if any)
-            - decides the next execution_state
+            - inspects the current phase_idx/phase_status
+            - inspects the last submitted workchain for the active phase (if any)
+            - decides the next phase_idx/phase_status/terminal
             - performs no submissions
             - performs no INCAR / input preparation
-            """
+
+            Generic over self._PHASES - a subclass that extends _PHASES with
+            more phases needs no changes here at all. """
             #### ============================================================
-            #[1] INIT → decide initial path
-            if self.ctx.state_execution == state_execution_enum.INIT:
+            #[1] Not yet started -> pick the first runnable phase
+            if self.ctx.phase_idx == -1:
+                self.ctx.phase_idx = 0
+                self.report(f"[<{self.inputs.ns_option.calculation_label.value}> update_state] starting phase loop over {[p.key for p in self._PHASES]}")
+                self._advance_to_first_runnable_phase()
+                return
 
-                if self.inputs.ns_option.run_1DFTgr.value :
-                    # Always run DFTgr if explicitly requested
-                    self.ctx.state_execution = state_execution_enum.DFTGR_PENDING
-                    self.report(f"[<{self.inputs.ns_option.calculation_label.value}> update_state] run_1DFTgr=True: run 1DFTgr, using starting_RemoteData as restart for DFTgr if provided.")
-                    return
-
-                # run_1DFTgr == False
-                if self.ctx.state_WC.starting_RemoteData is not None:
-                    # Assume starting_RemoteData is a valid DFT ground state
-                    self.report(f"[<{self.inputs.ns_option.calculation_label.value}> update_state] run_1DFTgr=False: using starting_RemoteData as DFTgr replacement")
-                    self.ctx.state_WC.restart_folders.for_2DFTvo = self.ctx.state_WC.starting_RemoteData
-                    if self.inputs.ns_option.run_2DFTvo_3G0W0.value: 
-                        self.ctx.state_execution = state_execution_enum.DFTVO_PENDING
-                        self.report(f"[<{self.inputs.ns_option.calculation_label.value}> update_state] DFTvo to be prepared&executed  -> state updated to={self.ctx.state_execution.name}")  
-                    else:                                            
-                        self.ctx.state_execution = state_execution_enum.COMPLETE
-                    return
-
-                # Neither DFTgr nor starting WAVECAR available
-                self.report(f"[<{self.inputs.ns_option.calculation_label.value}> update_state] ERROR: no way to obtain a DFT ground state (no DFTgr run enabled, no starting_RemoteData)")
-                self.ctx.state_execution = state_execution_enum.FAILED
-                return self.exit_codes.NO_STARTING_WAVECAR_forDFTvo
+            phase = self._PHASES[self.ctx.phase_idx]
 
             #### ============================================================
-            #[2] DFTGR_RUNNING → DFTGR_DONE / retry / FAIL
-            if self.ctx.state_execution == state_execution_enum.DFTGR_RUNNING:
-                node = self.__last_wc_node(self.ctx,'1DFTgr')
-                if node is None or not node.is_finished: return  #Guard against 
-                if node.is_finished_ok:
-                    self.ctx.state_WC.restart_folders.for_2DFTvo = node.outputs.remote_folder
-                    self.ctx.state_execution = state_execution_enum.DFTGR_DONE
-                    self.report(f"[<{self.inputs.ns_option.calculation_label.value}> update_state] DFTgr finished successfully  -> state updated to={self.ctx.state_execution.name}")
-                else:
-                    return_error = self.__handle_failure_with_retry( step='1DFTgr', pending_state=state_execution_enum.DFTGR_PENDING )
-                    if return_error is not None: return return_error
-
+            #[2] PENDING -> nothing to decide yet, execute_step will submit it
+            if self.ctx.phase_status != PhaseStatus.RUNNING:
                 return
 
             #### ============================================================
-            #[3] DFTGR_DONE → DFTVO_PENDING or COMPLETE
-            if self.ctx.state_execution == state_execution_enum.DFTGR_DONE:
-                if self.inputs.ns_option.run_2DFTvo_3G0W0.value:
-                    self.ctx.state_execution = state_execution_enum.DFTVO_PENDING
-                    self.report(f"[<{self.inputs.ns_option.calculation_label.value}> update_state] DFTgr finished successfully; DFTvo to be prepared&executed  -> state updated to={self.ctx.state_execution.name}")
-                else:
-                    self.ctx.state_execution = state_execution_enum.COMPLETE
-                    self.report(f"[<{self.inputs.ns_option.calculation_label.value}> update_state] DFTgr finished successfully; DFTvo IS skipped  -> state updated to={self.ctx.state_execution.name}")
-                return
-
-            #### ============================================================
-            #[4] DFTVO_RUNNING → DFTVO_DONE / retry / FAIL
-            if self.ctx.state_execution == state_execution_enum.DFTVO_RUNNING:
-                node = self.__last_wc_node(self.ctx,'2DFTvo')
-                if node.is_finished_ok:
-                    self.ctx.state_WC.restart_folders.for_3G0W0 = node.outputs.remote_folder
-                    self.ctx.state_execution = state_execution_enum.DFTVO_DONE
-                    self.report(f"[<{self.inputs.ns_option.calculation_label.value}> update_state] DFTvo finished successfully  -> state updated to={self.ctx.state_execution.name}")
-                else:
-                    return_error = self.__handle_failure_with_retry( step='2DFTvo', pending_state=state_execution_enum.DFTVO_PENDING )
-                    if return_error is not None: return return_error
-                return
-
-            #### ============================================================
-            #[5] DFTVO_DONE → G0W0_PENDING or COMPLETE
-            if self.ctx.state_execution == state_execution_enum.DFTVO_DONE:
-                if self.inputs.ns_option.run_2DFTvo_3G0W0.value:
-                    self.ctx.state_execution = state_execution_enum.G0W0_PENDING
-                    self.report(f"[<{self.inputs.ns_option.calculation_label.value}> update_state] DFTvo finished successfully; G0W0 to be prepared&executed  -> state updated to={self.ctx.state_execution.name}")
-                else:
-                    self.ctx.state_execution = state_execution_enum.COMPLETE
-                return
-
-            #### ============================================================
-            #[6] G0W0_RUNNING →  COMPLETE / retry / FAIL
-            if self.ctx.state_execution == state_execution_enum.G0W0_RUNNING:
-                node = self.__last_wc_node(self.ctx,'3G0W0')
-                if node.is_finished_ok:
-                    self.ctx.state_execution = state_execution_enum.COMPLETE
-                    self.report(f"[<{self.inputs.ns_option.calculation_label.value}> update_state] G0W0 finished successfully  -> state updated to={self.ctx.state_execution.name}")
-                else:
-                    return_error = self.__handle_failure_with_retry( step='3G0W0', pending_state=state_execution_enum.G0W0_PENDING )
-                    if return_error is not None: return return_error
-                return
+            #[3] RUNNING -> DONE (advance) / retry / FAIL
+            node = self.__last_wc_node(self.ctx, phase.key)
+            if node is None or not node.is_finished: return  #Guard against
+            if node.is_finished_ok:
+                phase.capture_outputs(self, node)
+                self.report(f"[<{self.inputs.ns_option.calculation_label.value}> update_state] {phase.key} finished successfully")
+                self.ctx.phase_idx += 1
+                self._advance_to_first_runnable_phase()
+            else:
+                return_error = self.__handle_failure_with_retry(step=phase.key)
+                if return_error is not None: return return_error
+            return
 
         def validate_step(self):
-            """  Validate prerequisites for the next PENDING step. 
-                Does only perform checks and eventually throw errors, but NOT modify state (EXCEPT FOR FAILURE).  """
-
-            state = self.ctx.state_execution
-            if state == state_execution_enum.DFTVO_PENDING:
-                ok = self.__validate_remote_has_required_files( remote=self.ctx.state_WC.restart_folders.for_2DFTvo , 
-                                                            required=['WAVECAR'], label='DFTvo restart'         )
-                if not ok:
-                    self.ctx.state_execution = state_execution_enum.FAILED
-                    return self.exit_codes.NO_STARTING_WAVECAR_forDFTvo
-
-            if state == state_execution_enum.G0W0_PENDING:
-                ok = self.__validate_remote_has_required_files( remote=self.ctx.state_WC.restart_folders.for_3G0W0    ,
-                                                            required=['WAVECAR', 'WAVEDER'], label='G0W0 restart' )
-                if not ok:
-                    self.ctx.state_execution = state_execution_enum.FAILED
-                    return self.exit_codes.NO_STARTING_WAVECAR_WAVEDER_forG0W0
+            """  Validate prerequisites for the next PENDING step.
+                Does only perform checks and eventually throw errors, but NOT modify state (EXCEPT FOR FAILURE).
+                Generic over self._PHASES. """
+            if self.ctx.phase_idx == -1 or self.ctx.phase_status != PhaseStatus.PENDING:
+                return
+            phase = self._PHASES[self.ctx.phase_idx]
+            if not phase.required_files:
+                return
+            ok = self.__validate_remote_has_required_files(
+                remote=phase.get_restart_folder(self),
+                required=list(phase.required_files),
+                label=f'{phase.key} restart',
+            )
+            if not ok:
+                self.ctx.terminal = TerminalState.FAILED
+                return getattr(self.exit_codes, phase.missing_files_exit_code_name)
 
         def correct_previous_errors(self):
             """ Attempt to correct errors from a previous failed calculation before resubmitting.
@@ -372,56 +440,45 @@ class VaspDFTGWWorkChain(WorkChain):
             - adaptive input modification (NBANDS, ENCUT, NCORE, etc.)
             This method MUST NOT submit calculations.
             """
-            if self.ctx.state_execution != state_execution_enum.RECOVERY: return
+            if self.ctx.terminal != TerminalState.RECOVERY: return
             return
 
         def execute_step(self):
-            #[1] Determine which calc to submit from state, i.e.
-            mapping_enum_to_calc_type_torun = {	state_execution_enum.DFTGR_PENDING: '1DFTgr',
-                                                 state_execution_enum.DFTVO_PENDING: '2DFTvo',
-                                                 state_execution_enum.G0W0_PENDING:  '3G0W0' , }
-            calc_type = mapping_enum_to_calc_type_torun.get(self.ctx.state_execution)
-            if calc_type is None:   return
+            """ Submit the active phase's calculation, if it is PENDING.
+            Generic over self._PHASES. """
+            if self.ctx.phase_idx == -1 or self.ctx.phase_status != PhaseStatus.PENDING:
+                return
+            phase = self._PHASES[self.ctx.phase_idx]
 
-            #[2] Submit
-            running_wc = self.submit( self.ctx._next_workchain[calc_type] , **self.ctx.inputs_finalized)
+            #[1] Submit
+            running_wc = self.submit( self.ctx._next_workchain[phase.key] , **self.ctx.inputs_finalized)
 
-            #[3] Bump retry counter (this submission attempt)
-            self.ctx.state_WC.retries[calc_type] += 1
-            tmp_attempt_num = self.ctx.state_WC.retries[calc_type]
+            #[2] Bump retry counter (this submission attempt)
+            self.ctx.state_WC.retries[phase.key] += 1
+            tmp_attempt_num = self.ctx.state_WC.retries[phase.key]
 
-            #[4] Record submission into state_WC
-            self.ctx.state_WC.submitted[calc_type].append(running_wc)		
+            #[3] Record submission into state_WC
+            self.ctx.state_WC.submitted[phase.key].append(running_wc)
 
-            #[5] Update execution state
-            mapping_calctype_to_state = {  '1DFTgr': state_execution_enum.DFTGR_RUNNING,
-                                           '2DFTvo': state_execution_enum.DFTVO_RUNNING,
-                                           '3G0W0':  state_execution_enum.G0W0_RUNNING , }
-            self.ctx.state_execution = mapping_calctype_to_state[calc_type]
+            #[4] Update execution state
+            self.ctx.phase_status = PhaseStatus.RUNNING
 
-            #[6] Log
-            self.__report_compact_submission(running_wc, tmp_attempt_num, calc_type)
+            #[5] Log
+            self.__report_compact_submission(running_wc, tmp_attempt_num, phase.key)
 
-            #[7] Register dependency for engine
-            return ToContext(**{f'calc_{calc_type}': running_wc})
+            #[6] Register dependency for engine
+            return ToContext(**{f'calc_{phase.key}': running_wc})
 
         def prepare_step(self):
-            """ Prepare inputs for the next calculation based on execution_state.
+            """ Prepare inputs for the active phase, if it is PENDING.
             This method:    - builds inputs_finalized
                             - does NOT submit
-                            - does NOT change execution_state   """
-
-            if self.ctx.state_execution == state_execution_enum.DFTGR_PENDING:
-                self.ctx.inputs_finalized = self._prepare_inputs_DFT( restart_folder=self.ctx.state_WC.starting_RemoteData,
-                                                                      calc_type='1DFTgr' )
+                            - does NOT change execution_state
+            Generic over self._PHASES. """
+            if self.ctx.phase_idx == -1 or self.ctx.phase_status != PhaseStatus.PENDING:
                 return
-            if self.ctx.state_execution == state_execution_enum.DFTVO_PENDING:
-                self.ctx.inputs_finalized = self._prepare_inputs_DFT( restart_folder=self.ctx.state_WC.restart_folders.for_2DFTvo,
-                                                                      calc_type='2DFTvo' )
-                return
-            if self.ctx.state_execution == state_execution_enum.G0W0_PENDING:
-                self.ctx.inputs_finalized = self._prepare_inputs_G0W0( restart_folder=self.ctx.state_WC.restart_folders.for_3G0W0 )
-                return
+            phase = self._PHASES[self.ctx.phase_idx]
+            self.ctx.inputs_finalized = phase.build_inputs(self)
 
         def elaborate_results(self):
            """ Final post-processing and output assembly.
@@ -670,7 +727,7 @@ class VaspDFTGWWorkChain(WorkChain):
             else:
                 incar['incar']['lreal'] = '.FALSE.'
             
-            if (self.ctx.state_execution == state_execution_enum.DFTVO_PENDING) :
+            if (calc_type == '2DFTvo') :
                 if ('nbands' in self.inputs.ns_parameters ): incar['incar']['nbands'] = self.inputs.ns_parameters.nbands.value
                 incar['incar']['loptics'] = '.TRUE.'  
                 incar['incar']['algo']    = "Exact"
@@ -733,29 +790,32 @@ class VaspDFTGWWorkChain(WorkChain):
             lst = ctx.state_WC.submitted.get(step, [])
             return lst[-1] if lst else None
 
-        def __handle_failure_with_retry(self, step: str, pending_state):
+        def __handle_failure_with_retry(self, step: str):
             """ Handle a failed step with retry logic.
             Parameters
             ----------
             step : str
-                One of '1DFTgr', '2DFTvo', '3G0W0'
-            pending_state : state_execution_enum
-                State to transition to if a retry is allowed
+                The failed phase's key, e.g. one of '1DFTgr', '2DFTvo', '3G0W0'
+                (or, in a subclass, one of its own appended phase keys).
 
             Returns
             -------
             None or ExitCode
-                Returns an ExitCode if retries are exhausted, otherwise None.         """
+                Returns an ExitCode if retries are exhausted, otherwise None.
+                On retry, resets ctx.phase_status back to PENDING for the SAME
+                ctx.phase_idx - phase_status is generic across any phase, so
+                unlike the old per-phase `pending_state` argument, there is
+                nothing phase-specific left to pass in here.         """
 
             max_iter = self.inputs.ns_option.maximum_iterations.value
             retries  = self.ctx.state_WC.retries[step]
             if retries < max_iter:
                 self.report(f"[update_state] {step} failed, retrying (attempt {retries+1}/{max_iter})")
-                self.ctx.state_execution = pending_state
+                self.ctx.phase_status = PhaseStatus.PENDING
                 return None
 
             self.report(f"[update_state] {step} failed AND maximum retries reached -> ABORT")
-            self.ctx.state_execution = state_execution_enum.FAILED
+            self.ctx.terminal = TerminalState.FAILED
             return self.exit_codes.REACHED_MAXIMUM_TRY_NUMBER
 
         def __validate_remote_has_required_files(self, remote, required, label: str):
@@ -839,7 +899,7 @@ class VaspDFTGWWorkChain(WorkChain):
             except Exception:
                 label = ""
             prolog = ( f"[<{label}> execute_step] launching {calc_type} pk={running_wc.pk} "
-                       f"(attempt num={tmp_attempt}) → state updated to={self.ctx.state_execution.name}" )
+                       f"(attempt num={tmp_attempt}) → state updated to={calc_type} {self.ctx.phase_status.name}" )
         
             msg = prolog +"\n"+ self.__generate_compact_submission_string(running_wc)+"\n"
             self.report(msg)

@@ -1,0 +1,139 @@
+{
+  "scenario_full_chain_from_scratch": {
+    "exit_code_returned": null,
+    "final_state": "COMPLETE",
+    "state_trace": [
+      "INIT",
+      "1DFTgr_RUNNING",
+      "2DFTvo_RUNNING",
+      "3G0W0_RUNNING",
+      "COMPLETE"
+    ],
+    "submissions": [
+      {
+        "attempt_idx": 0,
+        "calc_type": "1DFTgr",
+        "class_name": "VaspWorkChain",
+        "is_ok": true,
+        "restart_folder": "None"
+      },
+      {
+        "attempt_idx": 1,
+        "calc_type": "2DFTvo",
+        "class_name": "VaspWorkChain",
+        "is_ok": true,
+        "restart_folder": "<FakeRemoteFolder /remote/scratch/1DFTgr_pk1>"
+      },
+      {
+        "attempt_idx": 2,
+        "calc_type": "3G0W0",
+        "class_name": "VaspGWWorkChain",
+        "is_ok": true,
+        "restart_folder": "<FakeRemoteFolder /remote/scratch/2DFTvo_pk2>"
+      }
+    ]
+  },
+  "scenario_no_starting_data_fails_immediately": {
+    "exit_code_returned": "'<exit_code NO_STARTING_WAVECAR_forDFTvo>'",
+    "final_state": "FAILED",
+    "state_trace": [
+      "INIT",
+      "FAILED"
+    ],
+    "submissions": []
+  },
+  "scenario_retries_exhausted": {
+    "exit_code_returned": "'<exit_code REACHED_MAXIMUM_TRY_NUMBER>'",
+    "final_state": "FAILED",
+    "state_trace": [
+      "INIT",
+      "1DFTgr_RUNNING",
+      "2DFTvo_RUNNING",
+      "FAILED"
+    ],
+    "submissions": [
+      {
+        "attempt_idx": 0,
+        "calc_type": "1DFTgr",
+        "class_name": "VaspWorkChain",
+        "is_ok": true,
+        "restart_folder": "None"
+      },
+      {
+        "attempt_idx": 1,
+        "calc_type": "2DFTvo",
+        "class_name": "VaspWorkChain",
+        "is_ok": false,
+        "restart_folder": "<FakeRemoteFolder /remote/scratch/1DFTgr_pk10>"
+      }
+    ]
+  },
+  "scenario_retry_then_succeed": {
+    "exit_code_returned": null,
+    "final_state": "COMPLETE",
+    "state_trace": [
+      "INIT",
+      "1DFTgr_RUNNING",
+      "2DFTvo_RUNNING",
+      "2DFTvo_RUNNING",
+      "3G0W0_RUNNING",
+      "COMPLETE"
+    ],
+    "submissions": [
+      {
+        "attempt_idx": 0,
+        "calc_type": "1DFTgr",
+        "class_name": "VaspWorkChain",
+        "is_ok": true,
+        "restart_folder": "None"
+      },
+      {
+        "attempt_idx": 1,
+        "calc_type": "2DFTvo",
+        "class_name": "VaspWorkChain",
+        "is_ok": false,
+        "restart_folder": "<FakeRemoteFolder /remote/scratch/1DFTgr_pk6>"
+      },
+      {
+        "attempt_idx": 2,
+        "calc_type": "2DFTvo",
+        "class_name": "VaspWorkChain",
+        "is_ok": true,
+        "restart_folder": "<FakeRemoteFolder /remote/scratch/1DFTgr_pk6>"
+      },
+      {
+        "attempt_idx": 3,
+        "calc_type": "3G0W0",
+        "class_name": "VaspGWWorkChain",
+        "is_ok": true,
+        "restart_folder": "<FakeRemoteFolder /remote/scratch/2DFTvo_pk8>"
+      }
+    ]
+  },
+  "scenario_skip_dftgr_with_starting_remote": {
+    "exit_code_returned": null,
+    "final_state": "COMPLETE",
+    "state_trace": [
+      "INIT",
+      "2DFTvo_RUNNING",
+      "3G0W0_RUNNING",
+      "COMPLETE"
+    ],
+    "submissions": [
+      {
+        "attempt_idx": 0,
+        "calc_type": "2DFTvo",
+        "class_name": "VaspWorkChain",
+        "is_ok": true,
+        "restart_folder": "<FakeRemoteFolder /remote/external/starting>"
+      },
+      {
+        "attempt_idx": 1,
+        "calc_type": "3G0W0",
+        "class_name": "VaspGWWorkChain",
+        "is_ok": true,
+        "restart_folder": "<FakeRemoteFolder /remote/scratch/2DFTvo_pk4>"
+      }
+    ]
+  }
+}

@@ -589,15 +589,82 @@ conclusion for the input-harness does not automatically carry over to it.
         `VaspGWWorkChain` for 3G0W0), correct restart_folder chaining
         phase-to-phase, correct skip-logic. **This is the safety net the FSM
         genericization rewrite must reproduce bit-for-bit before it's trusted.**
-      - [ ] Not yet started: the actual FSM genericization rewrite
-        (`PhaseStatus` enum, `WorkflowPhase` dataclass, rewriting
-        `update_state`/`execute_step`/`validate_step`/`prepare_step` to loop
-        over `_PHASES`), re-running this harness against the genericized code
-        and diffing against this baseline, `GPModelData`, the 3 new CalcJobs
+      - [x] **FSM genericization implemented and verified equivalent.**
+        `state_execution_enum` (one flat member per (phase,status) pair)
+        replaced with `PhaseStatus` (generic `PENDING`/`RUNNING`) +
+        `TerminalState` (`COMPLETE`/`FAILED`/`RECOVERY`) + a `WorkflowPhase`
+        frozen dataclass (`key`, `build_inputs`, `capture_outputs`,
+        `get_restart_folder`, `required_files`,
+        `missing_files_exit_code_name`, `skip_if`, `seed_restart_if_skipped`)
+        + a class-level `_PHASES` tuple. `update_state`/`validate_step`/
+        `execute_step`/`prepare_step` rewritten as generic loops over
+        `self._PHASES[self.ctx.phase_idx]` - zero per-named-phase branches
+        remain in any of them. `__handle_failure_with_retry` simplified
+        (dropped its `pending_state` arg - retry now just re-sets
+        `phase_status=PENDING` for the same `phase_idx`, since PENDING is
+        generic across any phase). Two small call sites outside these methods
+        also updated: `_prepare_inputs_DFT`'s `state_execution ==
+        DFTVO_PENDING` check became `calc_type == '2DFTvo'` (it already had
+        `calc_type` as an arg); `__report_compact_submission`'s log message
+        now interpolates `{calc_type} {phase_status.name}` instead of the
+        old single enum name. `elaborate_results` and `_prepare_inputs_DFT`/
+        `_prepare_inputs_G0W0` needed **no changes** - they only reference
+        `ctx.state_WC.submitted[calc_type]`/`restart_folders.*`, which kept
+        the exact same shape/keys throughout.
+        - **A genuine simplification fell out of this, not just reshuffling**:
+          the old INIT-time special case ("neither DFTgr nor starting_RemoteData
+          available -> FAILED immediately with
+          `NO_STARTING_WAVECAR_forDFTvo`") no longer needs its own branch at
+          all - the generic loop naturally advances to phase '2DFTvo' with a
+          `None` restart folder in that situation, and phase '2DFTvo's
+          ordinary `validate_step` check (which already returns that exact
+          same exit code on a missing/`None` remote) catches it one outline
+          step later. Verified empirically (see below) that this reaches the
+          identical outcome - zero submissions, `FAILED`, same exit code -
+          not just argued analytically.
+        - Reused the golden harness's exact scenarios plus 3 new ones
+          added specifically to stress-test the riskiest parts of this
+          rewrite (the harness's `submit()` stub gained a `fail_plan` to
+          simulate a sub-process failing N times before succeeding, and the
+          driving loop was fixed to short-circuit on any non-`ToContext`
+          return value - mirroring how AiiDA halts a WorkChain immediately
+          when an outline step returns an exit code, which the original
+          2-scenario version of the loop didn't need to model since neither
+          of its scenarios ever failed):
+          `phase3_pre_fsm_genericization_baseline.json` (2 scenarios) vs.
+          `phase3_post_fsm_genericization_baseline.json` (5 scenarios, the
+          same 2 plus `scenario_no_starting_data_fails_immediately`,
+          `scenario_retry_then_succeed`, `scenario_retries_exhausted`) -
+          `submissions` (calc_type, class, restart_folder) and `final_state`
+          match exactly on all shared scenarios; the 3 new ones behaved
+          exactly as predicted (0 submissions + immediate FAILED w/ the
+          right exit code; fail-then-retry-succeed reusing the same restart
+          folder across both attempts; retries-exhausted FAILED w/
+          `REACHED_MAXIMUM_TRY_NUMBER`, no extra attempt). Raw internal state
+          *names* differ before/after by design (documented in both the
+          harness's module docstring and inline in
+          `workchain_G0W0_base.py`) - only `submissions`/`final_state` are
+          the cross-refactor invariant contract, per the plan's "any
+          unintended diff is a regression signal, any intended diff should
+          be the only one present" principle applied to this new kind of
+          (control-flow, not data) golden check.
+        - Also verified **zero cross-repo breakage**: all 9 checked
+          `aiida.workflows` entry points across both `aiida-vasp` and
+          `aiida-vasp-gwconv` (including `vasp.gw.g0w0_kpts_conv` etc., which
+          compose `VaspDFTGWWorkChain` via `expose_inputs`/`submit` in
+          `workchain_G0W0_kptsConv.py` - confirmed via `grep` this is the
+          only bucket-B file that references `VaspDFTGWWorkChain` at all,
+          and only via composition, never inheritance/internals) still build
+          `.spec()` cleanly - expected, since only internal control-flow
+          changed, not the public `spec.input()`/`spec.output()` surface.
+      - [ ] Not yet started: `GPModelData`, the 3 new CalcJobs
         (`WavefunEigenCorrectCalculation`, `QpInterpolationCalculation`,
         `QpGPPredictionCalculation`), `code_registration.py`'s 4 functions,
-        the OUTCAR+WAVECAR numerical golden fixture, the two new WorkChains,
-        entry point registration, updating the last launch script.
+        the OUTCAR+WAVECAR numerical golden fixture, the two new WorkChains
+        (`VaspQPInterpolationWorkChain`/`VaspQPGPCorrectionWorkChain`,
+        subclassing the now-genericized `VaspDFTGWWorkChain` by appending to
+        `_PHASES`), entry point registration, updating the last launch
+        script.
 
 ## Known risks & mitigations
 
@@ -615,19 +682,19 @@ conclusion for the input-harness does not automatically carry over to it.
   overall - mitigated by capturing a real numerical (patched-eigenvalues)
   golden fixture *before* writing the new CalcJob, per the harness section
   above.
-- **`VaspDFTGWWorkChain` FSM genericization (Phase 3, bucket A)** - a new,
-  separately-risky piece added by the "Phase 3 detailed design" section
-  above: rewriting `update_state`/`execute_step`/`validate_step`/
-  `prepare_step` to be phase-list-driven touches bucket-A's core control
-  flow, not just aiida-vasp-qpcorrection's new code, so a regression here
-  could silently break the existing DFTgr->DFTvo->G0W0 chain for every
-  caller, not just the new QP-correction subclasses. Mitigation: a new
-  control-flow-level golden check (capture the exact submitted calc-
-  type/input sequence before the refactor via a dry-run mechanism, diff
-  against the same after) is required *before* trusting this refactor -
-  see that section for what this needs and why the existing golden harness
-  doesn't cover it. Do not build the QP-correction subclasses on top of the
-  genericized FSM until this control-flow golden check passes cleanly.
+- **[Done, mitigated]** `VaspDFTGWWorkChain` FSM genericization (Phase 3,
+  bucket A) - rewrote `update_state`/`execute_step`/`validate_step`/
+  `prepare_step` to be phase-list-driven, touching bucket-A's core control
+  flow (not just aiida-vasp-qpcorrection's new code). Mitigated exactly as
+  planned: a control-flow golden harness (`harness_G0W0_base_fsm.py`,
+  duck-typed `self` - no mock-vasp/pytest-profile ended up being needed,
+  see Phase 3 checklist above for why) captured the exact submission
+  sequence across 5 scenarios (happy path, skip-logic, immediate-fail,
+  retry-then-succeed, retries-exhausted) before and after the rewrite - all
+  matched exactly. Also confirmed zero cross-repo breakage (all 9 checked
+  entry points across aiida-vasp + aiida-vasp-gwconv still build `.spec()`
+  cleanly). The QP-correction subclasses (not yet built) can now safely
+  extend `_PHASES` on top of this.
 - **GP model API not finalized** - the separate `Models_Base`
   `GPBackboneHead` refactor (different project) is still in progress; don't
   hardcode `predict_qp_corrections`/`GPModelData` internals against it yet.
@@ -651,20 +718,20 @@ conclusion for the input-harness does not automatically carry over to it.
   (`dryrun_vasp.py`): they require an actual `vasp_std` executable and
   drive a real (short) VASP run, so they're not a fit for the no-cluster,
   pure-Python golden-harness use case here - not reused.
-- **New from the Phase 3 design discussion**: whether `mock-vasp`/
-  `dryrun-vasp` (or something else) can serve the *different*,
-  control-flow-level golden check that `VaspDFTGWWorkChain`'s FSM
-  genericization needs (capturing the ordered sequence of submitted calc-
-  types/inputs, not raw dict output) - not yet re-investigated; the "not
-  reused" conclusion just above was reached for a different purpose and
-  doesn't automatically apply here. Needs answering before the FSM
-  genericization work starts. See "Phase 3 detailed design" above.
-- `VaspDFTGWWorkChain.prepare_step()`'s full body was not yet read/inspected
-  during the Phase 3 design discussion (only `initialize`, `should_wc_continue`,
-  `update_state`, `validate_step`, `correct_previous_errors`, `execute_step`
-  were). Needs reading before implementing the `WorkflowPhase.build_inputs`
-  extraction, to confirm it's per-calc_type-branched the same way the other
-  methods are (assumed, not yet confirmed).
+- **[Resolved]** Whether `mock-vasp`/`dryrun-vasp` could serve the FSM's
+  control-flow golden check - investigated, confirmed real and reusable in
+  principle (repo's own `tests/conftest.py` has fixtures for exactly this),
+  but ultimately NOT used: building a correct first-ever integration test
+  for `VaspDFTGWWorkChain` would have required first assembling a full,
+  correct `vasp.vasp` `exposed_inputs` builder (substantial standalone
+  effort). Reused the existing golden harness's duck-typed-`self` pattern
+  instead (`self.submit(...)` stubbed to record calls, no real AiiDA
+  submission/database writes/new computer needed at all) - see Phase 3
+  checklist above. Sidesteps the isolated-profile question entirely, so it
+  was never actually needed for this particular check.
+- **[Resolved]** `VaspDFTGWWorkChain.prepare_step()`'s full body - read in
+  full; confirmed per-calc_type-branched exactly like the other FSM methods,
+  as assumed. Extracted cleanly into `WorkflowPhase.build_inputs` per phase.
 - Exact `WorkflowPhase` entries for the new correction/patch/BSE phases
   (their `build_inputs`/`capture_outputs` callables, and how
   `VaspQPInterpolationWorkChain`/`VaspQPGPCorrectionWorkChain` expose their

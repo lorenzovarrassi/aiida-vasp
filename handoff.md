@@ -657,14 +657,70 @@ conclusion for the input-harness does not automatically carry over to it.
           and only via composition, never inheritance/internals) still build
           `.spec()` cleanly - expected, since only internal control-flow
           changed, not the public `spec.input()`/`spec.output()` surface.
-      - [ ] Not yet started: `GPModelData`, the 3 new CalcJobs
-        (`WavefunEigenCorrectCalculation`, `QpInterpolationCalculation`,
-        `QpGPPredictionCalculation`), `code_registration.py`'s 4 functions,
-        the OUTCAR+WAVECAR numerical golden fixture, the two new WorkChains
-        (`VaspQPInterpolationWorkChain`/`VaspQPGPCorrectionWorkChain`,
-        subclassing the now-genericized `VaspDFTGWWorkChain` by appending to
-        `_PHASES`), entry point registration, updating the last launch
-        script.
+      - [x] **AiiDA-side scaffolding built and verified end-to-end** (aiida-
+        vasp-qpcorrection commit `688a7dd`): `GPModelData` (mirrors
+        `ArchiveData`'s `store()`-override; verified via direct
+        `_materialize()` call, never `.store()`d against the real profile);
+        `WavefunEigenCorrectCalculation`/`QpInterpolationCalculation`/
+        `QpGPPredictionCalculation` (CalcJobs, correct I/O contracts per the
+        design above); `QpCorrectionsParser` (shared by the two
+        corrections-provider CalcJobs); `utils/code_registration.py`'s 6
+        functions (the 4 originally discussed, `register_QPinterpolation_/
+        GPML_portableCode` + `get_*`, plus a matching pair for
+        `WavefunEigenCorrectCalculation`'s own shared script -
+        `register_wavefun_correct_portableCode`/`get_wavefun_correct_portableCode`
+        - needed for completeness, following the identical agreed pattern,
+        not a new design decision); `VaspQPInterpolationWorkChain`/
+        `VaspQPGPCorrectionWorkChain` (subclass the genericized
+        `VaspDFTGWWorkChain`, extending `_PHASES` with correction+patch+BSE
+        phases). All 7 new entry points (1 `aiida.data`, 3
+        `aiida.calculations`, 1 `aiida.parsers`, 2 `aiida.workflows`)
+        verified via `WorkflowFactory`/`CalculationFactory`/`DataFactory`/
+        `ParserFactory` - not just direct import - and both WorkChains'
+        `.spec()` build cleanly (31 inputs each, including the `ns_bse_step`
+        namespace `VaspmBSEInitScriptWorkChain`'s inputs/outputs are exposed
+        under, needed to avoid real `ns_option`/`ns_reference`/`options`
+        namespace collisions between it and `VaspDFTGWWorkChain`'s own
+        inputs - confirmed these collisions are real by inspecting
+        `workchain_mBSE_base_winterpolation.py`'s spec directly, not
+        assumed).
+        - **One real bug found and fixed during this**: both WorkChains'
+          overridden `elaborate_results()` initially called nothing from the
+          base class, which would have left `VaspDFTGWWorkChain`'s
+          `required=True` outputs (`RemoteData_DFT`, `bands_DFT`, `gaps`)
+          unpopulated - AiiDA would have failed these workchains at the very
+          end despite everything upstream succeeding. Fixed: both now call
+          `super().elaborate_results()` first, then add their own BSE (and,
+          for the GP chain, `qp_uncertainty`) outputs on top.
+        - **The bundled scripts are placeholder stubs** (`scripts/{interpolation,
+          gp_predict,wavefun_correct}/run.py` - each documents its own CLI
+          contract in its docstring and exits with an error if actually
+          invoked) - the real numerics are the two items below, not started.
+        - `register_*`'s `.store()` calls were never actually exercised
+          against the real `lvarras_aiida` profile during this
+          verification - only validated by constructing a `PortableCode(...)`
+          directly (confirmed the bundled `run.sh`/`run.py` files are picked
+          up correctly) without storing it, consistent with the "no writes"
+          convention followed throughout this whole refactor.
+      - [ ] **Not yet started - the two substantial remaining pieces**:
+        1. **Interpolation numerics extraction**: pull the actual WAVECAR-
+           patching/interpolation math out of aiida-vasp-dev's
+           `utils_interpolationclasses.v2.py` (1458 lines; v1/v3/v4 are dead
+           history, confirmed not migrated) into the three placeholder
+           scripts above. This is real, careful, domain-specific physics
+           code motion deserving its own dedicated pass - not attempted yet.
+        2. **OUTCAR+WAVECAR numerical golden fixture**: locate or build the
+           minimal reference case, capture the current (pre-CalcJob)
+           mechanism's patched-eigenvalues output against it, then verify
+           the extracted numerics reproduce it exactly once (1) is done -
+           per the plan's "deepest, hardest-to-verify part" section.
+        Also still open: registering the entry points' real behavior isn't
+        exercisable until (1)/(2) land (only the plumbing/contract is
+        verified so far, not correctness of any actual interpolation); GP
+        model adapter API still blocked on the separate `Models_Base`
+        project (unchanged from before); the last launch script
+        (`submit_workchain_mBSEinterpolation.py`) still needs updating to
+        use the new WorkChains once they're actually usable end-to-end.
 
 ## Known risks & mitigations
 

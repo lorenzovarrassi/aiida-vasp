@@ -32,19 +32,28 @@ below, used throughout every phase.
   `input_magnetic_moment_tomagmom` from `utils_helpers_extrapolation.py`).
   `VaspmBSEInitScriptWorkChain` is slimmed to only consume a `restart_folder`
   RemoteData - it no longer builds interpolation `prepend_text` itself.
+  **Planned (Phase 3, not yet built)**: `VaspDFTGWWorkChain`'s internal FSM
+  gets genericized (phase-list-driven instead of hardcoded per named phase)
+  so `aiida-vasp-qpcorrection`'s workchains can subclass it additively - see
+  "Phase 3 detailed design" below for the full rationale and design.
 - **aiida-vasp-gwconv** *(done, Phase 2)*: convergence templates + master
   orchestrators (`VaspmBSEConvergenceTemplateWorkChain` + 2 children,
   `VaspmBSECompleteWorkChain`, `VaspG0W0KptsConvWorkChain`,
   `VaspG0W0BasisExtrWorkChain`, `VaspG0W0CompleteWorkChain`) + the
   extrapolation calcfunctions + `wkc_Wannier` (Wannierization, fixed+kept).
-- **aiida-vasp-qpcorrection**: `GPModelData` (orm.Data, mirrors
-  `ArchiveData`'s store()-override pattern), `WavecarQPModificationCalculation`
-  (CalcJob, mirrors `VaspCalcBase`/`remote_copy_restart_folder`, mutually
-  exclusive `reference_gw_folder` vs `corrections` inputs),
-  `predict_qp_corrections` calcfunction, and the orchestrating
-  `VaspQPCorrectedWorkChain` (DFT -> correction branch ->
-  `WavecarQPModificationCalculation` -> aiida-vasp's slimmed
-  `VaspmBSEInitScriptWorkChain`).
+- **aiida-vasp-qpcorrection** *(design settled 2026-08-21, not yet built -
+  supersedes the plan file's original sketch, see "Phase 3 detailed design"
+  below for the full detail)*: `GPModelData` (orm.Data, mirrors
+  `ArchiveData`'s store()-override pattern); a single backend-agnostic
+  `WavefunEigenCorrectCalculation` (CalcJob, renamed from
+  `WavecarQPModificationCalculation`, simplified to always take
+  `corrections: BandsData` - the old mutually-exclusive
+  `reference_gw_folder`/`corrections` design was dropped); two independent
+  corrections-provider CalcJobs (`QpInterpolationCalculation`,
+  `QpGPPredictionCalculation`), each producing `qp_corrections: BandsData`;
+  two independent WorkChains (`VaspQPInterpolationWorkChain`,
+  `VaspQPGPCorrectionWorkChain`, no shared dispatcher) that subclass
+  `VaspDFTGWWorkChain` and layer correction+patch+BSE phases on top.
 
 ## Decisions log
 
@@ -132,6 +141,23 @@ below, used throughout every phase.
   `use_interpolation` defaulted to `True`). This is a new, independent input
   - not a straight rename - since the interpolation decision no longer
   lives on this class at all.
+- **Phase 3 architecture, settled 2026-08-21 through discussion before any
+  code was written** - see "Phase 3 detailed design" section below for full
+  detail. Headline decisions, each with its rationale recorded there:
+  `WavecarQPModificationCalculation` renamed to `WavefunEigenCorrectCalculation`
+  and simplified to a single `corrections: BandsData` input (dropped the
+  mutually-exclusive `reference_gw_folder` branch entirely); PROCAR-like data
+  reuses `orm.ProjectionData` (no new Data type); no formal template/ABC
+  across the two corrections-provider CalcJobs, and no Code-extras tagging
+  for dispatch either - the contract is output-shape-only
+  (`qp_corrections: BandsData`); `PortableCode` (not `InstalledCode`) for
+  the bundled scripts, registered via 4 small single-purpose functions, with
+  no dedup-by-label and no auto-versioning (both explicitly accepted
+  trade-offs, not oversights); the two corrections engines are separate,
+  non-interchangeable WorkChains, not a runtime-dispatched pair; and
+  `VaspDFTGWWorkChain`'s FSM will be genericized (phase-list-driven) so
+  these new WorkChains can subclass it additively instead of duplicating
+  its retry/state machinery.
 
 ## Pre-existing bugs to fix (Phase 1, each an isolated commit)
 
@@ -229,6 +255,266 @@ For Phase 3's deepest verification (interpolation numerics moving into
 fixture and comparing patched eigenvalues numerically - not started yet,
 see Open items.
 
+## Phase 3 detailed design (settled 2026-08-21, not yet implemented)
+
+This section is the settled design worked out through discussion before any
+Phase-3 code was written. It supersedes the original plan file's Phase-3
+sketch wherever the two disagree - the plan file is left as historical
+record, this section is authoritative going forward.
+
+### Naming/contract changes vs. the original plan text
+
+- `WavecarQPModificationCalculation` renamed to **`WavefunEigenCorrectCalculation`**.
+- Its input contract is simplified from the plan's original two-mutually-
+  exclusive-branches design (`reference_gw_folder` OR `corrections`) down to
+  **always `corrections: BandsData`**, nothing else. It becomes a single,
+  dumb, backend-agnostic WAVECAR patcher:
+  `original_folder: RemoteData` (uncorrected WAVECAR) + `corrections:
+  BandsData` -> `remote_folder: RemoteData` (corrected WAVECAR). It has zero
+  knowledge of *how* the corrections were computed - interpolation and GP
+  prediction both just need to produce a `BandsData` beforehand.
+- This pushes all "how are corrections computed" logic into two new,
+  independent CalcJobs (below), each producing the same
+  `qp_corrections: BandsData` output shape - that shared output shape is the
+  *only* contract between them, deliberately not formalized as a shared base
+  class / ABC (see "No formal template" below).
+
+### Data types
+
+- **PROCAR data**: reuse `orm.ProjectionData` - confirmed present in the
+  installed aiida-core (`~/venv_AiiDA_202608_refactor`); it has
+  `set_reference_bandsdata()`/`set_projectiondata()`/`set_orbitals()`, and is
+  what `aiida-quantumespresso` already uses for PDOS/orbital-projection
+  data. No new Data type needed for this piece.
+- **`GPModelData(orm.Data)`** (new): mirrors `ArchiveData`'s `store()`-
+  override pattern (private state built in `__init__`, materialized into
+  `self.base.repository` just before storing). Holds architecture/config,
+  kernel/likelihood hyperparameters, inducing points/variational state,
+  normalization info, descriptor definition, serialized `state_dict`.
+
+### CalcJobs
+
+```
+WavefunEigenCorrectCalculation(CalcJob)     [shared by both chains]
+    in:  code (AbstractCode), original_folder (RemoteData), corrections (BandsData)
+    out: remote_folder (RemoteData)
+
+QpInterpolationCalculation(CalcJob)
+    in:  code (PortableCode), bandsdata_g0w0 (BandsData), settings (Dict, optional)
+    out: qp_corrections (BandsData)
+
+QpGPPredictionCalculation(CalcJob)
+    in:  code (PortableCode), gp_model (GPModelData), structure (StructureData),
+         bandsdata_dft (BandsData), projection_data (ProjectionData), settings (Dict, optional)
+    out: qp_corrections (BandsData), uncertainty (BandsData, optional)
+```
+
+### No formal template/ABC for the corrections-providers
+
+Explicit decision: do NOT force a shared `spec.input()` signature across
+`QpInterpolationCalculation`/`QpGPPredictionCalculation` - their real inputs
+genuinely differ (BandsData-only vs. Structure+BandsData+ProjectionData),
+and padding one CalcJob's spec with unused inputs just to look symmetric was
+judged an abstraction-for-its-own-sake trap. The only enforced contract is
+the shared *output* shape (`qp_corrections: BandsData`).
+
+Also explicitly rejected: tagging a `PortableCode` node with an engine-kind
+extra (`code.base.extras['qp_engine_kind'] = 'interpolation' | 'gp_ml'`) as
+a runtime dispatch mechanism - unnecessary, since (see below) the two
+engines are never dynamically interchangeable at runtime; each lives in its
+own hardcoded workchain, so there is nothing to dispatch between.
+
+### Code registration (PortableCode, not InstalledCode)
+
+`PortableCode` chosen over `InstalledCode` specifically because it is **not
+bound to any one Computer** - confirmed via
+`inspect.signature(orm.PortableCode.__init__)` against the installed
+aiida-core: `PortableCode.__init__(self, filepath_executable, filepath_files,
+**kwargs)` takes no `computer` argument (unlike
+`InstalledCode.__init__(self, computer, filepath_executable, **kwargs)`,
+which requires one). AiiDA re-uploads the stored file tree fresh into
+whichever computer's work directory the CalcJob actually runs on - so ONE
+`PortableCode` node works whether the CalcJob is submitted to `localhost`
+(direct scheduler, no queue - cheapest case, e.g. lightweight GP inference)
+or a remote SLURM cluster (e.g. co-located with a large WAVECAR
+`RemoteData`), with no per-computer duplication. Venv activation (e.g.
+today's `source ~/venv_vasp_interpolation/bin/activate`) stays a per-
+Computer concern handled via `metadata.options.prepend_text`, unrelated to
+which Code is used - `PortableCode` only ships the script files themselves,
+it has no notion of a remote Python environment.
+
+Rejected: registering the Code as a `pip install` post-install hook -
+flit/modern build backends don't support post-install hooks at all, and
+even if they did, there's no guarantee a profile is loaded/writable at
+install time (anti-pattern relative to how the rest of the AiiDA ecosystem
+handles this - nothing in aiida-core auto-creates computers/codes on
+install).
+
+Adopted: lazy get-or-create, split into 4 single-purpose functions (final
+naming, to live in `aiida_vasp_qpcorrection/utils/code_registration.py`):
+
+```python
+def register_QPinterpolation_portableCode() -> orm.PortableCode:
+    """Always builds+stores a brand-new PortableCode. No existence check, no branching."""
+
+def register_GPML_portableCode() -> orm.PortableCode:
+    """Same, for the GP/ML script."""
+
+def get_QPinterpolation_portableCode(code: orm.PortableCode | None = None) -> orm.PortableCode:
+    return code if code is not None else register_QPinterpolation_portableCode()
+
+def get_GPML_portableCode(code: orm.PortableCode | None = None) -> orm.PortableCode:
+    return code if code is not None else register_GPML_portableCode()
+```
+
+Explicit, accepted consequences of this exact shape (both raised and
+confirmed acceptable during design discussion, not oversights):
+- `get_*()` called with no argument creates a **new** Code node every call -
+  no label-based dedup/lookup. Two separate calls with no argument produce
+  two distinct `PortableCode` nodes with identical content, not one reused
+  node. Dedup, if wanted, is the *caller's* job (call `register_*()` once,
+  keep the returned node, pass it explicitly from then on) - not the
+  helper's.
+- No auto-versioning/hashing of the label to detect a stale stored script
+  after editing it. If the bundled script changes: old runs correctly keep
+  pointing at their original, immutable Code node (this is real provenance
+  working as intended, not a bug) - but *new* runs, if they omit the `code`
+  argument, would also need a fresh `register_*()` call to pick up the
+  change; without one they'd get whichever Code the `get_*` no-arg path
+  happens to produce, which does not automatically track script edits. This
+  is accepted as a manual/deliberate step, not automatic drift-detection.
+
+Where these get called from: NOT inside the CalcJob classes themselves (a
+CalcJob just declares a normal required `code` input, same as any CalcJob).
+The calling WorkChain owns the "did I get a Code, or do I need a default"
+policy in its `prepare_step`/inputs-building step, e.g.:
+```python
+code = self.inputs.ns_qpcorrection.get('interpolation_code', None)
+builder.code = get_QPinterpolation_portableCode(code)
+```
+
+### Two independent WorkChains, not a shared dispatcher
+
+Because interpolation and GP prediction are **not runtime-interchangeable**
+- they are two different, separately-launched chains, never swapped
+dynamically by a single caller - there is no factory/entry-point dispatch
+mechanism here (the `aiida-common-workflows` "generator" pattern was
+considered and explicitly rejected as unneeded for exactly this reason:
+that pattern earns its cost when callers need to pick an engine generically
+at runtime, which is not the case here). Instead: `VaspQPInterpolationWorkChain`
+and `VaspQPGPCorrectionWorkChain` are separate concrete classes, each
+hardcoded to call its own corrections-provider CalcJob.
+
+### DFT+GW reuse: FSM genericization in VaspDFTGWWorkChain (bucket A) - the big remaining design decision
+
+User's ask: the two QP-correction workchains above should **inherit** from
+`VaspDFTGWWorkChain` (bucket A's existing DFTgr -> DFTvo -> G0W0 chain) and
+layer their own correction+patch+BSE phases on top of it, reusing its
+FSM/retry machinery - rather than composing it via a plain
+`self.submit(VaspDFTGWWorkChain, ...)` call from a separate, simpler outer
+workchain (which was the original, simpler sketch discussed earlier in this
+same design conversation, before this inheritance requirement came up).
+
+**Checked the actual code (`workchain_G0W0_base.py`) before committing to
+this, rather than assuming it would just work - found it does NOT support
+clean subclass-based extension today:**
+- `self.ctx._next_workchain = {'1DFTgr': WorkflowFactory('vasp.vasp'),
+  '2DFTvo': WorkflowFactory('vasp.vasp'), '3G0W0': VaspGWWorkChain}` (built
+  in `initialize()`, ~line 235) - this dict-dispatch-by-calc_type part is
+  already reusable and already proves the "swap the class used for a given
+  step" pattern works today (`'3G0W0'` is already overridden to a wrapper
+  workchain, `VaspGWWorkChain`, not the raw `vasp.vasp` process).
+- BUT `state_execution_enum` (line 108) is a genuine `enum.Enum` with one
+  flat member per (phase, status) pair: `INIT`, `DFTGR_PENDING`,
+  `DFTGR_RUNNING`, `DFTGR_DONE`, `DFTVO_PENDING`, `DFTVO_RUNNING`,
+  `DFTVO_DONE`, `G0W0_PENDING`, `G0W0_RUNNING`, `COMPLETE`, `FAILED`,
+  `RECOVERY` (confirmed via direct read of the class body - no
+  `G0W0_DONE` member, `G0W0_RUNNING` success goes straight to `COMPLETE`,
+  an asymmetry with the other two phases). **Standard Python `Enum` classes
+  cannot be extended with new members via subclassing** - this is a hard
+  language restriction, not a style choice - so no subclass can add
+  `CORRECTION_PENDING`/`BSE_RUNNING`/etc. members to this enum. Any
+  genericization has to replace this representation, not extend it.
+- `update_state()` (~line 249) is one large sequential if-chain hardcoded to
+  these exact named states - e.g. the `G0W0_RUNNING` branch (~line 336-340)
+  hardwires `state_execution = COMPLETE` directly on success, with no hook
+  for "then move to a correction phase instead."
+- `execute_step()` (~line 378) builds two dict literals fresh inside the
+  method body (`mapping_enum_to_calc_type_torun`, `mapping_calctype_to_state`),
+  both hardcoded to `'1DFTgr'/'2DFTvo'/'3G0W0'` - not class attributes, so
+  there is nothing to extend without redeclaring the whole method.
+- `validate_step()` similarly branches on named states for its per-phase
+  required-file checks (e.g. `DFTVO_PENDING` needs `WAVECAR`, `G0W0_PENDING`
+  needs `WAVECAR`+`WAVEDER`).
+- `prepare_step()` (~line 408 onward) was not yet read in full detail at
+  design time - almost certainly branches per calc_type too, for building
+  each phase's inputs; needs inspection before implementation starts.
+- **Net effect as the code is written today: subclassing now would mean
+  fully overriding `update_state`/`execute_step`/`validate_step` (and
+  probably `prepare_step`), duplicating the base's DFT/GW logic inline
+  alongside the new phases' logic - fragile, since any future change to the
+  base class's FSM would have to be manually re-mirrored in every
+  subclass.**
+
+**Decision (agreed with the user, not yet implemented): genericize the FSM
+first**, so real additive subclassing becomes possible with zero method-
+overriding needed in the QP-correction subclasses. Design:
+
+1. Replace the flat per-phase enum with a composite representation: a
+   small, fixed, never-extended `PhaseStatus(Enum)` with just `PENDING`/
+   `RUNNING`, covering *any* phase generically, plus `self.ctx.phase_idx: int`
+   (an index into an ordered phase list; `-1`/`len(list)` serve as the
+   INIT/COMPLETE sentinels) and a separate terminal-state tracker for
+   `FAILED`/`RECOVERY` (these stay global, not per-phase).
+2. Introduce a `WorkflowPhase` descriptor (frozen dataclass) carrying
+   everything that is currently hardcoded per named phase:
+   ```python
+   @dataclass(frozen=True)
+   class WorkflowPhase:
+       key: str
+       process_class: type                                       # or a resolver, like today's _next_workchain
+       build_inputs: Callable[[WorkChain], dict]                  # replaces prepare_step's per-phase branch
+       capture_outputs: Callable[[WorkChain, ProcessNode], None]  # replaces update_state's "stash restart_folder for next phase" branch
+       required_files: tuple[str, ...] = ()                       # replaces validate_step's per-phase branch
+       skip_if: Callable[[WorkChain], bool] | None = None         # replaces run_1DFTgr / run_2DFTvo_3G0W0 skip logic
+   ```
+3. `VaspDFTGWWorkChain` gets a class-level
+   `_PHASES: ClassVar[list[WorkflowPhase]] = [<1DFTgr>, <2DFTvo>, <3G0W0>]`.
+   `update_state`/`execute_step`/`validate_step`/`prepare_step` are each
+   rewritten ONCE, generically, as loops over
+   `self._PHASES[self.ctx.phase_idx]` - inherited unchanged by every
+   subclass forever; no per-phase named branches remain anywhere in the
+   base class after this.
+4. `VaspQPInterpolationWorkChain`/`VaspQPGPCorrectionWorkChain` become
+   purely additive subclasses:
+   `_PHASES = VaspDFTGWWorkChain._PHASES + [<correction-phase>, <patch-phase>, <BSE-phase>]`,
+   with no method overrides needed at all.
+5. **The real (non-trivial) work this actually requires, not just
+   reshuffling**: `prepare_step`'s current per-phase input-building logic
+   and `update_state`'s per-phase output-capture logic (today: stash
+   `node.outputs.remote_folder` for the next phase's restart) must be
+   extracted into these small callables - and the generic loop can't assume
+   one fixed output shape across all phases, since e.g. the correction phase
+   produces `qp_corrections: BandsData` while the DFT/GW/patch phases
+   produce `remote_folder: RemoteData`. `capture_outputs` is exactly what
+   absorbs that per-phase difference.
+
+**New verification requirement this introduces** - distinct in kind from
+the input-building golden harness already in place, and does not exist yet:
+this refactor changes actual FSM *control flow*, not just data-building, so
+the existing harness (which only exercises pure input-dict-building
+functions) cannot catch a regression here. Needed before/after this
+refactor: run the *current* `VaspDFTGWWorkChain` through a dry-run
+mechanism, capture the exact ordered sequence of submitted calc-types plus
+their inputs end-to-end, then confirm the genericized version reproduces
+that sequence bit-for-bit. Whether `mock-vasp`/`dryrun-vasp` (previously
+ruled out for the input-building harness, since they need a real `vasp_std`
+and drive an actual short VASP run - see Open items below) are reusable for
+*this* different, control-flow-level check is an open question, not yet
+re-investigated - it is a different requirement (exercising submission
+sequence/order, not comparing raw dict output), so the earlier "not reused"
+conclusion for the input-harness does not automatically carry over to it.
+
 ## Phase checklist
 
 - [x] **Phase 0**: worktree created; `aiida-vasp-gwconv`/`aiida-vasp-qpcorrection`
@@ -275,12 +561,43 @@ see Open items.
       and build `.spec()`, all 6 launch scripts' new import targets
       resolve, golden harness output unchanged (this phase touches nothing
       it exercises).
-- [ ] **Phase 3** (aiida-vasp-qpcorrection): extract interpolation numerics
-      (no behavior change); build/capture the OUTCAR+WAVECAR golden fixture;
-      `GPModelData`; `WavecarQPModificationCalculation` (verify against
-      fixture); `predict_qp_corrections`; `VaspQPCorrectedWorkChain`
-      (end-to-end verify); register entry points; update the last launch
-      script.
+- [ ] **Phase 3** (aiida-vasp-qpcorrection + FSM genericization): see "Phase 3
+      detailed design" above for the full plan. Progress so far:
+      - [x] Read `VaspDFTGWWorkChain` in full (previously only partially
+        inspected) - confirmed `prepare_step` branches per calc_type the same
+        way the other FSM methods do, as assumed in the design section.
+      - [x] Built `regression_harness/harness_G0W0_base_fsm.py` - a
+        control-flow golden harness for the FSM (distinct from
+        `harness_vMBPT_inputs.py`, which only covers pure input-dict-building).
+        Considered and rejected a real mock-vasp/pytest-test-profile based
+        integration test (would require first building a correct full
+        `exposed_inputs` builder for `vasp.vasp`, a substantial "first
+        integration test ever written for this workchain" effort on its own)
+        in favor of reusing `harness_vMBPT_inputs.py`'s proven duck-typed
+        `self`, real-methods-called-directly pattern - `self.submit(...)` is
+        stubbed to record the call and return an already-"finished" fake
+        node, so the whole FSM loop runs synchronously in-process with zero
+        AiiDA submissions/database writes/new computers-codes. Captures, per
+        scenario: the full ordered `state_execution` trace and the ordered
+        submission sequence (calc_type, class name, restart_folder repr).
+      - [x] Captured `regression_harness/golden/pre_fsm_genericization_baseline.json`
+        - two scenarios (full chain from scratch; skip-DFTgr with an
+        external `starting_RemoteData`) - both verified by inspection to
+        match the FSM's own documented behavior (header comment block in
+        `workchain_G0W0_base.py`) exactly: correct calc_type ordering,
+        correct per-phase class dispatch (`VaspWorkChain` for 1DFTgr/2DFTvo,
+        `VaspGWWorkChain` for 3G0W0), correct restart_folder chaining
+        phase-to-phase, correct skip-logic. **This is the safety net the FSM
+        genericization rewrite must reproduce bit-for-bit before it's trusted.**
+      - [ ] Not yet started: the actual FSM genericization rewrite
+        (`PhaseStatus` enum, `WorkflowPhase` dataclass, rewriting
+        `update_state`/`execute_step`/`validate_step`/`prepare_step` to loop
+        over `_PHASES`), re-running this harness against the genericized code
+        and diffing against this baseline, `GPModelData`, the 3 new CalcJobs
+        (`WavefunEigenCorrectCalculation`, `QpInterpolationCalculation`,
+        `QpGPPredictionCalculation`), `code_registration.py`'s 4 functions,
+        the OUTCAR+WAVECAR numerical golden fixture, the two new WorkChains,
+        entry point registration, updating the last launch script.
 
 ## Known risks & mitigations
 
@@ -298,6 +615,19 @@ see Open items.
   overall - mitigated by capturing a real numerical (patched-eigenvalues)
   golden fixture *before* writing the new CalcJob, per the harness section
   above.
+- **`VaspDFTGWWorkChain` FSM genericization (Phase 3, bucket A)** - a new,
+  separately-risky piece added by the "Phase 3 detailed design" section
+  above: rewriting `update_state`/`execute_step`/`validate_step`/
+  `prepare_step` to be phase-list-driven touches bucket-A's core control
+  flow, not just aiida-vasp-qpcorrection's new code, so a regression here
+  could silently break the existing DFTgr->DFTvo->G0W0 chain for every
+  caller, not just the new QP-correction subclasses. Mitigation: a new
+  control-flow-level golden check (capture the exact submitted calc-
+  type/input sequence before the refactor via a dry-run mechanism, diff
+  against the same after) is required *before* trusting this refactor -
+  see that section for what this needs and why the existing golden harness
+  doesn't cover it. Do not build the QP-correction subclasses on top of the
+  genericized FSM until this control-flow golden check passes cleanly.
 - **GP model API not finalized** - the separate `Models_Base`
   `GPBackboneHead` refactor (different project) is still in progress; don't
   hardcode `predict_qp_corrections`/`GPModelData` internals against it yet.
@@ -321,3 +651,25 @@ see Open items.
   (`dryrun_vasp.py`): they require an actual `vasp_std` executable and
   drive a real (short) VASP run, so they're not a fit for the no-cluster,
   pure-Python golden-harness use case here - not reused.
+- **New from the Phase 3 design discussion**: whether `mock-vasp`/
+  `dryrun-vasp` (or something else) can serve the *different*,
+  control-flow-level golden check that `VaspDFTGWWorkChain`'s FSM
+  genericization needs (capturing the ordered sequence of submitted calc-
+  types/inputs, not raw dict output) - not yet re-investigated; the "not
+  reused" conclusion just above was reached for a different purpose and
+  doesn't automatically apply here. Needs answering before the FSM
+  genericization work starts. See "Phase 3 detailed design" above.
+- `VaspDFTGWWorkChain.prepare_step()`'s full body was not yet read/inspected
+  during the Phase 3 design discussion (only `initialize`, `should_wc_continue`,
+  `update_state`, `validate_step`, `correct_previous_errors`, `execute_step`
+  were). Needs reading before implementing the `WorkflowPhase.build_inputs`
+  extraction, to confirm it's per-calc_type-branched the same way the other
+  methods are (assumed, not yet confirmed).
+- Exact `WorkflowPhase` entries for the new correction/patch/BSE phases
+  (their `build_inputs`/`capture_outputs` callables, and how
+  `VaspQPInterpolationWorkChain`/`VaspQPGPCorrectionWorkChain` expose their
+  own inputs - e.g. whether DFT+GW happens inside these workchains via the
+  inherited phases, exposing `VaspDFTGWWorkChain`'s inputs directly, which
+  is now the resolved answer to the earlier open question of whether GW
+  happens inside or upstream of these chains) are designed at the concept
+  level above but not yet written as code.

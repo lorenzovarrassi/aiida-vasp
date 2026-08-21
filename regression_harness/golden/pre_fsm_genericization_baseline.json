@@ -1,0 +1,58 @@
+{
+  "scenario_full_chain_from_scratch": {
+    "final_state": "COMPLETE",
+    "state_trace": [
+      "INIT",
+      "DFTGR_RUNNING",
+      "DFTGR_DONE",
+      "DFTVO_RUNNING",
+      "DFTVO_DONE",
+      "G0W0_RUNNING",
+      "COMPLETE"
+    ],
+    "submissions": [
+      {
+        "attempt_idx": 0,
+        "calc_type": "1DFTgr",
+        "class_name": "VaspWorkChain",
+        "restart_folder": "None"
+      },
+      {
+        "attempt_idx": 1,
+        "calc_type": "2DFTvo",
+        "class_name": "VaspWorkChain",
+        "restart_folder": "<FakeRemoteFolder /remote/scratch/1DFTgr_pk1>"
+      },
+      {
+        "attempt_idx": 2,
+        "calc_type": "3G0W0",
+        "class_name": "VaspGWWorkChain",
+        "restart_folder": "<FakeRemoteFolder /remote/scratch/2DFTvo_pk2>"
+      }
+    ]
+  },
+  "scenario_skip_dftgr_with_starting_remote": {
+    "final_state": "COMPLETE",
+    "state_trace": [
+      "INIT",
+      "DFTVO_RUNNING",
+      "DFTVO_DONE",
+      "G0W0_RUNNING",
+      "COMPLETE"
+    ],
+    "submissions": [
+      {
+        "attempt_idx": 0,
+        "calc_type": "2DFTvo",
+        "class_name": "VaspWorkChain",
+        "restart_folder": "<FakeRemoteFolder /remote/external/starting>"
+      },
+      {
+        "attempt_idx": 1,
+        "calc_type": "3G0W0",
+        "class_name": "VaspGWWorkChain",
+        "restart_folder": "<FakeRemoteFolder /remote/scratch/2DFTvo_pk4>"
+      }
+    ]
+  }
+}

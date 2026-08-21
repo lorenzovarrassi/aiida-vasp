@@ -73,12 +73,26 @@ below, used throughout every phase.
   was needed.
 - **Golden-file harness environment**: this sandbox has no local AiiDA
   install at all (checked: no `aiida` module, no conda/mamba anywhere). The
-  real dev environment is `source ~/venv_AiiDA_20251209/bin/activate`
-  (aiida-core 2.7.2, editable-installed against the *original*
-  `aiida-vasp-dev` dir). The harness runs against this branch's code via
-  `PYTHONPATH=<this worktree>/src` override, never touching the venv's own
-  editable-install target. The harness loads the real `lvarras_aiida`
-  profile (needed because `workchain_mBSE_base_winterpolation.py` calls
+  user's real dev/production environment is
+  `source ~/venv_AiiDA_20251209/bin/activate` (aiida-core 2.7.2, editable-
+  installed against the *original* `aiida-vasp-dev` dir, used for actual job
+  submissions) - **do not use or modify this venv for refactor work**, the
+  user asked for it to be left completely untouched. Initially (Phase 0/
+  early Phase 1) this branch's code was run against it via a
+  `PYTHONPATH=<this worktree>/src` override without reinstalling anything
+  into it; partway through Phase 1 the user asked for a dedicated venv
+  instead, so a fresh one was created:
+  `source ~/venv_AiiDA_202608_refactor/bin/activate`, with this worktree's
+  package `pip install -e .`'d into it directly (no `PYTHONPATH` override
+  needed anymore) and dependency versions matched from the real venv's
+  `pip freeze` (`aiida-core==2.7.2` - yanked on PyPI, still installable
+  pinned; `numpy`; `scikit-learn==1.8.0`; `pymatgen==2025.10.7`;
+  `scipy==1.17.1` - several of these are undeclared deps of vMBPT modules,
+  not currently listed in `pyproject.toml`). Both venvs share the same
+  `~/.aiida/config.json`/`lvarras_aiida` profile (profiles are per-machine,
+  not per-venv). **Use `~/venv_AiiDA_202608_refactor` for all verification
+  from here on.** The harness loads the real `lvarras_aiida` profile
+  (needed because `workchain_mBSE_base_winterpolation.py` calls
   `load_profile()` at import time) but never calls `.store()` - no writes
   happen.
 - **New bug found while building the harness fixture** (see below,
@@ -174,11 +188,14 @@ stored.
 
 Run it:
 ```
-source ~/venv_AiiDA_20251209/bin/activate
+source ~/venv_AiiDA_202608_refactor/bin/activate
 cd <this worktree>
-PYTHONPATH=$(pwd)/src python regression_harness/harness_vMBPT_inputs.py \
+python regression_harness/harness_vMBPT_inputs.py \
     regression_harness/golden/<label>.json
 ```
+(no `PYTHONPATH` override needed - this worktree's package is `pip install
+-e .`'d directly into this dedicated venv; see the Decisions log entry
+above for why this venv exists instead of the real dev venv.)
 
 Baselines, in order (each documents one step in this history):
 - `phase0_pre_bugfix_baseline_{remote,local}.json` - pre any Phase-1 change,

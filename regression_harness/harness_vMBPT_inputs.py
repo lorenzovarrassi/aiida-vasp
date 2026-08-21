@@ -21,9 +21,14 @@ pre-split captures of the interpolation-specific output.
 
 Usage
 -----
-    source ~/venv_AiiDA_20251209/bin/activate
-    PYTHONPATH=<worktree>/src python regression_harness/harness_vMBPT_inputs.py \\
+    source ~/venv_AiiDA_202608_refactor/bin/activate
+    python regression_harness/harness_vMBPT_inputs.py \\
         regression_harness/golden/<label>.json
+
+Uses the dedicated `~/venv_AiiDA_202608_refactor` venv (this worktree's
+package is pip-install -e'd directly into it) - never the real dev/
+production venv (`~/venv_AiiDA_20251209`), which stays untouched and bound
+to the original aiida-vasp-dev checkout.
 
 Requires the real `lvarras_aiida` AiiDA profile to be loadable (for
 `load_profile()` at import time in the target module) but performs no

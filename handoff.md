@@ -4,6 +4,36 @@ Branch: `refactor/split-vmbpt` (worktree at `../aiida-vasp-dev-refactor`, off
 `support_GWBSE_rebased`). Plan file (for full step-by-step detail):
 `~/.claude/plans/this-aiida-vasp-plugin-has-abstract-platypus.md`.
 
+## BUG-NOT-YET-FIXED
+
+- **`aiida-vasp-qpcorrection/aiida_vasp_qpcorrection/scripts/interpolation/run.py`'s
+  `determine_ibz_to_edged_bz` (spglib IBZ->BZ reconstruction): the ported
+  consistency assert (line ~115-128, `assert np.all(spg_direct_BZ[...] ==
+  spg_direct_IBZ)` + the supplied-vs-spglib IBZ comparison right after it)
+  fails on real data.** Found 2026-08-21 testing against
+  `aiida-vasp-dev-refactor/tests/test_data/test_relax_wc/out/`'s real
+  structure + [10,10,10] mesh + the WAVECAR's own real IBZ k-points: spglib's
+  reconstructed IBZ set (171 points, same count) is not the same *set* of
+  points VASP itself wrote, even though both agree the structure has exactly
+  8 symmetry operations (`Imma`). Ruled out `is_time_reversal` mismatch
+  (spglib already defaults `True`). Most likely (unconfirmed) cause: VASP and
+  spglib picking different periodic-image representatives for k-points
+  sitting exactly on a zone boundary (mesh=10 is even, several IBZ points
+  land on the ±0.5 face) - a boundary-representative convention mismatch, not
+  a symmetry-detection bug. This assert is ported verbatim from the original
+  `_determine_BZ_IBZ_grid` (v2.py:684-701) - not introduced by this
+  extraction, but a pre-existing assumption apparently never exercised
+  against a low-symmetry, even-mesh real system before. **Do not trust the
+  interpolation path (`VaspQPInterpolationWorkChain`) for a real run until
+  this is fixed.** The WAVECAR read/write half
+  (`wavefun_correct/run.py`) is unaffected and separately verified against
+  real data - see the "Golden-fixture check" entry in the Phase 3 checklist
+  below for full detail. Candidate fixes, neither attempted yet: (a) find/
+  build a higher-symmetry, odd-mesh real fixture to confirm this is an edge
+  case, or (b) make the consistency check tolerant of the boundary
+  convention (e.g. compare k-points modulo 1 instead of exact tolerance
+  equality) before asserting.
+
 ## Goal
 
 `aiida-vasp-dev/src/aiida_vasp/workchains/vMBPT/` currently mixes three

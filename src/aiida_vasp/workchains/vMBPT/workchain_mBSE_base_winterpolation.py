@@ -691,8 +691,8 @@ class VaspmBSEInitScriptWorkChain(WorkChain):
             sourcing_cmd = str(self.inputs.ns_interpolation.python_sourcing_env_command.value or "").strip()
             str_launch_command =( f"{sourcing_cmd}"+"\n"
                                    "python3 "                   +str(args_interpolation['interpolation_script_remote_filename'])+"  "
-                                   "--path_sparse_GW "          +str(args_interpolation['path_sparse_GW_remote_file_name'])     +"  "
-                                   "--sparse_GW_filename "      +str(args_interpolation['path_sparse_GW_remote_file_path'])     +"  "     
+                                   "--path_sparse_GW "          +str(args_interpolation['path_sparse_GW_remote_file_path'])     +"  "
+                                   "--sparse_GW_filename "      +str(args_interpolation['path_sparse_GW_remote_file_name'])     +"  "
                                    "--path_dense_DFT_toInterp " +str("./")                                                      +"  "
                                    "--nbandsgw_dense "          +str(args_interpolation['nbandsgw_to_interpolate']) ) 
         else: str_launch_command = ""

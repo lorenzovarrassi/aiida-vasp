@@ -9,7 +9,7 @@ from aiida.engine  import WorkChain, calcfunction , ToContext , append_ , submit
 from aiida_vasp.utils.workchains  import prepare_process_inputs
 from aiida.common.extendeddicts   import AttributeDict
 from aiida_vasp.utils.workchains  import site_magnetization_to_magmom
-from .workchain_wrapper_VaspWorkchain_initscript import VaspInitScriptWorkChain
+from .workchain_wrapper_VaspWorkchain_resourcefallback import VaspWorkChainWithResourceFallback
 from .utils_helpers_mBSE import _determine_BSE_parameters
 from .utils_helpers_extrapolation import  input_magnetic_moment_tomagmom
 
@@ -41,8 +41,8 @@ class VaspmBSEInitScriptWorkChain(WorkChain):
     - a final BSE run (TDHF/ALGO=TDHF in VASP)
 
     This workchain wraps two sub-workchains:
-    1) vasp.vasp                     (DFT ground-state)
-    2) VaspInitScriptWorkChain       (interpolation + BSE)
+    1) vasp.vasp                          (DFT ground-state)
+    2) VaspWorkChainWithResourceFallback  (BSE)
 
     [2]INPUTS/OUTPUTS: OVERVIEW
     Top-level inputs:    
@@ -62,16 +62,21 @@ class VaspmBSEInitScriptWorkChain(WorkChain):
     
     Note on QP correction: this workchain no longer performs WAVECAR/GW
     interpolation itself - it consumes whatever restart_folder RemoteData it
-    is given for the mBSE step (already QP-corrected upstream, or not) via
-    the generic prepend-script mechanism exposed from VaspInitScriptWorkChain
-    (local_init_script / local_files_to_copy_to_remote_submission_folder /
-    init_script_call_command, all optional pass-through inputs). If no
-    external QP correction is supplied, set ns_BSE.use_scissor=True to apply
-    an internal SCISSOR approximation instead (see _determine_BSE_parameters).
+    is given for the mBSE step (already QP-corrected upstream, e.g. by
+    aiida-vasp-qpcorrection's WavefunEigenCorrectCalculation, or not) and
+    submits it via a plain vasp.vasp-style calculation
+    (VaspWorkChainWithResourceFallback). If no external QP correction is
+    supplied, set ns_BSE.use_scissor=True to apply an internal SCISSOR
+    approximation instead (see _determine_BSE_parameters).
     (Formerly this was driven by an ns_interpolation.* input namespace with
     its own local/remote GW-reference-folder branches and an
     __prepare_inputs_G0W0interpolation step; that logic moved out - see
-    handoff.md's decisions log.)
+    handoff.md's decisions log. Even more formerly, the BSE step ran through
+    VaspInitScriptWorkChain/Vasp2wInitScriptCalculation, a generic
+    prepend-script injection mechanism [local_init_script /
+    local_files_to_copy_to_remote_submission_folder / init_script_call_command]
+    - retired 2026-08-22 as unused once QP correction moved to a dedicated
+    upstream CalcJob; see handoff.md.)
 
     Namespace ns_BSE:
         static_inverse_diel       : Float  (REQUIRED)
@@ -103,7 +108,7 @@ class VaspmBSEInitScriptWorkChain(WorkChain):
               (AEXX, HFSCREEN) and with NBANDSV/NBANDSO built automatically
               via _determine_BSE_parameters()
     Done by prepare_run_interpolation_BSE:
-        - Builds inputs for VaspInitScriptWorkChain
+        - Builds inputs for VaspWorkChainWithResourceFallback
         - Defines parser settings (retrieve BSEFATBAND, vaspout.h5)
         - Determines restart_folder from the DFT step
         - Builds INCAR for BSE run:
@@ -131,14 +136,14 @@ class VaspmBSEInitScriptWorkChain(WorkChain):
     
     
     _vasp_workchain = WorkflowFactory('vasp.vasp')
-    _vasp_initscript_workchain = VaspInitScriptWorkChain
+    _vasp_mbse_workchain = VaspWorkChainWithResourceFallback
 
     @classmethod
     def define(cls, spec):
             super(VaspmBSEInitScriptWorkChain, cls).define(spec) 
 
             spec.expose_inputs( cls._vasp_workchain            , exclude=('parameters','settings','options'))
-            spec.expose_inputs( cls._vasp_initscript_workchain , exclude=('parameters','settings','options','extraresources_fallback_options'))
+            spec.expose_inputs( cls._vasp_mbse_workchain , exclude=('parameters','settings','options','extraresources_fallback_options'))
 
 
             spec.input('ns_parameters.encut'                  , valid_type=Float , required=False , help='Cutoff energy for the wavefunction in eV. ENCUT variable in VASP.')  #ns stands for namespace
@@ -169,7 +174,7 @@ class VaspmBSEInitScriptWorkChain(WorkChain):
 
             spec.input("options" , valid_type=Dict , required=True )
             spec.input("extraresources_fallback_options", valid_type=Dict, required=False,
-                       help=("Optional larger scheduler-options profile. Used ONLY for the mBSE init-script "
+                       help=("Optional larger scheduler-options profile. Used ONLY for the mBSE BSE "
                              "stage's single automatic retry after an ERROR_DID_NOT_FINISH (exit 700) failure "
                              "(e.g. OOM) - every other calculation, and the first attempt of this one, still "
                              "uses 'options'. If not supplied, that retry behaves exactly as before (same "
@@ -230,7 +235,7 @@ class VaspmBSEInitScriptWorkChain(WorkChain):
         self.ctx.spin_labels = ("spinUp", "spinDw") if self.ctx.is_spinpol else ("spinUp",)
 
         self.ctx._next_workchain = { "DFT": WorkflowFactory("vasp.vasp") ,
-                                    "MBSE": VaspInitScriptWorkChain      ,   }
+                                    "MBSE": VaspWorkChainWithResourceFallback ,   }
 
     def should_wc_continue(self) -> bool:
         return self.ctx.state_execution not in {MbseState.COMPLETE, MbseState.FAILED}
@@ -340,7 +345,7 @@ class VaspmBSEInitScriptWorkChain(WorkChain):
             inputs = self.__add_inputs_mBSE_incar(inputs)
     
             # Normalize namespaces expected by aiida-vasp wrappers
-            self.ctx.inputs_finalized = prepare_process_inputs( inputs, namespaces=["calc", "dynamics", "verify", "local_files_to_copy_to_remote_submission_folder"],  )
+            self.ctx.inputs_finalized = prepare_process_inputs( inputs, namespaces=["calc", "dynamics", "verify"],  )
             return
         # any other state: nothing to prepare
         return
@@ -419,7 +424,7 @@ class VaspmBSEInitScriptWorkChain(WorkChain):
 
         #[1] Base settings (for potential_mapping , potential_family , kpoints )
         inputs = AttributeDict()
-        inputs.update(self.exposed_inputs(self._vasp_initscript_workchain))
+        inputs.update(self.exposed_inputs(self._vasp_mbse_workchain))
         inputs.clean_workdir     = Bool(False)
         inputs.keep_last_workdir = Bool(True)
 
@@ -430,7 +435,7 @@ class VaspmBSEInitScriptWorkChain(WorkChain):
                                                "exclude_node": ["bands"],  }
         #[2.1] Additional settings for the RETRIEVE_LIST
         inputs.settings["ADDITIONAL_RETRIEVE_LIST"] = [  "BSEFATBAND", "vaspout.h5", "_aiidasubmit.sh", "POSCAR", "POTCAR", "KPOINTS",
-            "script_init.py", "INCAR", "CopiedFromLocal_OUTCAR_3", ]
+            "INCAR", ]
 
         #[2.2] Setting for the Restart folder : the mBSE should restart from the WAVEDER / WAVECAR (or equivalenty WAVEDER+vaspwave) 
         inputs.restart_folder = self.ctx.state_WC.restart_folders.for_MBSE
@@ -645,11 +650,6 @@ class VaspmBSEInitScriptWorkChain(WorkChain):
                scissor  =  _get_incar_par(wc_node.inputs.parameters, "scissor")
                aexx     =  _get_incar_par(wc_node.inputs.parameters, "aexx")
                hfscreen =  _get_incar_par(wc_node.inputs.parameters, "hfscreen")
-               try:
-                   prepend_text = "\n"+wc_node.inputs.init_script_call_command.value
-                   prepend_text = prepend_text.replace("\n","\n       ")
-               except Exception:
-                   prepend_text = ""
            # --- kpoints ---
            mesh = offset = nkpts = None
            try:
@@ -685,12 +685,11 @@ class VaspmBSEInitScriptWorkChain(WorkChain):
                       f"{prefix}potcars_family={pot_family}  potcars_mapping={pot_mapping}",  ]
            if include_BSE_parameters :
                lines +=  [ f"{prefix}mBSE specific parameters:","\n",
-                            "  Reminder of call order : VaspmBSEInitScriptWorkChain -> VaspInitScriptWorkChain -> Vasp2wInitScriptCalculation","\n"    
+                            "  Reminder of call order : VaspmBSEInitScriptWorkChain -> VaspWorkChainWithResourceFallback -> VaspCalculation","\n"
                            f"{prefix}ibse={ibse}  nbandso={nbandso}  nbandsv={nbandsv}  omegamax={omegamax}  bseprec={bseprec}","\n",
                            f"{prefix}precfock={precfock}  kpar={kpar}","\n",
                            f"{prefix}screening approximation w/ model diel.function : aexx={aexx}  hfscreen={hfscreen}  ","\n",
                            f"{prefix}QPcorrection : is scissor approximation used? scissor={scissor}  ","\n",
-                           f"{prefix}QPcorrection : prepend text for interpolation? {prepend_text}"
                            ]
            return ("".join(lines))
              

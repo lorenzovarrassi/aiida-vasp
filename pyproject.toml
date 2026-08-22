@@ -100,7 +100,7 @@ graphs = ["matplotlib"]
 "vasp.v2.relax" = "aiida_vasp.workchains.v2.relax:VaspRelaxWorkChain"
 "vasp.gw.g0w0" = "aiida_vasp.workchains.vMBPT.workchain_G0W0_base:VaspDFTGWWorkChain"
 "vasp.gw.wrapper" = "aiida_vasp.workchains.vMBPT.workchain_wrapper_VaspWorkchain_G0W0:VaspGWWorkChain"
-"vasp.gw.initscript" = "aiida_vasp.workchains.vMBPT.workchain_wrapper_VaspWorkchain_initscript:VaspInitScriptWorkChain"
+"vasp.gw.resourcefallback" = "aiida_vasp.workchains.vMBPT.workchain_wrapper_VaspWorkchain_resourcefallback:VaspWorkChainWithResourceFallback"
 "vasp.gw.mbse" = "aiida_vasp.workchains.vMBPT.workchain_mBSE_base_winterpolation:VaspmBSEInitScriptWorkChain"
 
 [project.entry-points."aiida.groups"]

@@ -8,7 +8,6 @@ from aiida.plugins import DataFactory, WorkflowFactory
 from aiida.engine import WorkChain, calcfunction , ToContext , append_ , submit, while_
 from aiida_vasp.utils.workchains import prepare_process_inputs
 import warnings
-from sklearn.linear_model import LinearRegression
 from aiida_vasp.utils.workchains import site_magnetization_to_magmom
 from enum import Enum, auto
 from dataclasses import dataclass

@@ -7,7 +7,7 @@ from pymatgen.io.vasp.outputs import Vasprun , BSVasprun
 import warnings
 from aiida import orm
 from aiida.common.extendeddicts import AttributeDict
-from aiida.orm import Code, Bool, Str, Int, Dict, Float , KpointsData , RemoteData , FolderData
+from aiida.orm import Code, Str, Int, Dict, Float , KpointsData , RemoteData , FolderData
 
 
 
@@ -56,13 +56,10 @@ class Helpers_setup_Workchain :
       │     ├── ibse                  (Int)      [optional - NOT provided by helper functions]
       │     └── kpar                  (Int)      [optional - NOT provided by helper functions]
       │
-      ├── ns_interpolation
-      │     ├── local_initscript           (SinglefileData) [OPTIONAL — not provided
-      │     ├── G0W0_reference             (RemoteData)     ← from _build_interpolation_inputs
-      │     └── nbandsgw_to_interpolate    (Int)            ← from _build_interpolation_inputs
-      │     └── remote_gw_reference_folder (RemoteData)     (not used)
-      │     └── local_gw_reference_fold    (Str)            ← from _build_interpolation_inputs
-      │     └── gw_reference_filename      (Str)            ← from _build_interpolation_inputs
+      ├── ns_interpolation  [MOVED 2026-08-22 - VaspmBSEInitScriptWorkChain no
+      │     longer accepts this namespace, and the builder that used to
+      │     populate it (_build_interpolation_inputs) now lives in
+      │     aiida-vasp-qpcorrection/legacy_reference/legacy_build_interpolation_inputs.py]
       ├── ns_BSE
       │     ├── static_inverse_diel  (Float)    ← from _build_bse_inputs
       │     ├── screening_parameter   (Float)   ← from _build_bse_inputs
@@ -108,26 +105,6 @@ class Helpers_setup_Workchain :
         #best_val , covar = optimize.curve_fit(modelDiel, x, y, p0=init_vals)
         best_val , covar = curve_fit(modelDiel, x, y, p0=init_vals)
         return [ invepsilonatlowestg , best_val[0] ]
-
-
-    # -------------------------------------------------------------------------
-    #[2] Extract NBANDSGW from vasprun.xml
-    @staticmethod
-    def _extract_NBANDSGW ( vasprun_path ):
-        """
-        Read NBANDSGW from vasprun.xml using pymatgen.
-        
-        Returns
-        -------
-        int
-            Number of GW bands used in the preceding G0W0 calculation.
-        
-        Notes
-        -----
-        This requires a valid vasprun.xml.X produced by VASP's GW step.
-        """
-        from pymatgen.io.vasp.outputs import Vasprun
-        return Vasprun(vasprun_path).parameters['NBANDSGW']
 
 
     # -------------------------------------------------------------------------
@@ -343,59 +320,8 @@ class Helpers_setup_Workchain :
         return Str(potential_family), Dict(potential_mapping)
 
     # -------------------------------------------------------------------------
-    #[6] Build interpolation input namespace (ns_interpolation)
-    @staticmethod
-    def _build_interpolation_inputs(local_folder_gw_reference: str,
-                                    gw_reference_filename_OUTCAR:   str = 'OUTCAR.3',
-                                    gw_reference_filename_vasprun:  str = 'vasprun.xml.3',
-                                    flag_check_files_existence = True ) -> AttributeDict:
-        """
-        Prepare the ns_interpolation namespace for VaspmBSEInitScriptWorkChain.
-
-        Supports ONLY the LOCAL GW case:
-            - local_gw_reference_folder : Str
-            - gw_reference_filename:     List
-            - nbandsgw_to_interpolate :  Int
-
-        The REMOTE GW case must be constructed manually by the user,
-        because it requires passing an existing RemoteData node.
-
-        Parameters
-        ----------
-        local_folder_gw_reference : str
-            Local absolute path to the folder containing OUTCAR / vasprun.xml.3.
-        gw_reference_filename : list[str], optional
-            Filenames to pass to the interpolation script.  Default:
-            ['OUTCAR.3', 'vasprun.xml.3'].
-
-        Returns
-        -------
-        AttributeDict
-            ns_interpolation namespace (LOCAL-GW branch).
-        """
-
-        ns_interp = AttributeDict()
-        #LOCAL BRANCH  → User provides a folder path on local filesystem and the name of the OUTCAR file (default OUTCAR.3)
-        ns_interp["local_gw_reference_folder"] = Str(local_folder_gw_reference)
-        ns_interp["gw_reference_filename"] = gw_reference_filename_OUTCAR
-        
-        if flag_check_files_existence :  # Ensure directory exists and then if files exist
-            if not os.path.isdir(local_folder_gw_reference):
-                raise ValueError( f"[ns_interpolation] The provided local GW directory does not exist:{local_folder_gw_reference}")
-            outcar_path = os.path.join(local_folder_gw_reference, gw_reference_filename_OUTCAR)
-            if not os.path.isfile(outcar_path): 
-                raise ValueError( f"[ns_interpolation] The file {outcar_path} GW reference file is missing")
-    
-        #Extract NBANDSGW from local vasprun.xml.3
-        vasprun_path = os.path.join(local_folder_gw_reference, gw_reference_filename_vasprun)
-        nbandsgw = Helpers_setup_Workchain._extract_NBANDSGW(vasprun_path)
-        ns_interp["nbandsgw_to_interpolate"] = Int(nbandsgw)
-
-        # Interpolation turned on by default
-        ns_interp["use_interpolation"] = Bool(True)
-
-        return ns_interp
- 
+    # [6] _build_interpolation_inputs (ns_interpolation) moved out 2026-08-22 -
+    # see aiida-vasp-qpcorrection/legacy_reference/legacy_build_interpolation_inputs.py.
     # -------------------------------------------------------------------------
     #[7] Build BSE-related input namespace (ns_BSE)
     @staticmethod
@@ -478,8 +404,10 @@ class Helpers_setup_Workchain :
         a stored BandsData, plus a KpointsData carrying the sparse mesh dims read
         from the same OUTCAR (`generate k-points for:` line).
 
-        Faithful, scoped port of `BandsState_IO.parse_outcar_spinUnpol` (aiida-vasp-
-        dev's `utils_interpolationclasses.v2.py:52-200`) - restricted to exactly
+        Faithful, scoped port of `BandsState_IO.parse_outcar_spinUnpol`
+        (originally `utils_interpolationclasses.v2.py:52-200`, now
+        aiida-vasp-qpcorrection/legacy_reference/utils_interpolationclasses.v2.py
+        after the 2026-08-22 move) - restricted to exactly
         what `QpInterpolationCalculation`'s `bandsdata_g0w0`/`kpoints_mesh_sparse`
         inputs need (the QPC eigenvalue-correction array + IBZ k-points + mesh),
         dropping the BandsState/structure/misc wrapping the original built around

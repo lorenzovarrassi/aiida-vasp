@@ -9,7 +9,7 @@ from aiida.engine  import WorkChain, calcfunction , ToContext , append_ , submit
 from aiida_vasp.utils.workchains  import prepare_process_inputs
 from aiida.common.extendeddicts   import AttributeDict
 from aiida_vasp.utils.workchains  import site_magnetization_to_magmom
-from .workchain_wrapper_VaspWorkchain_resourcefallback import VaspWorkChainWithResourceFallback
+from .workchain_wrapper_VaspWorkchain_fallbacks import VaspWorkChainWithFallbacks
 from .utils_helpers_mBSE import _determine_BSE_parameters
 from .utils_helpers_extrapolation import  input_magnetic_moment_tomagmom
 
@@ -42,7 +42,7 @@ class VaspmBSEInitScriptWorkChain(WorkChain):
 
     This workchain wraps two sub-workchains:
     1) vasp.vasp                          (DFT ground-state)
-    2) VaspWorkChainWithResourceFallback  (BSE)
+    2) VaspWorkChainWithFallbacks  (BSE)
 
     [2]INPUTS/OUTPUTS: OVERVIEW
     Top-level inputs:    
@@ -65,7 +65,7 @@ class VaspmBSEInitScriptWorkChain(WorkChain):
     is given for the mBSE step (already QP-corrected upstream, e.g. by
     aiida-vasp-qpcorrection's WavefunEigenCorrectCalculation, or not) and
     submits it via a plain vasp.vasp-style calculation
-    (VaspWorkChainWithResourceFallback). If no external QP correction is
+    (VaspWorkChainWithFallbacks). If no external QP correction is
     supplied, set ns_BSE.use_scissor=True to apply an internal SCISSOR
     approximation instead (see _determine_BSE_parameters).
     (Formerly this was driven by an ns_interpolation.* input namespace with
@@ -108,7 +108,7 @@ class VaspmBSEInitScriptWorkChain(WorkChain):
               (AEXX, HFSCREEN) and with NBANDSV/NBANDSO built automatically
               via _determine_BSE_parameters()
     Done by prepare_run_interpolation_BSE:
-        - Builds inputs for VaspWorkChainWithResourceFallback
+        - Builds inputs for VaspWorkChainWithFallbacks
         - Defines parser settings (retrieve BSEFATBAND, vaspout.h5)
         - Determines restart_folder from the DFT step
         - Builds INCAR for BSE run:
@@ -136,7 +136,7 @@ class VaspmBSEInitScriptWorkChain(WorkChain):
     
     
     _vasp_workchain = WorkflowFactory('vasp.vasp')
-    _vasp_mbse_workchain = VaspWorkChainWithResourceFallback
+    _vasp_mbse_workchain = VaspWorkChainWithFallbacks
 
     @classmethod
     def define(cls, spec):
@@ -235,7 +235,7 @@ class VaspmBSEInitScriptWorkChain(WorkChain):
         self.ctx.spin_labels = ("spinUp", "spinDw") if self.ctx.is_spinpol else ("spinUp",)
 
         self.ctx._next_workchain = { "DFT": WorkflowFactory("vasp.vasp") ,
-                                    "MBSE": VaspWorkChainWithResourceFallback ,   }
+                                    "MBSE": VaspWorkChainWithFallbacks ,   }
 
     def should_wc_continue(self) -> bool:
         return self.ctx.state_execution not in {MbseState.COMPLETE, MbseState.FAILED}
@@ -685,7 +685,7 @@ class VaspmBSEInitScriptWorkChain(WorkChain):
                       f"{prefix}potcars_family={pot_family}  potcars_mapping={pot_mapping}",  ]
            if include_BSE_parameters :
                lines +=  [ f"{prefix}mBSE specific parameters:","\n",
-                            "  Reminder of call order : VaspmBSEInitScriptWorkChain -> VaspWorkChainWithResourceFallback -> VaspCalculation","\n"
+                            "  Reminder of call order : VaspmBSEInitScriptWorkChain -> VaspWorkChainWithFallbacks -> VaspCalculation","\n"
                            f"{prefix}ibse={ibse}  nbandso={nbandso}  nbandsv={nbandsv}  omegamax={omegamax}  bseprec={bseprec}","\n",
                            f"{prefix}precfock={precfock}  kpar={kpar}","\n",
                            f"{prefix}screening approximation w/ model diel.function : aexx={aexx}  hfscreen={hfscreen}  ","\n",

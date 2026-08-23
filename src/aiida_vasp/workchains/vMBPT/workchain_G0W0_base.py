@@ -14,7 +14,7 @@ from dataclasses import dataclass
 from typing import Callable, ClassVar, Tuple
 
 from .utils_helpers_extrapolation import  input_magnetic_moment_tomagmom
-from .workchain_wrapper_VaspWorkchain_G0W0 import VaspGWWorkChain
+from .workchain_wrapper_VaspWorkchain_fallbacks import VaspWorkChainWithFallbacks
 
     # General idea:
     #[Loop Iteration 1]
@@ -149,8 +149,8 @@ class WorkflowPhase:
                              initialize(), so subclasses can still override the
                              submitted class per-phase without touching
                              _PHASES itself, exactly as '3G0W0' already does
-                             today by mapping to VaspGWWorkChain instead of
-                             the raw 'vasp.vasp' process).
+                             today by mapping to VaspWorkChainWithFallbacks
+                             instead of the raw 'vasp.vasp' process).
         build_inputs       : self -> dict of inputs to submit. Replaces
                              prepare_step's old per-phase branch.
         capture_outputs    : (self, finished_node) -> None. Stashes whatever
@@ -195,7 +195,7 @@ class VaspDFTGWWorkChain(WorkChain):
                 super().define(spec)
 
                 spec.expose_inputs(WorkflowFactory('vasp.vasp') , exclude=('parameters', 'settings'))
-                spec.expose_inputs(VaspGWWorkChain              , exclude=('parameters', 'settings'))               
+                spec.expose_inputs(VaspWorkChainWithFallbacks   , exclude=('parameters', 'settings'))
 
                 spec.input('ns_parameters.encut'                  , valid_type=Float       , required=False , help='cutoff energy for the wavefunction in eV. encut variable in VASP.')  #ns stands for namespace
                 spec.input('ns_parameters.nbands'                 , valid_type=Int         , required=False , help='total number of bands included in the DFT and G0W0 runs. nbands variable in VASP.'  )   
@@ -344,7 +344,7 @@ class VaspDFTGWWorkChain(WorkChain):
             # [5] Which workchain should be called 
             self.ctx._next_workchain = { '1DFTgr': WorkflowFactory( 'vasp.vasp' )  ,
                                          '2DFTvo': WorkflowFactory( 'vasp.vasp' )  ,
-                                         '3G0W0' : VaspGWWorkChain                 ,}
+                                         '3G0W0' : VaspWorkChainWithFallbacks      ,}
                                         #'3G0W0':  WorkflowFactory( 'vasp.vasp' ) ,  }
             
             # [6] Regarding spin polarization

@@ -14,7 +14,7 @@ from dataclasses import dataclass
 from typing import Callable, ClassVar, Tuple
 
 from .utils_helpers_extrapolation import  input_magnetic_moment_tomagmom
-from .workchain_wrapper_VaspWorkchain_fallbacks import VaspWorkChainWithFallbacks
+from .DEPRECATED_workchain_wrapper_VaspWorkchain_fallbacks import VaspWorkChainWithFallbacks
 
     # General idea:
     #[Loop Iteration 1]

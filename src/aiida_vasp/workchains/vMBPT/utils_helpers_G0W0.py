@@ -2,7 +2,7 @@
 
 # ENMAX database extracted from VASP POTCAR headers
 # key   : full POTCAR name (as in potential_mapping values)
-# value : ENMAX in eV
+# value : ENMAX in eVhttps://www.nature.com/articles/s41524-025-01833-w
 POTCAR_ENMAX = {
     "Ac": 172.351,
     "Ag_GW": 249.844,
@@ -282,7 +282,8 @@ POTCAR_ENMAX = {
 
 def get_encut_from_potcar_mapping(potential_mapping: dict) -> float:
     """
-    Determine ENCUT from POTCAR mapping.
+    Determine ENCUT from POTCAR mapping following prescription descrived in https://doi.org/10.1038/s41524-025-01833-w
+    i.e. encut=max(enmax) between the enmax values of all potcars used for the considered materials 
     Parameters
     potential_mapping : dict
         Example: { "Si": "Si_sv_GW", "O":  "O_GW" }

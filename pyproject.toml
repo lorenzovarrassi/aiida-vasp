@@ -98,9 +98,13 @@ graphs = ["matplotlib"]
 "vasp.v2.bands" = "aiida_vasp.workchains.v2.bands:VaspBandsWorkChain"
 "vasp.v2.hybrid_bands" = "aiida_vasp.workchains.v2.bands:VaspHybridBandsWorkChain"
 "vasp.v2.relax" = "aiida_vasp.workchains.v2.relax:VaspRelaxWorkChain"
-"vasp.gw.g0w0" = "aiida_vasp.workchains.vMBPT.workchain_G0W0_base:VaspDFTGWWorkChain"
-"vasp.gw.fallbacks" = "aiida_vasp.workchains.vMBPT.workchain_wrapper_VaspWorkchain_fallbacks:VaspWorkChainWithFallbacks"
-"vasp.gw.mbse" = "aiida_vasp.workchains.vMBPT.workchain_mBSE_base_winterpolation:VaspmBSEInitScriptWorkChain"
+"vasp.gw.g0w0" = "aiida_vasp.workchains.vMBPT.DEPRECATED_workchain_G0W0_base:VaspDFTGWWorkChain"
+"vasp.gw.fallbacks" = "aiida_vasp.workchains.vMBPT.DEPRECATED_workchain_wrapper_VaspWorkchain_fallbacks:VaspWorkChainWithFallbacks"
+"vasp.gw.atomic_g0w0" = "aiida_vasp.workchains.vMBPT.workchain_atomic_G0W0:VaspAtomicG0W0WorkChain"
+"vasp.gw.atomic_bse" = "aiida_vasp.workchains.vMBPT.workchain_atomic_BSE:VaspAtomicBSEWorkChain"
+"vasp.gw.g0w0_groundup" = "aiida_vasp.workchains.vMBPT.workchain_G0W0_groundup:VaspG0W0GroundUpWorkChain"
+"vasp.gw.bse_groundup" = "aiida_vasp.workchains.vMBPT.workchain_BSE_groundup:VaspBSEGroundUpWorkChain"
+"vasp.gw.mbse" = "aiida_vasp.workchains.vMBPT.DEPRECATED_workchain_mBSE_base_winterpolation:VaspmBSEInitScriptWorkChain"
 
 [project.entry-points."aiida.groups"]
 "vasp.potcar" = "aiida_vasp.data.potcar:PotcarGroup"

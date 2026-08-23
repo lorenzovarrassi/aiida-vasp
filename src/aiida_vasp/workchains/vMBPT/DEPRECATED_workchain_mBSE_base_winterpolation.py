@@ -9,7 +9,7 @@ from aiida.engine  import WorkChain, calcfunction , ToContext , append_ , submit
 from aiida_vasp.utils.workchains  import prepare_process_inputs
 from aiida.common.extendeddicts   import AttributeDict
 from aiida_vasp.utils.workchains  import site_magnetization_to_magmom
-from .workchain_wrapper_VaspWorkchain_fallbacks import VaspWorkChainWithFallbacks
+from .DEPRECATED_workchain_wrapper_VaspWorkchain_fallbacks import VaspWorkChainWithFallbacks
 from .utils_helpers_mBSE import _determine_BSE_parameters
 from .utils_helpers_extrapolation import  input_magnetic_moment_tomagmom
 

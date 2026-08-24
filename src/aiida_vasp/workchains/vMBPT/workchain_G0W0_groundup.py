@@ -3,7 +3,7 @@ import numpy as np
 from copy import deepcopy
 from dataclasses import dataclass
 from enum import Enum
-from typing import Callable, Tuple
+from typing import Callable, List, Optional, Tuple
 
 from aiida.common.extendeddicts import AttributeDict
 from aiida.orm import Int, Float, Str, Dict, Bool, RemoteData, ArrayData, BandsData, KpointsData
@@ -16,31 +16,122 @@ from aiida_vasp.workchains.vMBPT.workchain_atomic_G0W0 import VaspAtomicG0W0Work
 
 
 class PhaseStatus(Enum):
-    """Execution status of the currently active phase. Meaningful only once ctx.phase_idx is in range."""
+    """Per-phase execution status. self.ctx.state.statuses holds one of these per phase, index-aligned with
+    self.ctx.state.phases (statuses[i] describes phases[i]). Lifecycle for a single phase:
+        NOT_STARTED -> SKIPPED                                            (check_skip decided to skip it)
+        NOT_STARTED -> PENDING -> PREPAREDINPUTS -> RUNNING -> COMPLETED  (ran successfully)
+                                                             -> PENDING    (failed, retrying)
+                                                             -> FAILED     (failed, retries exhausted)
+    SKIPPED/COMPLETED/FAILED are terminal for that phase - once set, that entry never changes again. Exactly
+    one phase is ever "in flight" (anything other than NOT_STARTED/SKIPPED/COMPLETED/FAILED) at a time: the
+    one at self.ctx.state.phase_idx."""
+    NOT_STARTED = 'NOT_STARTED'
     PENDING = 'PENDING'
+    PREPAREDINPUTS = 'PREPAREDINPUTS'
     RUNNING = 'RUNNING'
+    COMPLETED = 'COMPLETED'
+    SKIPPED = 'SKIPPED'
+    FAILED = 'FAILED'
 
 
-class TerminalState(Enum):
-    """Final state of the phase loop once it stops iterating."""
+class WorkflowTerminalState(Enum):
+    """Final state of the whole phase loop once it stops iterating (self.ctx.state.terminal)."""
     COMPLETE = 'COMPLETE'
     FAILED = 'FAILED'
 
 
 @dataclass(frozen=True)
 class WorkflowPhase:
-    """Describes one phase in self.ctx.phases generically - the FSM engine (initialize/update_state/
-    validate_step/prepare_step/execute_step/elaborate_results) never branches on phase *name*, only on
-    phase.<hook>(self) / phase.<hook>(self, node), so a subclass can override or replace individual WorkflowPhase
-    entries without touching the engine itself."""
+    """Describes one phase in self.ctx.state.phases generically
+    key: phase identifier name.
+    process_class: the WorkChain/CalcJob class submitted for this phase. Used as:
+                    running_wc = self.submit(phase.process_class, **self.ctx.state.inputs_finalized)
+    build_inputs: callable(self) -> AttributeDict;
+                  Constructs Attribute argument used as inputs for the phase's workchain. Used as:
+                  self.ctx.state.inputs_finalized = phase.build_inputs(self)
+
+    capture_outputs: callable(self, node) -> None, captures outputs from the phase's workchain into ctx.state.
+    """
     key: str
-    build_inputs: Callable = staticmethod(lambda self: AttributeDict())
-    capture_outputs: Callable = staticmethod(lambda self, node: None)
+    process_class:      Optional[type] = None
+    build_inputs:       Callable = staticmethod(lambda self: AttributeDict())
+    capture_outputs:    Callable = staticmethod(lambda self, node: None)
     get_restart_folder: Callable = staticmethod(lambda self: None)
-    required_files: Tuple[str, ...] = ()
+    required_files:     Tuple[str, ...] = ()
     missing_files_exit_code_name: str = None
-    skip_if: Callable = staticmethod(lambda self: False)
+    skip_if:                 Callable = staticmethod(lambda self: False)
     seed_restart_if_skipped: Callable = staticmethod(lambda self: None)
+
+
+@dataclass
+class WorkflowState:
+    """The whole phase-loop state machine lives in one instance of this, at self.ctx.state.
+
+    phases is the single source of truth for "what runs" (built once by initialize(), via for_phases() below) -
+    every FSM method (update_step_phaseidx/check_skip/validate_step/prepare_step/execute_step/elaborate_results)
+    only ever reads it, never hardcodes a phase name.
+
+    statuses/nodes/retries are index-aligned with phases (statuses[i]/nodes[i]/retries[i] describe phases[i]) -
+    NOT keyed by phase.key, so a subclass that replaces/extends phases only has to rebuild these three
+    consistently with it (use for_phases() rather than constructing WorkflowState by hand). statuses[i] starts
+    NOT_STARTED and ends at exactly one of SKIPPED/COMPLETED/FAILED once phase i is done with (see PhaseStatus).
+    nodes[i] accumulates one entry per submission attempt for phase i (len(nodes[i]) == retries[i] once phase i
+    has been submitted at least once); empty = never submitted (still NOT_STARTED, or SKIPPED).
+
+    restart_folders/starting_RemoteData/inputs_finalized are scratch/handoff state used while building and
+    submitting each phase's inputs - restart_folders in particular is NOT index-aligned with phases: its keys
+    are whatever names individual phases' capture_outputs/seed_restart_if_skipped/get_restart_folder/
+    build_inputs hooks choose to hand off between themselves (e.g. 'for_2DFTvo'), not one-per-phase.
+
+    current_phase/current_status only make sense while 0 <= phase_idx < len(phases) - i.e. while terminal is
+    still None; every FSM method checks that before touching either."""
+    phases: Tuple[WorkflowPhase, ...]
+    statuses: List[PhaseStatus]
+    nodes: List[list]
+    retries: List[int]
+    restart_folders: AttributeDict
+    phase_idx: int = -1
+    terminal: Optional[WorkflowTerminalState] = None
+    starting_RemoteData: Optional[RemoteData] = None
+    inputs_finalized: Optional[AttributeDict] = None
+
+    @classmethod
+    def for_phases(cls, phases: Tuple[WorkflowPhase, ...], starting_RemoteData=None) -> 'WorkflowState':
+        """The constructor every caller (initialize(), and any subclass extending the phase list) should use,
+        rather than building statuses/nodes/retries by hand - keeps all three consistent with phases."""
+        return cls(
+            phases=phases,
+            statuses=[PhaseStatus.NOT_STARTED] * len(phases),
+            nodes=[[] for _ in phases],
+            retries=[0] * len(phases),
+            restart_folders=AttributeDict(),
+            starting_RemoteData=starting_RemoteData,
+        )
+
+    @property
+    def current_phase(self) -> WorkflowPhase:
+        return self.phases[self.phase_idx]
+
+    @property
+    def current_status(self) -> PhaseStatus:
+        return self.statuses[self.phase_idx]
+
+    @current_status.setter
+    def current_status(self, value: PhaseStatus) -> None:
+        self.statuses[self.phase_idx] = value
+
+    def record_node(self, node) -> None:
+        """Append a freshly-submitted node for the active phase (called once per submission attempt)."""
+        self.nodes[self.phase_idx].append(node)
+
+    def last_node_by_key(self, key: str):
+        """Return the last submitted node for the phase with this key, or None if it was never submitted
+        (still NOT_STARTED, or SKIPPED) - or if no phase has this key at all."""
+        for idx, phase in enumerate(self.phases):
+            if phase.key == key:
+                lst = self.nodes[idx]
+                return lst[-1] if lst else None
+        return None
 
 
 class VaspG0W0GroundUpWorkChain(WorkChain):
@@ -51,9 +142,9 @@ class VaspG0W0GroundUpWorkChain(WorkChain):
        '2DFTvo' (single-iteration DFT with all virtual orbitals, producing the WAVECAR/WAVEDER the G0W0 phase
        restarts from), '3G0W0' (delegates entirely to VaspAtomicG0W0WorkChain - no local INCAR construction for
        this phase, unlike '1DFTgr'/'2DFTvo').
-    2) Own retry/skip bookkeeping generically over an ordered list of phases (self.ctx.phases, built in
-       initialize()), so a subclass can extend or replace individual phases without touching the FSM engine
-       itself (see [2] below).
+    2) Own retry/skip bookkeeping generically over an ordered list of phases (self.ctx.state.phases, built by
+       initialize() via WorkflowState.for_phases()), so a subclass can extend or replace individual phases
+       without touching the FSM engine itself (see [2] below).
     3) Assemble the DFT/G0W0 band structures into gaps/QP-correction outputs (gaps, gaps_QPc, bands_QPc).
 
     Design rationale:
@@ -67,8 +158,14 @@ class VaspG0W0GroundUpWorkChain(WorkChain):
        forwarding '1DFTgr's real output straight through to the '3G0W0' restart slot), and point '3G0W0' at a
        surrogate WorkChain class instead of VaspAtomicG0W0WorkChain - '1DFTgr' (real DFT ground state) stays the
        only phase that actually runs VASP. elaborate_results()'s node lookup below is written generically (reads
-       state_WC.submitted presence via __last_wc_node, not the ns_option.* input flags) specifically so this
+       ctx.state.nodes presence via last_node_by_key, not the ns_option.* input flags) specifically so this
        requires no override in such a subclass.
+
+    FSM engine: initialize() builds self.ctx.state (a WorkflowState - see its docstring for the full state
+    shape); each while_() iteration then runs update_step_phaseidx (reacts to the active phase's child node, if
+    RUNNING), check_skip (the only place any phase's skip_if is ever consulted), validate_step, prepare_step,
+    correct_previous_errors, execute_step, in that fixed order - see WorkflowState/PhaseStatus above for how
+    phase_idx/current_status move through this sequence.
     """
 
     @classmethod
@@ -78,7 +175,7 @@ class VaspG0W0GroundUpWorkChain(WorkChain):
         spec.expose_inputs(WorkflowFactory('vasp.vasp'), exclude=('parameters', 'settings', 'restart_folder'))
         spec.expose_inputs(VaspAtomicG0W0WorkChain,       exclude=('parameters', 'settings', 'restart_folder'))
         # Both exposures deliberately exclude restart_folder (every phase's build_inputs overwrites it anyway,
-        # from ctx.state_WC.restart_folders - an exposed top-level restart_folder port would be inert/confusing).
+        # from ctx.state.restart_folders - an exposed top-level restart_folder port would be inert/confusing).
         # This gives, for free from the VaspAtomicG0W0WorkChain exposure: encut, nbands, encut_chi, nbandsgw,
         # nomega, magnetic_moment_onsite, optimization.kpar/lreal/set_PRECFOCK_to_Fast,
         # extraresources_fallback_options - the exact same names used both by the DFT phases below and by the
@@ -127,7 +224,8 @@ class VaspG0W0GroundUpWorkChain(WorkChain):
         spec.outline(
             cls.initialize,
             while_(cls.should_wc_continue)(
-                cls.update_state,
+                cls.update_step_phaseidx,
+                cls.check_skip,
                 cls.validate_step,
                 cls.prepare_step,
                 cls.correct_previous_errors,
@@ -137,53 +235,49 @@ class VaspG0W0GroundUpWorkChain(WorkChain):
         )
 
     def initialize(self):
-        """Initialize workflow context: the generic phase-index FSM position, the ordered phase list itself
-        (self.ctx.phases) together with the class each phase submits (self.ctx._next_workchain), and the
-        workflow state container (state_WC). No submission or input-preparation logic here.
+        """Initialize workflow context: self.ctx.state (a WorkflowState - see its docstring), built from the
+        ordered phase list (single source of truth for "what runs") plus any externally-supplied starting
+        RemoteData. No submission or input-preparation logic here.
 
-        self.ctx.phases and self.ctx._next_workchain are built together here as ctx state, so a subclass can
-        override this single method (call super().initialize(), then patch self.ctx.phases/
-        self.ctx._next_workchain) to change "what runs" without touching any other part of the FSM engine. See
-        the class docstring's Design rationale [2] for the intended future use (an ML/interpolation surrogate
-        overriding just the '2DFTvo'/'3G0W0' entries)."""
-        #[1] Generic phase-index FSM position (see WorkflowPhase above)
-        self.ctx.phase_idx = -1        # -1 = not yet started
-        self.ctx.phase_status = None   # meaningful only once phase_idx is in range
-        self.ctx.terminal = None       # None while iterating; TerminalState once done
-
-        #[2] Ordered phase list - DFT/GW only. A subclass wanting a different '3G0W0' child class (e.g. a future
-        # ML/interpolation surrogate) overrides initialize(), calls super().initialize() first, then replaces the
-        # relevant entries of self.ctx.phases (and self.ctx._next_workchain[key] below) afterward.
-        self.ctx.phases = (
+        A subclass wanting a different pipeline overrides this method, calls super().initialize() first, then
+        replaces self.ctx.state with WorkflowState.for_phases(new_phases, starting_RemoteData=...) - built from
+        self.ctx.state.phases plus/minus whatever entries it wants to add or replace - to change "what runs"
+        without touching any other part of the FSM engine. See the class docstring's Design rationale [2] for
+        the intended future use (an ML/interpolation surrogate overriding just the '2DFTvo'/'3G0W0' entries)."""
+        #[1] Ordered phase list - DFT/GW only.
+        phases = (
             WorkflowPhase(
                 key='1DFTgr',
-                get_restart_folder=lambda self: self.ctx.state_WC.starting_RemoteData,
+                process_class=WorkflowFactory('vasp.vasp'),
+                get_restart_folder=lambda self: self.ctx.state.starting_RemoteData,
                 build_inputs=lambda self: self._prepare_inputs_DFT(
-                    restart_folder=self.ctx.state_WC.starting_RemoteData, calc_type='1DFTgr'),
-                capture_outputs=lambda self, node: self.ctx.state_WC.restart_folders.__setitem__(
+                    restart_folder=self.ctx.state.starting_RemoteData, calc_type='1DFTgr'),
+                capture_outputs=lambda self, node: self.ctx.state.restart_folders.__setitem__(
                     'for_2DFTvo', node.outputs.remote_folder),
                 skip_if=lambda self: not self.inputs.ns_option.run_1DFTgr.value,
-                seed_restart_if_skipped=lambda self: self.ctx.state_WC.restart_folders.__setitem__(
-                    'for_2DFTvo', self.ctx.state_WC.starting_RemoteData),
+                seed_restart_if_skipped=lambda self: self.ctx.state.restart_folders.__setitem__(
+                    'for_2DFTvo', self.ctx.state.starting_RemoteData),
             ),
             WorkflowPhase(
                 key='2DFTvo',
-                get_restart_folder=lambda self: self.ctx.state_WC.restart_folders.for_2DFTvo,
+                process_class=WorkflowFactory('vasp.vasp'),
+                get_restart_folder=lambda self: self.ctx.state.restart_folders.for_2DFTvo,
                 required_files=('WAVECAR',),
                 missing_files_exit_code_name='NO_STARTING_WAVECAR_forDFTvo',
                 build_inputs=lambda self: self._prepare_inputs_DFT(
-                    restart_folder=self.ctx.state_WC.restart_folders.for_2DFTvo, calc_type='2DFTvo'),
-                capture_outputs=lambda self, node: self.ctx.state_WC.restart_folders.__setitem__(
+                    restart_folder=self.ctx.state.restart_folders.for_2DFTvo, calc_type='2DFTvo'),
+                capture_outputs=lambda self, node: self.ctx.state.restart_folders.__setitem__(
                     'for_3G0W0', node.outputs.remote_folder),
                 skip_if=lambda self: not self.inputs.ns_option.run_2DFTvo_3G0W0.value,
             ),
             WorkflowPhase(
                 key='3G0W0',
-                get_restart_folder=lambda self: self.ctx.state_WC.restart_folders.for_3G0W0,
+                process_class=VaspAtomicG0W0WorkChain,
+                get_restart_folder=lambda self: self.ctx.state.restart_folders.for_3G0W0,
                 required_files=('WAVECAR', 'WAVEDER'),
                 missing_files_exit_code_name='NO_STARTING_WAVECAR_WAVEDER_forG0W0',
                 build_inputs=lambda self: self._prepare_inputs_G0W0(
-                    restart_folder=self.ctx.state_WC.restart_folders.for_3G0W0),
+                    restart_folder=self.ctx.state.restart_folders.for_3G0W0),
                 capture_outputs=lambda self, node: None,
                 skip_if=lambda self: not self.inputs.ns_option.run_2DFTvo_3G0W0.value,
             ),
@@ -192,96 +286,102 @@ class VaspG0W0GroundUpWorkChain(WorkChain):
         # restart-folder validation, but harmless to keep as defense-in-depth (fails fast in validate_step, before
         # a submission is even attempted).
 
-        #[3] Which workchain class should be submitted for each phase - grouped right here with self.ctx.phases so
-        # a subclass overriding "what actually runs" only has one place to look.
-        self.ctx._next_workchain = {
-            '1DFTgr': WorkflowFactory('vasp.vasp'),
-            '2DFTvo': WorkflowFactory('vasp.vasp'),
-            '3G0W0':  VaspAtomicG0W0WorkChain,
-        }
-
-        #[4] Workflow state container. submitted/retries are seeded generically from self.ctx.phases (rather than
-        # hardcoded phase-name literals) so a subclass overriding self.ctx.phases needs no changes here at all.
-        self.ctx.state_WC = AttributeDict({
-            'starting_RemoteData': None,
-            'restart_folders': AttributeDict({
-                'for_2DFTvo': None,   # RemoteData with WAVECAR + CHGCAR
-                'for_3G0W0':  None,   # RemoteData with WAVECAR + WAVEDER
-            }),
-            'submitted': AttributeDict({phase.key: [] for phase in self.ctx.phases}),
-            'retries':   AttributeDict({phase.key: 0  for phase in self.ctx.phases}),
-        })
-
-        #[5] Store optional external starting RemoteData
+        #[2] External starting RemoteData, if supplied
         try:
-            self.ctx.state_WC.starting_RemoteData = self.inputs.ns_reference.starting_RemoteData
+            starting_RemoteData = self.inputs.ns_reference.starting_RemoteData
         except Exception:
-            self.ctx.state_WC.starting_RemoteData = None
+            starting_RemoteData = None
 
-        #[6] Scratch space used later by prepare/execute
-        self.ctx.inputs_finalized = None
+        #[3] The whole FSM state machine (see WorkflowState above)
+        self.ctx.state = WorkflowState.for_phases(phases, starting_RemoteData=starting_RemoteData)
 
-        #[7] Spin polarization: magnetic_moment_onsite is a top-level exposed port (from VaspAtomicG0W0WorkChain's
+        #[4] Spin polarization: magnetic_moment_onsite is a top-level exposed port (from VaspAtomicG0W0WorkChain's
         # namespace).
         self.ctx.is_spinpol  = ('magnetic_moment_onsite' in self.inputs)
         self.ctx.spin_labels = ('spinUp', 'spinDw') if self.ctx.is_spinpol else ('spinUp',)
 
     def should_wc_continue(self) -> bool:
         """Determine whether the workflow should continue looping."""
-        return self.ctx.terminal is None
+        return self.ctx.state.terminal is None
 
-    def _advance_to_first_runnable_phase(self):
-        """Move ctx.phase_idx forward past any phase (leading, or reached mid-loop after a previous phase
-        completes) whose skip_if(self) is True, running each skipped phase's seed_restart_if_skipped hook once.
-        Called both at INIT (phase_idx -1 -> 0) and after each phase completes. Sets ctx.terminal=COMPLETE once
-        every remaining phase is skipped/done."""
-        phases = self.ctx.phases
-        while self.ctx.phase_idx < len(phases) and phases[self.ctx.phase_idx].skip_if(self):
-            phases[self.ctx.phase_idx].seed_restart_if_skipped(self)
-            self.ctx.phase_idx += 1
-        if self.ctx.phase_idx >= len(phases):
-            self.ctx.terminal = TerminalState.COMPLETE
+    def check_skip(self):
+        """The only place any phase's skip_if is ever consulted. Runs every while_() iteration, immediately
+        after update_step_phaseidx: while the phase at the current phase_idx is still NOT_STARTED and its
+        skip_if(self) is True, marks it SKIPPED, runs its seed_restart_if_skipped hook once (the skip-time
+        analog of capture_outputs - forwards whatever state the *next* phase would otherwise have gotten from
+        a normal run), and advances phase_idx - repeating until it lands on a phase that should actually run,
+        or runs out of phases (ctx.state.terminal = COMPLETE). Marks whatever phase it lands on PENDING, so
+        validate_step onward can assume they are only ever looking at a confirmed non-skipped, PENDING phase."""
+        state = self.ctx.state
+        if state.terminal is not None:
+            return  # already decided to stop
+        if state.current_status != PhaseStatus.NOT_STARTED:
+            return  # this phase's skip decision was already made - normal for most iterations
+        phases = state.phases
+        while state.phase_idx < len(phases) and phases[state.phase_idx].skip_if(self):
+            state.current_status = PhaseStatus.SKIPPED
+            phases[state.phase_idx].seed_restart_if_skipped(self)
+            self.report(f"[<{self.inputs.ns_option.calculation_label.value}> check_skip] {phases[state.phase_idx].key} skipped")
+            state.phase_idx += 1
+        if state.phase_idx >= len(phases):
+            state.terminal = WorkflowTerminalState.COMPLETE
         else:
-            self.ctx.phase_status = PhaseStatus.PENDING
+            state.current_status = PhaseStatus.PENDING
 
-    def update_state(self):
-        """Update the FSM execution state: inspect the current phase_idx/phase_status, inspect the last submitted
-        workchain for the active phase (if any), decide the next phase_idx/phase_status/terminal. Performs no
-        submissions and no INCAR/input preparation. Generic over self.ctx.phases."""
-        #[1] Not yet started -> pick the first runnable phase
-        if self.ctx.phase_idx == -1:
-            self.ctx.phase_idx = 0
-            self.report(f"[<{self.inputs.ns_option.calculation_label.value}> update_state] starting phase loop over {[p.key for p in self.ctx.phases]}")
-            self._advance_to_first_runnable_phase()
+    def update_step_phaseidx(self):
+        """(renamed from update_state) React to the active phase's submitted child node, if it is RUNNING:
+        still running (no-op) / finished successfully (record COMPLETED, advance phase_idx by 1) / finished
+        with a failure (retry, or FAILED if retries are exhausted). Performs no submissions and no INCAR/input
+        preparation, and contains NO skip logic at all - see check_skip, which runs immediately after this in
+        the same while_() iteration and is the only place any phase's skip_if is ever consulted. Generic over
+        self.ctx.state.phases."""
+        state = self.ctx.state
+
+        #[1] Not yet started -> point phase_idx at the first phase; check_skip (next step) decides whether it
+        # is actually runnable.
+        if state.phase_idx == -1:
+            state.phase_idx = 0
+            self.report(f"[<{self.inputs.ns_option.calculation_label.value}> update_step_phaseidx] starting phase loop over {[p.key for p in state.phases]}")
             return
 
-        phase = self.ctx.phases[self.ctx.phase_idx]
-
-        #[2] PENDING -> nothing to decide yet, execute_step will submit it
-        if self.ctx.phase_status != PhaseStatus.RUNNING:
+        #[2] Not RUNNING -> nothing submitted for the active phase yet this iteration, nothing to react to
+        if state.current_status != PhaseStatus.RUNNING:
             return
 
         #[3] RUNNING -> DONE (advance) / retry / FAIL
-        node = self.__last_wc_node(self.ctx, phase.key)
+        phase = state.current_phase
+        node = state.last_node_by_key(phase.key)
         if node is None or not node.is_finished:
             return
         if node.is_finished_ok:
             phase.capture_outputs(self, node)
-            self.report(f"[<{self.inputs.ns_option.calculation_label.value}> update_state] {phase.key} finished successfully")
-            self.ctx.phase_idx += 1
-            self._advance_to_first_runnable_phase()
+            self.report(f"[<{self.inputs.ns_option.calculation_label.value}> update_step_phaseidx] {phase.key} finished successfully")
+            state.current_status = PhaseStatus.COMPLETED
+            state.phase_idx += 1
         else:
-            return_error = self.__handle_failure_with_retry(step=phase.key)
-            if return_error is not None:
-                return return_error
+            return self.__handle_failure_with_retry()
         return
 
     def validate_step(self):
         """Validate prerequisites for the next PENDING step. Only performs checks (and, on failure, sets
-        terminal=FAILED); does NOT modify any other state. Generic over self.ctx.phases."""
-        if self.ctx.phase_idx == -1 or self.ctx.phase_status != PhaseStatus.PENDING:
-            return
-        phase = self.ctx.phases[self.ctx.phase_idx]
+        terminal=FAILED and marks the active phase FAILED); does NOT modify any other state. Generic over
+        self.ctx.state.phases.
+
+        update_step_phaseidx/check_skip always run immediately before this in the same while_() iteration, and
+        either leave ctx.state.terminal set (workflow already decided to stop - e.g. every remaining phase got
+        skipped) or have already put the active phase into PENDING - so if terminal is still None, anything
+        other than PENDING here means that invariant broke (e.g. a subclass overriding one of those steps
+        incorrectly): raise rather than silently doing nothing, since that would otherwise hang the workflow."""
+        state = self.ctx.state
+        if state.terminal is not None:
+            return  # a previous step this same iteration already decided to stop
+        if state.current_status != PhaseStatus.PENDING:
+            raise RuntimeError(
+                f"validate_step reached with phase_idx={state.phase_idx}, current_status={state.current_status} "
+                "while ctx.state.terminal is still None - expected PENDING. This should never happen: "
+                "update_step_phaseidx/check_skip run immediately before this step and must have already "
+                "established it.")
+        phase = state.current_phase
         if not phase.required_files:
             return
         ok = self.__validate_remote_has_required_files(
@@ -290,46 +390,72 @@ class VaspG0W0GroundUpWorkChain(WorkChain):
             label=f'{phase.key} restart',
         )
         if not ok:
-            self.ctx.terminal = TerminalState.FAILED
+            state.current_status = PhaseStatus.FAILED
+            state.terminal = WorkflowTerminalState.FAILED
             return getattr(self.exit_codes, phase.missing_files_exit_code_name)
 
     def correct_previous_errors(self):
         """Attempt to correct errors from a previous failed calculation before resubmitting. Currently a NO-OP;
-        intended to be extended in the future. MUST NOT submit calculations."""
+        intended to be extended in the future. MUST NOT submit calculations.
+
+        This is a workchain-level, cross-phase complement to each child process's own `@process_handler`-based
+        error handling (e.g. a VaspWorkChain's BaseRestartWorkChain handlers) - those inspect and react to a
+        single failed child node from the inside; this method would instead sit here, between prepare_step and
+        execute_step, with the ability to patch ctx.state.inputs_finalized (built by prepare_step, for the
+        phase at ctx.state.phase_idx) before execute_step submits it - e.g. reacting to a pattern only visible
+        across retries/phases, which no single child process handler would see on its own."""
         return
 
+    def prepare_step(self):
+        """Build inputs for the active phase, if it is PENDING. Sets ctx.state.inputs_finalized and advances
+        current_status to PREPAREDINPUTS; does NOT submit. Generic over self.ctx.state.phases.
+
+        validate_step always runs immediately before this in the same while_() iteration; see its docstring
+        for why anything other than PENDING here (while ctx.state.terminal is still None) is a broken
+        invariant, not a normal condition to silently return on."""
+        state = self.ctx.state
+        if state.terminal is not None:
+            return  # a previous step this same iteration already decided to stop
+        if state.current_status != PhaseStatus.PENDING:
+            raise RuntimeError(
+                f"prepare_step reached with phase_idx={state.phase_idx}, current_status={state.current_status} "
+                "while ctx.state.terminal is still None - expected PENDING. This should never happen.")
+        phase = state.current_phase  # ctx.state.phase_idx is the sole source of truth for "which phase is active"
+        state.inputs_finalized = phase.build_inputs(self)
+        state.current_status = PhaseStatus.PREPAREDINPUTS
+
     def execute_step(self):
-        """Submit the active phase's calculation, if it is PENDING. Generic over self.ctx.phases."""
-        if self.ctx.phase_idx == -1 or self.ctx.phase_status != PhaseStatus.PENDING:
-            return
-        phase = self.ctx.phases[self.ctx.phase_idx]
+        """Submit the active phase's calculation, if its inputs were just built (PREPAREDINPUTS) this
+        iteration. Generic over self.ctx.state.phases.
+
+        prepare_step always runs immediately before this in the same while_() iteration; see validate_step's
+        docstring for why anything other than PREPAREDINPUTS here (while ctx.state.terminal is still None) is
+        a broken invariant, not a normal condition to silently return on."""
+        state = self.ctx.state
+        if state.terminal is not None:
+            return  # a previous step this same iteration already decided to stop
+        if state.current_status != PhaseStatus.PREPAREDINPUTS:
+            raise RuntimeError(
+                f"execute_step reached with phase_idx={state.phase_idx}, current_status={state.current_status} "
+                "while ctx.state.terminal is still None - expected PREPAREDINPUTS. This should never happen.")
+        phase = state.current_phase  # ctx.state.phase_idx is the sole source of truth for "which phase is active"
 
         #[1] Submit
-        running_wc = self.submit(self.ctx._next_workchain[phase.key], **self.ctx.inputs_finalized)
+        running_wc = self.submit(phase.process_class, **state.inputs_finalized)
 
-        #[2] Bump retry counter (this submission attempt)
-        self.ctx.state_WC.retries[phase.key] += 1
-        tmp_attempt_num = self.ctx.state_WC.retries[phase.key]
+        #[2] Bump retry counter (this submission attempt) and record the node
+        state.retries[state.phase_idx] += 1
+        tmp_attempt_num = state.retries[state.phase_idx]
+        state.record_node(running_wc)
 
-        #[3] Record submission into state_WC
-        self.ctx.state_WC.submitted[phase.key].append(running_wc)
+        #[3] Update execution state
+        state.current_status = PhaseStatus.RUNNING
 
-        #[4] Update execution state
-        self.ctx.phase_status = PhaseStatus.RUNNING
-
-        #[5] Log
+        #[4] Log
         self.__report_compact_submission(running_wc, tmp_attempt_num, phase.key)
 
-        #[6] Register dependency for engine
+        #[5] Register dependency for engine
         return ToContext(**{f'calc_{phase.key}': running_wc})
-
-    def prepare_step(self):
-        """Prepare inputs for the active phase, if it is PENDING. Builds inputs_finalized; does NOT submit and
-        does NOT change execution state. Generic over self.ctx.phases."""
-        if self.ctx.phase_idx == -1 or self.ctx.phase_status != PhaseStatus.PENDING:
-            return
-        phase = self.ctx.phases[self.ctx.phase_idx]
-        self.ctx.inputs_finalized = phase.build_inputs(self)
 
     def elaborate_results(self):
         """Final post-processing and output assembly:
@@ -344,18 +470,18 @@ class VaspG0W0GroundUpWorkChain(WorkChain):
         where spin_label in {'spinUp', 'spinDw'}. All numerical values are floats in eV."""
 
         # ---------------------------------------------------------
-        #[1] Determine last successful DFT and G0W0 nodes. Generic: reads state_WC.submitted presence (via
-        # __last_wc_node, which returns None when a phase was never submitted) rather than re-deriving "did this
-        # phase run" from the ns_option.* input flags - this is what lets a subclass with a differently-skipped
-        # '2DFTvo' (e.g. an ML surrogate, see the class docstring) work here with zero override: the later of
-        # '1DFTgr'/'2DFTvo' that actually produced a node wins as the DFT baseline, and '3G0W0' is looked up
-        # unconditionally regardless of *why* an earlier phase was or wasn't skipped.
+        #[1] Determine last successful DFT and G0W0 nodes. Generic: reads ctx.state.nodes presence (via
+        # last_node_by_key, which returns None when a phase was never submitted) rather than re-deriving "did
+        # this phase run" from the ns_option.* input flags - this is what lets a subclass with a differently-
+        # skipped '2DFTvo' (e.g. an ML surrogate, see the class docstring) work here with zero override: the
+        # later of '1DFTgr'/'2DFTvo' that actually produced a node wins as the DFT baseline, and '3G0W0' is
+        # looked up unconditionally regardless of *why* an earlier phase was or wasn't skipped.
         last_node_DFT = None
         for key in ('1DFTgr', '2DFTvo'):
-            node = self.__last_wc_node(self.ctx, key)
+            node = self.ctx.state.last_node_by_key(key)
             if node is not None:
                 last_node_DFT = node
-        last_node_G0W0 = self.__last_wc_node(self.ctx, '3G0W0')
+        last_node_G0W0 = self.ctx.state.last_node_by_key('3G0W0')
 
         #[2] Expose node outputs that do not need further elaboration
         if last_node_DFT:
@@ -369,7 +495,7 @@ class VaspG0W0GroundUpWorkChain(WorkChain):
             self.out('RemoteData_G0W0', last_node_G0W0.outputs.remote_folder)
             self.out('bands_G0W0',      last_node_G0W0.outputs.bands)
 
-        #[3] spin handling - magnetic_moment_onsite is a top-level port here (see initialize()'s comment [7]).
+        #[3] spin handling - magnetic_moment_onsite is a top-level port here (see initialize()'s comment [4]).
         spin_channels = ([0, 1] if "magnetic_moment_onsite" in self.inputs else [None])
 
         #[4] Elaborate DFT and G0W0 bands
@@ -510,7 +636,7 @@ class VaspG0W0GroundUpWorkChain(WorkChain):
         be performed earlier (validate_step)."""
         #[1] Base
         inputs = AttributeDict()
-        inputs.update(self.exposed_inputs(self.ctx._next_workchain[calc_type]))
+        inputs.update(self.exposed_inputs(self.ctx.state.current_phase.process_class))
         inputs.clean_workdir = Bool(False)
         inputs.restart_folder = restart_folder
 
@@ -561,25 +687,22 @@ class VaspG0W0GroundUpWorkChain(WorkChain):
         prepared_inputs = prepare_process_inputs(inputs, namespaces=['calc', 'dynamics', 'verify'])
         return prepared_inputs
 
-    ##[HELPER FUNCTIONS for update_state and validate_step]
-    @staticmethod
-    def __last_wc_node(ctx, step: str):
-        """Return last submitted child WC node for a given submitted list key: '1DFTgr' | '2DFTvo' | '3G0W0'."""
-        lst = ctx.state_WC.submitted.get(step, [])
-        return lst[-1] if lst else None
-
-    def __handle_failure_with_retry(self, step: str):
-        """Handle a failed step with retry logic. Returns an ExitCode if retries are exhausted, otherwise None
-        (and resets ctx.phase_status back to PENDING for the same ctx.phase_idx)."""
+    ##[HELPER FUNCTIONS for update_step_phaseidx and validate_step]
+    def __handle_failure_with_retry(self):
+        """Handle a failed active phase with retry logic. Returns an ExitCode if retries are exhausted,
+        otherwise None (and resets the active phase's status back to PENDING for the same phase_idx)."""
+        state = self.ctx.state
+        phase = state.current_phase
         max_iter = self.inputs.ns_option.maximum_iterations.value
-        retries  = self.ctx.state_WC.retries[step]
+        retries = state.retries[state.phase_idx]
         if retries < max_iter:
-            self.report(f"[update_state] {step} failed, retrying (attempt {retries+1}/{max_iter})")
-            self.ctx.phase_status = PhaseStatus.PENDING
+            self.report(f"[update_step_phaseidx] {phase.key} failed, retrying (attempt {retries+1}/{max_iter})")
+            state.current_status = PhaseStatus.PENDING
             return None
 
-        self.report(f"[update_state] {step} failed AND maximum retries reached -> ABORT")
-        self.ctx.terminal = TerminalState.FAILED
+        self.report(f"[update_step_phaseidx] {phase.key} failed AND maximum retries reached -> ABORT")
+        state.current_status = PhaseStatus.FAILED
+        state.terminal = WorkflowTerminalState.FAILED
         return self.exit_codes.REACHED_MAXIMUM_TRY_NUMBER
 
     def __validate_remote_has_required_files(self, remote, required, label: str):
@@ -591,11 +714,11 @@ class VaspG0W0GroundUpWorkChain(WorkChain):
         try:
             files = set(remote.listdir())
         except Exception as exc:
-            self.report(f"[update_state] Could not list {label} folder contents: {exc}")
+            self.report(f"[validate_step] Could not list {label} folder contents: {exc}")
             return False
         missing = [fname for fname in required if fname not in files]
         if missing:
-            self.report(f"[update_state] {label} missing required files: {missing}")
+            self.report(f"[validate_step] {label} missing required files: {missing}")
             return False
         return True
 
@@ -666,8 +789,8 @@ class VaspG0W0GroundUpWorkChain(WorkChain):
         except Exception:
             label = ""
         prolog = (f"[<{label}> execute_step] launching {calc_type} pk={running_wc.pk} "
-                  f"(attempt num={tmp_attempt}) -> state updated to={calc_type} {self.ctx.phase_status.name}")
-
+                  f"(attempt num={tmp_attempt}) -> state updated to={calc_type} {self.ctx.state.current_status.name}")
+rrrrrrrrrrrrrrrrrrrrrrrrrrrrrn
         msg = prolog + "\n" + self.__generate_compact_submission_string(running_wc) + "\n"
         self.report(msg)
 

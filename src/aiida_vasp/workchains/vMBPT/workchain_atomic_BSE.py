@@ -313,9 +313,25 @@ class VaspAtomicBSEWorkChain(VaspWorkChain):
 
         return incar
 
+    def __build_settings(self, extra_copy_files=()):
+        """Build the 'settings' dict passed to VaspCalculation, merging into whatever the caller/exposing-parent
+        already put in self.ctx.inputs.settings (set by super().init_inputs() from self.inputs.settings) rather
+        than overwriting it - same merge pattern as VaspAtomicG0W0WorkChain.__build_settings(). A caller
+        composing this class into a larger workflow (e.g. a GroundUp chain) may already have settings of its
+        own (e.g. parser_settings); overwriting wholesale would silently drop those. Ensures WAVEDER (always)
+        and, for algo=='BSE', the per-k-point WFULL*/W0* screening-restart files actually present in
+        restart_folder are remote-copied, on top of whatever else was already requested."""
+        settings = dict(self.ctx.inputs.get('settings') or {})
+        copy_list = list(settings.get('ADDITIONAL_REMOTE_COPY_LIST', []))
+        for name in ('WAVEDER', *extra_copy_files):
+            if name not in copy_list:
+                copy_list.append(name)
+        settings['ADDITIONAL_REMOTE_COPY_LIST'] = copy_list
+        return settings
+
     def init_inputs(self):
         # Perform the superclass input initialization first, so that the inputs namespace is fully populated and ready for validation.
-        exit_code = super().init_inputs()            
+        exit_code = super().init_inputs()
         if exit_code is not None: return exit_code
 
         #[1] Validate the inputs entries for consistency and completeness.
@@ -325,7 +341,6 @@ class VaspAtomicBSEWorkChain(VaspWorkChain):
         algo = self.inputs.optical.algo.value
 
         self.ctx.inputs.parameters = self.__build_parameters(algo)
-        self.ctx.inputs.settings = {'ADDITIONAL_REMOTE_COPY_LIST': ['WAVEDER']}
 
         required = ('WAVECAR', 'WAVEDER')
         or_groups = (tuple(f'{prefix}*' for prefix in BSE_SCREENING_FILE_PREFIXES),) if algo == 'BSE' else ()
@@ -333,9 +348,8 @@ class VaspAtomicBSEWorkChain(VaspWorkChain):
         if files is None:
             return self.exit_codes.ERROR_MISSING_RESTART_FILES
 
-        if algo == 'BSE':
-            extra = [name for name in files if name.startswith(BSE_SCREENING_FILE_PREFIXES)]
-            self.ctx.inputs.settings['ADDITIONAL_REMOTE_COPY_LIST'].extend(extra)
+        extra_copy_files = [name for name in files if name.startswith(BSE_SCREENING_FILE_PREFIXES)] if algo == 'BSE' else ()
+        self.ctx.inputs.settings = self.__build_settings(extra_copy_files)
 
         return None
 

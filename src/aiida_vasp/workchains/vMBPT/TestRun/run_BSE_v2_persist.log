@@ -1,0 +1,196 @@
+/home/lvarras1/venv_AiiDA_202608_refactor/lib/python3.12/site-packages/aiida/orm/nodes/data/code/legacy.py:288: AiidaDeprecationWarning: `Code.get_from_string` classmethod is deprecated, use `aiida.orm.load_code` instead. (this will be removed in v3)
+  warn_deprecation(
+/home/lvarras1/venv_AiiDA_202608_refactor/lib/python3.12/site-packages/aiida/orm/nodes/data/code/legacy.py:209: AiidaDeprecationWarning: `Code.get_code_helper` classmethod is deprecated, use `aiida.orm.load_code` instead. (this will be removed in v3)
+  warn_deprecation(
+08/24/2026 07:35:19 PM <52366> aiida.broker.rabbitmq: [WARNING] RabbitMQ v3.12.1 is not supported and will cause unexpected problems!
+08/24/2026 07:35:19 PM <52366> aiida.broker.rabbitmq: [WARNING] It can cause long-running workflows to crash and jobs to be submitted multiple times.
+08/24/2026 07:35:19 PM <52366> aiida.broker.rabbitmq: [WARNING] See https://github.com/aiidateam/aiida-core/wiki/RabbitMQ-version-to-use for details.
+/home/lvarras1/Documents_AI/09-Project-DBMBPT_ML/01_AiiDA/AiiDA_Develop/aiida-vasp-dev-refactor/src/aiida_vasp/common/__init__.py:87: UserWarning: The use of `options` port is deprecated, please use `calc.metadata.options` instead.
+  warnings.warn('The use of `options` port is deprecated, please use `calc.metadata.options` instead.')
+/home/lvarras1/Documents_AI/09-Project-DBMBPT_ML/01_AiiDA/AiiDA_Develop/aiida-vasp-dev-refactor/src/aiida_vasp/common/__init__.py:87: UserWarning: The use of `options` port is deprecated, please use `calc.metadata.options` instead.
+  warnings.warn('The use of `options` port is deprecated, please use `calc.metadata.options` instead.')
+08/24/2026 07:35:23 PM <52366> aiida.orm.nodes.process.workflow.workchain.WorkChainNode: [REPORT] [91450|VaspG0W0GroundUpWorkChain|update_step_phaseidx]: [<BP_BSE_smoketest> update_step_phaseidx] starting phase loop over ['1DFTgr', '2DFTvo', '3G0W0']
+/home/lvarras1/Documents_AI/09-Project-DBMBPT_ML/01_AiiDA/AiiDA_Develop/aiida-vasp-dev-refactor/src/aiida_vasp/common/__init__.py:87: UserWarning: The use of `options` port is deprecated, please use `calc.metadata.options` instead.
+  warnings.warn('The use of `options` port is deprecated, please use `calc.metadata.options` instead.')
+08/24/2026 07:35:24 PM <52366> aiida.orm.nodes.process.workflow.workchain.WorkChainNode: [REPORT] [91450|VaspG0W0GroundUpWorkChain|__report_compact_submission]: [<BP_BSE_smoketest> execute_step] launching 1DFTgr pk=91454 (attempt num=1) -> state updated to=1DFTgr RUNNING
+  > nbands=None  encut=None  encut_chi=None  nomega=None  kpar=None
+  > kpts_mesh=[1, 1, 1] nkpts=1
+  > potcars_family=PBE.54  potcars_mapping={'B': 'B_GW', 'P': 'P_GW'}
+
+08/24/2026 07:35:26 PM <52366> aiida.orm.nodes.process.workflow.workchain.WorkChainNode: [REPORT] [91454|VaspWorkChain|run_process]: launching VaspCalculation<91458> iteration #1
+08/24/2026 07:35:27 PM <52366> aiida.scheduler.direct: [WARNING] Physical memory limiting is not supported by the direct scheduler.
+08/24/2026 07:35:31 PM <52366> aiida.engine.processes.calcjobs.tasks: [WARNING] CalcJob<91458> already marked as `CalcJobState.STASHING`, skipping task_monitor_job
+08/24/2026 07:35:33 PM <52366> aiida.orm.nodes.process.workflow.workchain.WorkChainNode: [REPORT] [91454|VaspWorkChain|results]: work chain completed after 1 iterations
+08/24/2026 07:35:33 PM <52366> aiida.orm.nodes.process.workflow.workchain.WorkChainNode: [REPORT] [91454|VaspWorkChain|on_terminated]: remote folders will not be cleaned
+08/24/2026 07:35:33 PM <52366> aiida.orm.nodes.process.workflow.workchain.WorkChainNode: [REPORT] [91450|VaspG0W0GroundUpWorkChain|update_step_phaseidx]: [<BP_BSE_smoketest> update_step_phaseidx] 1DFTgr finished successfully
+/home/lvarras1/Documents_AI/09-Project-DBMBPT_ML/01_AiiDA/AiiDA_Develop/aiida-vasp-dev-refactor/src/aiida_vasp/common/__init__.py:87: UserWarning: The use of `options` port is deprecated, please use `calc.metadata.options` instead.
+  warnings.warn('The use of `options` port is deprecated, please use `calc.metadata.options` instead.')
+08/24/2026 07:35:35 PM <52366> aiida.orm.nodes.process.workflow.workchain.WorkChainNode: [REPORT] [91450|VaspG0W0GroundUpWorkChain|__report_compact_submission]: [<BP_BSE_smoketest> execute_step] launching 2DFTvo pk=91471 (attempt num=1) -> state updated to=2DFTvo RUNNING
+  > nbands=12  encut=None  encut_chi=None  nomega=None  kpar=None
+  > kpts_mesh=[1, 1, 1] nkpts=1
+  > potcars_family=PBE.54  potcars_mapping={'B': 'B_GW', 'P': 'P_GW'}
+
+08/24/2026 07:35:36 PM <52366> aiida.orm.nodes.process.workflow.workchain.WorkChainNode: [REPORT] [91471|VaspWorkChain|run_process]: launching VaspCalculation<91475> iteration #1
+08/24/2026 07:35:37 PM <52366> aiida.scheduler.direct: [WARNING] Physical memory limiting is not supported by the direct scheduler.
+08/24/2026 07:35:41 PM <52366> aiida.engine.processes.calcjobs.tasks: [WARNING] CalcJob<91475> already marked as `CalcJobState.STASHING`, skipping task_monitor_job
+08/24/2026 07:35:43 PM <52366> aiida.orm.nodes.process.workflow.workchain.WorkChainNode: [REPORT] [91471|VaspWorkChain|check_electronic_converged]: The calculation contains at least one electronic minimization that was truncated. It should thus not be considered converged. Upon request from user, this is ignored.
+08/24/2026 07:35:43 PM <52366> aiida.orm.nodes.process.workflow.workchain.WorkChainNode: [REPORT] [91471|VaspWorkChain|results]: work chain completed after 1 iterations
+08/24/2026 07:35:43 PM <52366> aiida.orm.nodes.process.workflow.workchain.WorkChainNode: [REPORT] [91471|VaspWorkChain|on_terminated]: remote folders will not be cleaned
+08/24/2026 07:35:44 PM <52366> aiida.orm.nodes.process.workflow.workchain.WorkChainNode: [REPORT] [91450|VaspG0W0GroundUpWorkChain|update_step_phaseidx]: [<BP_BSE_smoketest> update_step_phaseidx] 2DFTvo finished successfully
+/home/lvarras1/Documents_AI/09-Project-DBMBPT_ML/01_AiiDA/AiiDA_Develop/aiida-vasp-dev-refactor/src/aiida_vasp/common/__init__.py:87: UserWarning: The use of `options` port is deprecated, please use `calc.metadata.options` instead.
+  warnings.warn('The use of `options` port is deprecated, please use `calc.metadata.options` instead.')
+08/24/2026 07:35:45 PM <52366> aiida.orm.nodes.process.workflow.workchain.WorkChainNode: [REPORT] [91450|VaspG0W0GroundUpWorkChain|__report_compact_submission]: [<BP_BSE_smoketest> execute_step] launching 3G0W0 pk=91487 (attempt num=1) -> state updated to=3G0W0 RUNNING
+  > nbands=None  encut=None  encut_chi=None  nomega=None  kpar=None
+  > kpts_mesh=[1, 1, 1] nkpts=1
+  > potcars_family=PBE.54  potcars_mapping={'B': 'B_GW', 'P': 'P_GW'}
+
+08/24/2026 07:35:46 PM <52366> aiida.orm.nodes.process.workflow.workchain.WorkChainNode: [REPORT] [91487|VaspAtomicG0W0WorkChain|__validate_inputs_entries]: WARNING: encut not supplied - VASP will infer ENCUT from the restarted WAVECAR.
+08/24/2026 07:35:47 PM <52366> aiida.orm.nodes.process.workflow.workchain.WorkChainNode: [REPORT] [91487|VaspAtomicG0W0WorkChain|run_process]: launching VaspCalculation<91492> iteration #1
+08/24/2026 07:35:47 PM <52366> aiida.scheduler.direct: [WARNING] Physical memory limiting is not supported by the direct scheduler.
+08/24/2026 07:35:51 PM <52366> aiida.engine.processes.calcjobs.tasks: [WARNING] CalcJob<91492> already marked as `CalcJobState.STASHING`, skipping task_monitor_job
+08/24/2026 07:35:52 PM <52366> aiida.parser.VaspParser: [WARNING] The following quantities cannot be parsed due to errors: structure
+08/24/2026 07:35:53 PM <52366> aiida.orm.nodes.process.workflow.workchain.WorkChainNode: [REPORT] [91487|VaspAtomicG0W0WorkChain|results]: work chain completed after 1 iterations
+08/24/2026 07:35:54 PM <52366> aiida.orm.nodes.process.workflow.workchain.WorkChainNode: [REPORT] [91487|VaspAtomicG0W0WorkChain|on_terminated]: remote folders will not be cleaned
+08/24/2026 07:35:54 PM <52366> aiida.orm.nodes.process.workflow.workchain.WorkChainNode: [REPORT] [91450|VaspG0W0GroundUpWorkChain|update_step_phaseidx]: [<BP_BSE_smoketest> update_step_phaseidx] 3G0W0 finished successfully
+08/24/2026 07:35:56 PM <52366> aiida.orm.nodes.process.workflow.workchain.WorkChainNode: [REPORT] [91450|VaspG0W0GroundUpWorkChain|__report_compact_results]: [<BP_BSE_smoketest> elaborate_results] Summary
+  [1] DFT perf: elapsed=00:00:03  -  mpi_ranks=1
+  [1] G0W0 perf: elapsed=00:00:02  -  mpi_ranks=1
+  [2] DFT inputs:
+  [2] nbands=12  encut=None  encut_chi=None  nomega=None  kpar=None
+  [2] kpts_mesh=[1, 1, 1] nkpts=1
+  [2] potcars_family=PBE.54  potcars_mapping={'B': 'B_GW', 'P': 'P_GW'}
+  [2]G0W0 inputs:
+  [2] nbands=None  encut=None  encut_chi=None  nomega=None  kpar=None
+  [2] kpts_mesh=[1, 1, 1] nkpts=1
+  [2] potcars_family=PBE.54  potcars_mapping={'B': 'B_GW', 'P': 'P_GW'}
+  [3] HOMO/LUMO - Spin component : spinUp
+  [3] HOMO DFT eigenvalues: [8.5887]
+  [3] LUMO DFT eigenvalues: [11.5214]
+  [3] HOMO GW eigenvalues : [8.6002]
+  [3] LUMO GW eigenvalues : [12.138]
+  [4] Gaps - Spin component : spinUp
+  [4] gap_DFT_Diruuid: 7125d1ff-5106-4833-aba8-c07ecb51ca3f (unstored) value: 2.9327
+  [4] gap_DFT_Induuid: 7f303c14-581c-461a-a620-846330652de4 (unstored) value: 2.9327
+  [4] gap_DFT_Gamuuid: 7fd5ab26-bb28-4a5f-98d3-5c8003a6fb4d (unstored) value: 2.9327
+  [4] gap_G0W0_Diruuid: b0855c7e-0baf-442c-8ade-57b1265d1f5e (unstored) value: 3.5378
+  [4] gap_G0W0_Induuid: d58ba3a3-0e0c-4121-8809-d43eeb1dc1fb (unstored) value: 3.5378
+  [4] gap_G0W0_Gamuuid: 3c9c0ade-0d80-4201-9a1c-46131ea051e7 (unstored) value: 3.5378
+  [5] QPc gaps spinUp: Dir=0.605  Ind=0.605  Gam=0.605
+
+08/24/2026 07:35:56 PM <52366> aiida.orm.nodes.process.workflow.workchain.WorkChainNode: [REPORT] [91449|VaspBSEGroundUpWorkChain|run_bse]: INFO: auto-filled optical.scissor=0.6051 from the G0W0 step's own gaps_QPc.
+/home/lvarras1/Documents_AI/09-Project-DBMBPT_ML/01_AiiDA/AiiDA_Develop/aiida-vasp-dev-refactor/src/aiida_vasp/common/__init__.py:87: UserWarning: The use of `options` port is deprecated, please use `calc.metadata.options` instead.
+  warnings.warn('The use of `options` port is deprecated, please use `calc.metadata.options` instead.')
+08/24/2026 07:35:58 PM <52366> aiida.orm.nodes.process.workflow.workchain.WorkChainNode: [REPORT] [91507|VaspAtomicBSEWorkChain|__validate_inputs_entries]: WARNING: encut not supplied - VASP will infer ENCUT from the restarted WAVECAR.
+08/24/2026 07:35:58 PM <52366> aiida.orm.nodes.process.workflow.workchain.WorkChainNode: [REPORT] [91507|VaspAtomicBSEWorkChain|__validate_inputs_entries]: WARNING: nbands not supplied - VASP will infer NBANDS from the restarted WAVECAR.
+08/24/2026 07:35:59 PM <52366> aiida.orm.nodes.process.workflow.workchain.WorkChainNode: [REPORT] [91507|VaspAtomicBSEWorkChain|run_process]: launching VaspCalculation<91512> iteration #1
+08/24/2026 07:36:00 PM <52366> aiida.scheduler.direct: [WARNING] Physical memory limiting is not supported by the direct scheduler.
+08/24/2026 07:36:02 PM <52366> aiida.engine.processes.calcjobs.tasks: [WARNING] CalcJob<91512> already marked as `CalcJobState.STASHING`, skipping task_monitor_job
+08/24/2026 07:36:03 PM <52366> aiida.parser.VaspParser: [WARNING] The following quantities cannot be parsed due to errors: structure
+08/24/2026 07:36:04 PM <52366> aiida.orm.nodes.process.workflow.workchain.WorkChainNode: [REPORT] [91507|VaspAtomicBSEWorkChain|results]: work chain completed after 1 iterations
+08/24/2026 07:36:05 PM <52366> aiida.orm.nodes.process.workflow.workchain.WorkChainNode: [REPORT] [91507|VaspAtomicBSEWorkChain|on_terminated]: cleaned remote folders of calculations: 91512
+[INFO] POTCARs available in family:
+    In: ['In', 'In_d', 'In_sv_GW', 'In_d_GW']
+    Ne: ['Ne_GW', 'Ne', 'Ne_s_GW']
+    Sr: ['Sr_sv', 'Sr_sv_GW']
+    Ta: ['Ta', 'Ta_sv_GW', 'Ta_pv']
+    Ba: ['Ba_sv', 'Ba_sv_GW']
+    W: ['W_sv', 'W_sv_GW', 'W']
+    Ti: ['Ti_sv_GW', 'Ti_sv', 'Ti', 'Ti_pv']
+    Mo: ['Mo_sv_GW', 'Mo_pv', 'Mo', 'Mo_sv']
+    Ga: ['Ga_h', 'Ga_GW', 'Ga_d', 'Ga_d_GW', 'Ga_sv_GW', 'Ga']
+    Ni: ['Ni_pv', 'Ni_GW', 'Ni', 'Ni_sv_GW']
+    Ag: ['Ag_pv', 'Ag_sv_GW', 'Ag_GW', 'Ag']
+    Cr: ['Cr_sv', 'Cr_sv_GW', 'Cr', 'Cr_pv']
+    Cl: ['Cl', 'Cl_h', 'Cl_GW']
+    K: ['K_sv_GW', 'K_sv', 'K_pv']
+    Fe: ['Fe_GW', 'Fe_pv', 'Fe_sv_GW', 'Fe_sv', 'Fe']
+    Cu: ['Cu', 'Cu_sv_GW', 'Cu_pv', 'Cu_GW']
+    Hf: ['Hf_pv', 'Hf_sv', 'Hf', 'Hf_sv_GW']
+    Li: ['Li_sv', 'Li_sv_GW', 'Li', 'Li_AE_GW', 'Li_GW']
+    N: ['N', 'N_h_GW', 'N_GW', 'N_GW_new', 'N_s_GW', 'N_s', 'N_h']
+    B: ['B_s', 'B', 'B_GW', 'B_h']
+    C: ['C', 'C_h', 'C_GW_new', 'C_GW', 'C_s', 'C_h_GW']
+    Y: ['Y_sv_GW', 'Y_sv']
+    Rh: ['Rh', 'Rh_sv_GW', 'Rh_pv', 'Rh_GW']
+    P: ['P_h', 'P', 'P_GW']
+    Te: ['Te_sv_GW', 'Te', 'Te_GW']
+    Co: ['Co_pv', 'Co_sv_GW', 'Co_GW', 'Co_sv', 'Co']
+    Al: ['Al_sv_GW', 'Al', 'Al_GW']
+    Bi: ['Bi_sv_GW', 'Bi', 'Bi_GW', 'Bi_d', 'Bi_d_GW']
+    Na: ['Na_sv_GW', 'Na_sv', 'Na_pv', 'Na']
+    V: ['V', 'V_sv', 'V_sv_GW', 'V_pv']
+    F: ['F_h', 'F_s', 'F_GW', 'F', 'F_GW_new', 'F_h_GW']
+    Nd: ['Nd']
+    I: ['I_sv_GW', 'I', 'I_GW']
+    Mg: ['Mg', 'Mg_pv_GW', 'Mg_pv', 'Mg_GW', 'Mg_sv_GW', 'Mg_sv']
+    He: ['He_GW', 'He', 'He_AE']
+    Hg: ['Hg_sv_GW', 'Hg']
+    Sc: ['Sc', 'Sc_sv', 'Sc_sv_GW']
+    Cd: ['Cd_sv_GW', 'Cd_GW', 'Cd']
+    Rn: ['Rn', 'Rn_d_GW', 'Rn_sv_GW']
+    Ge: ['Ge_d', 'Ge_GW', 'Ge_d_GW', 'Ge_h', 'Ge', 'Ge_sv_GW']
+    Ir: ['Ir_sv_GW', 'Ir']
+    Si: ['Si_sv_GW', 'Si', 'Si_GW']
+    Sb: ['Sb_d_GW', 'Sb', 'Sb_GW', 'Sb_sv_GW']
+    Zn: ['Zn_sv_GW', 'Zn', 'Zn_GW']
+    Be: ['Be_sv', 'Be_sv_GW', 'Be', 'Be_GW']
+    Pd: ['Pd_GW', 'Pd_sv_GW', 'Pd_pv', 'Pd']
+    Np: ['Np', 'Np_s']
+    Mn: ['Mn_pv', 'Mn_sv', 'Mn_GW', 'Mn_sv_GW', 'Mn']
+    As: ['As', 'As_GW', 'As_d', 'As_sv_GW']
+    Se: ['Se_GW', 'Se', 'Se_sv_GW']
+    O: ['O_GW', 'O_s_GW', 'O', 'O_h_GW', 'O_s', 'O_GW_new', 'O_h']
+    Tl: ['Tl_d', 'Tl', 'Tl_d_GW', 'Tl_sv_GW']
+    Ca: ['Ca_sv_GW', 'Ca_pv', 'Ca_sv']
+    Cs: ['Cs_sv_GW', 'Cs_sv']
+    S: ['S_GW', 'S', 'S_h']
+    La: ['La', 'La_s', 'La_GW']
+    Nb: ['Nb_pv', 'Nb_sv_GW', 'Nb_sv']
+    Sn: ['Sn_sv_GW', 'Sn_d_GW', 'Sn', 'Sn_d']
+    Kr: ['Kr', 'Kr_GW']
+    Au: ['Au_sv_GW', 'Au_GW', 'Au']
+    At: ['At', 'At_d_GW', 'At_sv_GW']
+    H: ['H_h_GW', 'H_GW', 'H_AE', 'H_h', 'H', 'H_s']
+    Os: ['Os', 'Os_pv', 'Os_sv_GW']
+    Ru: ['Ru_sv_GW', 'Ru', 'Ru_sv', 'Ru_pv']
+    Ce: ['Ce', 'Ce_h', 'Ce_GW']
+    Ar: ['Ar', 'Ar_GW']
+    Tc: ['Tc_pv', 'Tc_sv', 'Tc_sv_GW', 'Tc']
+    Pt: ['Pt_pv', 'Pt_GW', 'Pt_sv_GW', 'Pt']
+    Ho: ['Ho']
+    Rb: ['Rb_pv', 'Rb_sv_GW', 'Rb_sv']
+    Pa: ['Pa_s', 'Pa']
+    Pb: ['Pb_sv_GW', 'Pb', 'Pb_d', 'Pb_d_GW']
+    Br: ['Br_GW', 'Br', 'Br_sv_GW']
+    Zr: ['Zr_sv', 'Zr_sv_GW']
+    Gd: ['Gd']
+    Lu: ['Lu']
+    Ac: ['Ac']
+    Am: ['Am']
+    Fr: ['Fr_sv']
+    Th: ['Th']
+[INFO] Priority (GW-preferred): ['_sv_GW', '_d_GW', '_GW_new', '_h_GW', '_GW', '_sv', '_d']
+
+[INFO] Building element → POTCAR mapping
+
+  Element B
+    Candidates: ['B_s', 'B', 'B_GW', 'B_h']
+    Trying priority suffix matching...
+    → Selected by priority '_GW': B_GW
+    → Final selection: B_GW
+
+  Element P
+    Candidates: ['P_h', 'P', 'P_GW']
+    Trying priority suffix matching...
+    → Selected by priority '_GW': P_GW
+    → Final selection: P_GW
+
+[INFO] Final POTCAR mapping:
+    B: B_GW
+    P: P_GW
+Using code=Remote code 'vasp' on localhost pk: 6771, uuid: 27c769df-6a6e-4e04-b8cd-525ef06de5cb, computer_label=localhost
+Submitting VaspBSEGroundUpWorkChain (blocking run_get_node)...
+Finished: pk=91449 exit_status=0 is_finished_ok=True
+gaps = {'G0W0': {'spinUp': {'Dir': 3.5378, 'Ind': 3.5378, 'Gam': 3.5378}}, 'DFT': {'spinUp': {'Dir': 2.9327, 'Ind': 2.9327, 'Gam': 2.9327}}}
+gaps_QPc = {'spinUp': {'Dir': 0.6051, 'Ind': 0.6051, 'Gam': 0.6051}}
+bse outputs: ['bse']

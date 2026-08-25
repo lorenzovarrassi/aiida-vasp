@@ -45,37 +45,45 @@ class WorkflowTerminalState(Enum):
 @dataclass(frozen=True)
 class WorkflowPhase:
     """Describes one phase in __get_all_phases() generically.
-    - Deliberately never stored anywhere under self.ctx - it embeds live callables (build_inputs/get_restart_folder/etc.)
+    - Deliberately never stored anywhere under self.ctx - it embeds live callables (build_inputs/skip_if)
       and a process class, neither of which is data any serializer can represent -> would causes SerializationErrors.
       Solution is to rebuild (deterministically, from self.inputs) on every call instead of being persisted.
     - Components:
       -- key: phase identifier name.
-      -- build_inputs: callable(self) -> AttributeDict;
-                        Constructs Attribute argument used as inputs for the phase's workchain. Used as:
-                        self.ctx.state.inputs_finalized = phase.build_inputs(self)
+      -- build_inputs: callable(self, restart_folder) -> AttributeDict;
+                        Constructs the AttributeDict used as inputs for the phase's workchain. The
+                        restart_folder is resolved by the FSM engine (prepare_step, via
+                        __get_restart_remote_folder_for_current_phase()) and handed in, so a phase never has
+                        to reach back for its own description to find out where it restarts from. Used as:
+                        self.ctx.state.inputs_finalized = phase.build_inputs(self, restart_folder)
       -- process_class: the WorkChain/CalcJob class submitted for this phase. Used as:
                         running_wc = self.submit(phase.process_class, **self.ctx.state.inputs_finalized)
-      -- get_restart_folder: callable(self) -> RemoteData
-                        Returns the RemoteData folder to use as the restart_folder for this phase's inputs -
-                        by explicitly naming its predecessor's key and delegating to the shared
-                        __get_restart_remote_folder_for_current_phase(predecessor_key) helper, e.g.
-                        self.__get_restart_remote_folder_for_current_phase('1DFTgr'). That helper walks self.ctx.state.nodes for
-                        the predecessor's last finished node (via __get_last_node_by_key) and reads its
-                        outputs.remote_folder directly - no intermediate captured/cached state at all - or
-                        falls back to self.inputs.ns_reference.starting_RemoteData if there's no predecessor
-                        (predecessor_key=None, '1DFTgr' itself) or the predecessor was skipped. If neither
-                        is available it returns None, which validate_step's required_files check already
-                        turns into a clean, reported exit code (no restart_folder-specific state needed to
-                        make that happen). The dependency on a specific predecessor lives only here (and in
-                        build_inputs, which just delegates to this), never on the predecessor's side.
+      -- predecessor_key: Optional[str], key of the phase this one restarts from ('1DFTgr' for '2DFTvo',
+                        '2DFTvo' for '3G0W0'), or None when the phase has no predecessor at all ('1DFTgr').
+                        This is the ONLY place a cross-phase dependency is declared, and it is plain data
+                        rather than a callable: __get_restart_remote_folder_for_current_phase() resolves it
+                        by walking self.ctx.state.nodes for that phase's last node (via
+                        __get_last_node_by_key) and reading its outputs.remote_folder - no intermediate
+                        captured/cached state at all, and nothing declared on the predecessor's side.
+      -- fallback_to_starting_RemoteData: bool, whether this phase may fall back to the externally-supplied
+                        self.inputs.ns_reference.starting_RemoteData when the predecessor yielded no usable
+                        node (never ran, was skipped, or finished without a remote_folder output). True for
+                        the DFT phases: '1DFTgr' has nothing else to start from, and '2DFTvo' must still be
+                        able to run against an externally-supplied ground state when '1DFTgr' is skipped.
+                        False for '3G0W0' - a DFT ground-state folder is not a valid G0W0 restart point (no
+                        WAVEDER), so substituting it would only turn a clear "2DFTvo produced nothing" into
+                        a confusing downstream VASP failure. When the fallback is off (or unavailable) the
+                        resolution returns None, which validate_step's required_files check already turns
+                        into a clean, reported exit code - no restart-folder-specific error handling needed.
       -- required_files: tuple of str, names of files that must exist in the restart_folder for this phase to run.
         --              Es: ('WAVECAR', 'WAVEDER') for the G0W0 phase, ('WAVECAR',) for the 2DFTvo phase.
       -- missing_files_exit_code_name: str, name of the exit code to return if any required_files are missing.
     """
     key: str
     process_class:      Optional[type] = None
-    build_inputs:       Callable = staticmethod(lambda self: AttributeDict())
-    get_restart_folder: Callable = staticmethod(lambda self: None)
+    build_inputs:       Callable = staticmethod(lambda self, restart_folder: AttributeDict())
+    predecessor_key:    Optional[str] = None
+    fallback_to_starting_RemoteData: bool = True
     required_files:     Tuple[str, ...] = ()
     missing_files_exit_code_name: str = None
     skip_if:                 Callable = staticmethod(lambda self: False)
@@ -211,29 +219,32 @@ class VaspG0W0GroundUpWorkChain(WorkChain):
             WorkflowPhase(
                 key='1DFTgr',
                 process_class=WorkflowFactory('vasp.vasp'),
-                get_restart_folder=lambda self: self.__get_restart_remote_folder_for_current_phase(),
-                build_inputs=lambda self: self._prepare_inputs_DFT(
-                    restart_folder=self.__get_current_phase().get_restart_folder(self), calc_type='1DFTgr'),
+                # No predecessor_key: this is the entry point, so it restarts from
+                # self.inputs.ns_reference.starting_RemoteData if one was supplied, and from nothing
+                # (restart_folder=None, legal on the child's non-required port) if not.
+                build_inputs=lambda self, restart_folder: self._prepare_inputs_DFT(
+                    restart_folder=restart_folder, calc_type='1DFTgr'),
                 skip_if=lambda self: not self.inputs.ns_option.run_1DFTgr.value,
             ),
             WorkflowPhase(
                 key='2DFTvo',
                 process_class=WorkflowFactory('vasp.vasp'),
-                get_restart_folder=lambda self: self.__get_restart_remote_folder_for_current_phase('1DFTgr'),
+                predecessor_key='1DFTgr',
                 required_files=('WAVECAR',),
                 missing_files_exit_code_name='NO_STARTING_WAVECAR_forDFTvo',
-                build_inputs=lambda self: self._prepare_inputs_DFT(
-                    restart_folder=self.__get_current_phase().get_restart_folder(self), calc_type='2DFTvo'),
+                build_inputs=lambda self, restart_folder: self._prepare_inputs_DFT(
+                    restart_folder=restart_folder, calc_type='2DFTvo'),
                 skip_if=lambda self: not self.inputs.ns_option.run_2DFTvo_3G0W0.value,
             ),
             WorkflowPhase(
                 key='3G0W0',
                 process_class=VaspAtomicG0W0WorkChain,
-                get_restart_folder=lambda self: self.__get_restart_remote_folder_for_current_phase('2DFTvo'),
+                predecessor_key='2DFTvo',
+                fallback_to_starting_RemoteData=False,  # a DFT ground state has no WAVEDER - see WorkflowPhase
                 required_files=('WAVECAR', 'WAVEDER'),
                 missing_files_exit_code_name='NO_STARTING_WAVECAR_WAVEDER_forG0W0',
-                build_inputs=lambda self: self._prepare_inputs_G0W0(
-                    restart_folder=self.__get_current_phase().get_restart_folder(self)),
+                build_inputs=lambda self, restart_folder: self._prepare_inputs_G0W0(
+                    restart_folder=restart_folder),
                 skip_if=lambda self: not self.inputs.ns_option.run_2DFTvo_3G0W0.value,
             ),
         )
@@ -287,17 +298,35 @@ class VaspG0W0GroundUpWorkChain(WorkChain):
                 return lst[-1] if lst else None
         return None
 
-    def __get_restart_remote_folder_for_current_phase(self, predecessor_key: str = None):
+    def __get_restart_remote_folder_for_current_phase(self):
         """Get the RemoteData folder to use as the restart_folder for the active phase.
-        RemoteData is determined as :
-        - determine the last finished node of the named predecessor phase (predecessor_key) if it exists and ran
-          using __get_last_node_by_key(predecessor_key).
-        - If the predecessor phase node possesses outputs.remote_folder, return that as the restart folder for the current phase.
-        - if not, return the externally-supplied self.inputs.ns_reference.starting_RemoteData ."""
-        if predecessor_key is not None:
-            node = self.__get_last_node_by_key(predecessor_key)
-            if node is not None:
+
+        The single resolution point for "where does this phase restart from" - both validate_step (to run the
+        required_files check) and prepare_step (to hand the value to build_inputs) call this, and neither
+        needs to know anything about phase dependencies: those are declared as plain data on the active
+        WorkflowPhase (predecessor_key / fallback_to_starting_RemoteData, see that class's docstring).
+
+        The RemoteData is determined as:
+        - if the active phase names a predecessor (predecessor_key), look up that phase's last submitted node
+          via __get_last_node_by_key(predecessor_key) and, if it actually produced one, return its
+          outputs.remote_folder. Both halves must be checked: __get_last_node_by_key returns None when the
+          predecessor never ran or was skipped, and even a node that DID run is not guaranteed to carry a
+          remote_folder output (e.g. it excepted, or was killed before the calcjob attached its outputs) -
+          hence the explicit `'remote_folder' in node.outputs` membership test rather than an unguarded
+          attribute access, which would otherwise raise instead of degrading to the fallback below.
+        - otherwise fall back to the externally-supplied self.inputs.ns_reference.starting_RemoteData, but
+          ONLY if the active phase allows it (fallback_to_starting_RemoteData) - '3G0W0' sets this False
+          because a DFT ground-state folder is not a valid G0W0 restart point.
+        - if neither is available, return None. No need to raise here: validate_step's required_files check
+          already turns a None restart folder into a clean, reported exit code (see
+          __validate_remote_has_required_files)."""
+        phase = self.__get_current_phase()
+        if phase.predecessor_key is not None:
+            node = self.__get_last_node_by_key(phase.predecessor_key)
+            if node is not None and 'remote_folder' in node.outputs:
                 return node.outputs.remote_folder
+        if not phase.fallback_to_starting_RemoteData:
+            return None
         try:
             return self.inputs.ns_reference.starting_RemoteData
         except Exception:
@@ -350,8 +379,10 @@ class VaspG0W0GroundUpWorkChain(WorkChain):
         ML/interpolation surrogate overriding just the '2DFTvo'/'3G0W0' entries)."""
         #[1] The whole FSM state machine (see the comment above WorkflowPhase for the full shape/rationale).
         # No starting_RemoteData field here - it's immutable process input
-        # (self.inputs.ns_reference.starting_RemoteData), not run state, so __get_restart_remote_folder_for_current_phase reads it
-        # straight from self.inputs instead of a copy being kept in self.ctx.state.
+        # (self.inputs.ns_reference.starting_RemoteData), not run state, so
+        # __get_restart_remote_folder_for_current_phase() reads it straight from self.inputs instead of a copy
+        # being kept in self.ctx.state. Likewise no restart-folder field: each phase's restart point is
+        # resolved on demand from ctx.state.nodes + its own declared predecessor_key (see WorkflowPhase).
         phases = self.__get_all_phases()
         self.ctx.state = AttributeDict({
             'phase_statuses': [PhaseStatus.NOT_STARTED] * len(phases),
@@ -376,9 +407,9 @@ class VaspG0W0GroundUpWorkChain(WorkChain):
         after update_step_phaseidx: while the phase at the current phase_idx is still NOT_STARTED and its
         skip_if(self) is True, marks it SKIPPED and advances phase_idx - repeating until it lands on a phase
         that should actually run, or runs out of phases (ctx.state.terminal = COMPLETE). No separate
-        skip-time hook needed: a downstream phase's get_restart_folder (via __get_restart_remote_folder_for_current_phase) already
-        falls back to starting_RemoteData whenever its named predecessor has no recorded node, which is
-        exactly what a skipped phase leaves behind. Marks whatever phase it lands on PENDING, so
+        skip-time hook needed: __get_restart_remote_folder_for_current_phase() already falls back to
+        starting_RemoteData whenever the active phase's named predecessor has no recorded node (and the phase
+        allows that fallback), which is exactly what a skipped phase leaves behind. Marks whatever phase it lands on PENDING, so
         validate_step onward can assume they are only ever looking at a confirmed non-skipped, PENDING phase."""
         state = self.ctx.state
         if state.terminal is not None:
@@ -458,7 +489,7 @@ class VaspG0W0GroundUpWorkChain(WorkChain):
         if not phase.required_files:
             return
         ok = self.__validate_remote_has_required_files(
-            remote=phase.get_restart_folder(self),
+            remote=self.__get_restart_remote_folder_for_current_phase(),
             required=list(phase.required_files),
             label=f'{phase.key} restart',
         )
@@ -495,7 +526,7 @@ class VaspG0W0GroundUpWorkChain(WorkChain):
                 f"current_status={self.__get_status_current_phase()} "
                 "while ctx.state.terminal is still None - expected PENDING. This should never happen.")
         phase = self.__get_current_phase()  # ctx.state.phase_idx is the sole source of truth for "which phase is active"
-        state.inputs_finalized = phase.build_inputs(self)
+        state.inputs_finalized = phase.build_inputs(self, self.__get_restart_remote_folder_for_current_phase())
         self.__set_status_current_phase(PhaseStatus.PREPAREDINPUTS)
 
     def execute_step(self):

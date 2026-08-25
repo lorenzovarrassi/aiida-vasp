@@ -9,9 +9,10 @@ re-verified by hand.
 
 Two tiers:
 
-  * TestOmegatlHandler - fast, mock-node unit tests for VaspAtomicG0W0WorkChain's
-    excepted-GW/OMEGATL retry handler (inspect_process()/handle_gw_exception()). No
-    real VASP, no AiiDA process instantiation - just the real, unmodified handler
+  * TestOmegatlHandler / TestRestartFolderResolution - fast, mock-node unit tests for
+    VaspAtomicG0W0WorkChain's excepted-GW/OMEGATL retry handler (inspect_process()/
+    handle_gw_exception()) and for VaspG0W0GroundUpWorkChain's per-phase restart-folder
+    resolution. No real VASP, no AiiDA process instantiation - just the real, unmodified
     methods driven against a duck-typed stand-in for `self` (same pattern as this
     codebase's own regression_harness/). Runs anywhere a profile can be loaded.
 
@@ -53,7 +54,7 @@ import pymatgen.core.structure as pcs  # noqa: E402
 
 from aiida_vasp.workchains.vMBPT.utils_helpers_setupworkchain import Helpers_setup_Workchain  # noqa: E402
 from aiida_vasp.workchains.vMBPT.workchain_atomic_G0W0 import VaspAtomicG0W0WorkChain  # noqa: E402
-from aiida_vasp.workchains.vMBPT.workchain_G0W0_groundup import VaspG0W0GroundUpWorkChain  # noqa: E402
+from aiida_vasp.workchains.vMBPT.workchain_G0W0_groundup import PhaseStatus, VaspG0W0GroundUpWorkChain  # noqa: E402
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 
@@ -155,21 +156,31 @@ class TestOmegatlHandler:
 
 
 # =============================================================================================
-# Part 1b - restart-folder pull (fast: mock-node, no VASP, no process instantiation)
+# Part 1b - restart-folder resolution (fast: mock-node, no VASP, no process instantiation)
 # =============================================================================================
 
 
 class FakeVaspOutputs:
-    """Stand-in for a finished VaspWorkChain node's `.outputs` namespace - just remote_folder/bands."""
+    """Stand-in for a child node's `.outputs` namespace (a real AiiDA NodeLinksManager).
 
-    def __init__(self, remote_folder, bands):
-        self.remote_folder = remote_folder
-        self.bands = bands
+    Supports `in` as well as attribute access, because __get_restart_remote_folder_for_current_phase
+    membership-tests `'remote_folder' in node.outputs` before reading it - a node that ran is not
+    guaranteed to have attached that output.
+    """
+
+    def __init__(self, **outputs):
+        self.__dict__.update(outputs)
+
+    def __contains__(self, key):
+        return key in self.__dict__
 
 
 class FakeVaspNode:
-    def __init__(self, remote_folder='remote_folder_sentinel', bands='bands_sentinel'):
-        self.outputs = FakeVaspOutputs(remote_folder, bands)
+    """Stand-in for a submitted child node. Pass outputs explicitly; `FakeVaspNode()` models a node that
+    ran but attached none (excepted / killed before the calcjob attached its outputs)."""
+
+    def __init__(self, **outputs):
+        self.outputs = FakeVaspOutputs(**outputs)
 
 
 def _bind_private(stub, cls, *names):
@@ -184,17 +195,22 @@ def _bind_private(stub, cls, *names):
         setattr(stub, attr, types.MethodType(getattr(cls, attr), stub))
 
 
-class TestRestartFolderPull:
-    """Regression tests for VaspG0W0GroundUpWorkChain's __restart_remote_folder/get_restart_folder - the
-    predecessor-pull that replaced the old restart_folders/capture_outputs/seed_restart_if_skipped
-    mechanism: a phase's get_restart_folder walks self.ctx.state.nodes for its named predecessor's last
-    finished node and reads outputs.remote_folder straight off it (via __get_last_node_by_key), falling
-    back to self.inputs.ns_reference.starting_RemoteData (read directly - not copied into self.ctx.state,
-    see the comment above WorkflowPhase) if there's no predecessor or it was skipped - no intermediate
-    captured state at all. Exercises the real, unmodified private methods against a duck-typed stub (see
-    _bind_private above) and the real WorkflowPhase entries built by _build_phases(). Covers the one path
-    the real-VASP integration tests below don't reach: '1DFTgr' skipped (both integration tests run with
-    run_1DFTgr=True), where '2DFTvo' must fall back to starting_RemoteData.
+class TestRestartFolderResolution:
+    """Regression tests for VaspG0W0GroundUpWorkChain.__get_restart_remote_folder_for_current_phase() - the
+    single point resolving "where does the active phase restart from", and the two declarative WorkflowPhase
+    fields driving it (predecessor_key / fallback_to_starting_RemoteData), which replaced the old
+    per-phase get_restart_folder callable (itself the replacement for restart_folders/capture_outputs/
+    seed_restart_if_skipped).
+
+    Resolution walks self.ctx.state.nodes for the named predecessor's last node (via __get_last_node_by_key)
+    and reads outputs.remote_folder off it, falling back to self.inputs.ns_reference.starting_RemoteData
+    (read directly - not copied into self.ctx.state, see the comment above WorkflowPhase) only if the phase
+    permits it. No intermediate captured state at all.
+
+    Exercises the real, unmodified private methods against a duck-typed stub (see _bind_private above) and
+    the real WorkflowPhase entries built by _build_phases(). Covers the paths the real-VASP integration
+    tests below cannot reach: '1DFTgr' skipped (both integration tests run with run_1DFTgr=True), a
+    predecessor node that ran without attaching a remote_folder, and '3G0W0' refusing the fallback.
     """
 
     @pytest.fixture
@@ -202,68 +218,112 @@ class TestRestartFolderPull:
         return VaspG0W0GroundUpWorkChain._build_phases(None)
 
     @staticmethod
-    def make_stub(nodes, starting_remote_data=None):
+    def make_stub(nodes, starting_remote_data=None, phase_idx=0):
+        """`starting_remote_data=None` models the port not being supplied at all (the AttributeDict key is
+        left unset, so reading it raises - exactly like an unset optional AiiDA input port), which is what
+        the production try/except is there to absorb."""
         stub = type('Stub', (), {})()
         stub.ctx = AttributeDict()
         stub.ctx.state = AttributeDict()
         stub.ctx.state.nodes = nodes
+        stub.ctx.state.phase_idx = phase_idx
         stub.inputs = AttributeDict()
         stub.inputs.ns_reference = AttributeDict()
-        stub.inputs.ns_reference.starting_RemoteData = starting_remote_data
+        if starting_remote_data is not None:
+            stub.inputs.ns_reference.starting_RemoteData = starting_remote_data
         stub._build_phases = types.MethodType(VaspG0W0GroundUpWorkChain._build_phases, stub)
-        _bind_private(stub, VaspG0W0GroundUpWorkChain,
-                       'get_all_phases', 'get_last_node_by_key', 'restart_remote_folder')
+        _bind_private(stub, VaspG0W0GroundUpWorkChain, 'get_all_phases', 'get_current_phase',
+                       'get_last_node_by_key', 'get_restart_remote_folder_for_current_phase')
         return stub
 
-    def test_1DFTgr_get_restart_folder_reads_starting_remotedata(self, phases):
-        phase = phases[0]
-        assert phase.key == '1DFTgr'
-        stub = self.make_stub(nodes=[[], [], []], starting_remote_data='external_sentinel')
+    @staticmethod
+    def resolve(stub):
+        return stub._VaspG0W0GroundUpWorkChain__get_restart_remote_folder_for_current_phase()
 
-        assert phase.get_restart_folder(stub) == 'external_sentinel'
+    def test_phase_dependencies_are_declared_as_data(self, phases):
+        """The whole cross-phase dependency graph must be readable off the WorkflowPhase entries alone."""
+        assert [(p.key, p.predecessor_key, p.fallback_to_starting_RemoteData) for p in phases] == [
+            ('1DFTgr', None, True),
+            ('2DFTvo', '1DFTgr', True),
+            ('3G0W0', '2DFTvo', False),
+        ]
 
-    def test_2DFTvo_get_restart_folder_pulls_predecessors_node_remote_folder(self, phases):
-        phase = phases[1]
-        assert phase.key == '2DFTvo'
+    def test_1DFTgr_resolves_to_starting_remotedata(self):
+        stub = self.make_stub(nodes=[[], [], []], starting_remote_data='external_sentinel', phase_idx=0)
+
+        assert self.resolve(stub) == 'external_sentinel'
+
+    def test_1DFTgr_resolves_to_none_when_no_starting_remotedata_supplied(self):
+        """The entry-point-from-scratch case both integration tests run: restart_folder ends up None, which
+        is legal on the child's non-required port, and '1DFTgr' declares no required_files so validate_step
+        never objects."""
+        stub = self.make_stub(nodes=[[], [], []], phase_idx=0)
+
+        assert self.resolve(stub) is None
+
+    def test_2DFTvo_pulls_predecessors_remote_folder(self):
         node = FakeVaspNode(remote_folder='rf1', bands='bands1')
-        stub = self.make_stub(nodes=[[node], [], []], starting_remote_data='external_sentinel')
+        stub = self.make_stub(nodes=[[node], [], []], starting_remote_data='external_sentinel', phase_idx=1)
 
-        assert phase.get_restart_folder(stub) == 'rf1'
+        assert self.resolve(stub) == 'rf1'
 
-    def test_2DFTvo_get_restart_folder_falls_back_when_1DFTgr_was_skipped(self, phases):
+    def test_2DFTvo_falls_back_when_1DFTgr_was_skipped(self):
         """The skip-path this file's real-VASP integration tests can't reach: no '1DFTgr' node at all
         (nodes[0] empty) - '2DFTvo' must fall back to starting_RemoteData."""
-        phase = phases[1]
-        stub = self.make_stub(nodes=[[], [], []], starting_remote_data='external_sentinel')
+        stub = self.make_stub(nodes=[[], [], []], starting_remote_data='external_sentinel', phase_idx=1)
 
-        assert phase.get_restart_folder(stub) == 'external_sentinel'
+        assert self.resolve(stub) == 'external_sentinel'
 
-    def test_3G0W0_get_restart_folder_pulls_predecessors_node_remote_folder(self, phases):
-        phase = phases[2]
-        assert phase.key == '3G0W0'
+    def test_2DFTvo_falls_back_when_predecessor_attached_no_remote_folder(self):
+        """A node that ran is not proof of a remote_folder output (excepted / killed mid-flight). That must
+        degrade to the fallback, not raise on an unguarded attribute access."""
+        stub = self.make_stub(nodes=[[FakeVaspNode()], [], []], starting_remote_data='external_sentinel',
+                              phase_idx=1)
+
+        assert self.resolve(stub) == 'external_sentinel'
+
+    def test_3G0W0_pulls_predecessors_remote_folder(self):
         node = FakeVaspNode(remote_folder='rf2', bands='bands2')
-        stub = self.make_stub(nodes=[[], [node], []], starting_remote_data='external_sentinel')
+        stub = self.make_stub(nodes=[[], [node], []], starting_remote_data='external_sentinel', phase_idx=2)
 
-        assert phase.get_restart_folder(stub) == 'rf2'
+        assert self.resolve(stub) == 'rf2'
 
-    def test_build_inputs_delegates_to_get_restart_folder(self, phases):
-        """build_inputs must ask get_restart_folder for the value rather than recomputing it - verified
-        by making _prepare_inputs_DFT a spy that just records what it was called with."""
-        phase = phases[1]  # '2DFTvo'
+    def test_3G0W0_never_falls_back_to_starting_remotedata(self):
+        """fallback_to_starting_RemoteData=False: a DFT ground-state folder has no WAVEDER, so substituting
+        it would turn a clear "2DFTvo produced nothing" into a confusing downstream VASP failure. Resolving
+        to None instead is what makes validate_step report NO_STARTING_WAVECAR_WAVEDER_forG0W0."""
+        for nodes in ([[], [], []], [[], [FakeVaspNode()], []]):
+            stub = self.make_stub(nodes=nodes, starting_remote_data='external_sentinel', phase_idx=2)
+
+            assert self.resolve(stub) is None
+
+    def test_prepare_step_hands_the_resolved_folder_to_build_inputs(self):
+        """The engine wiring: build_inputs no longer looks its own restart folder up - prepare_step resolves
+        it once and passes it in. Verified by making _prepare_inputs_DFT a spy over the real prepare_step."""
         node = FakeVaspNode(remote_folder='rf1', bands='bands1')
-        stub = self.make_stub(nodes=[[node], [], []], starting_remote_data=None)
-        stub._VaspG0W0GroundUpWorkChain__get_current_phase = types.MethodType(lambda self: phase, stub)
+        stub = self.make_stub(nodes=[[node], [], []], phase_idx=1)
+        stub.ctx.state.terminal = None
+        stub.ctx.state.inputs_finalized = None
+        stub.ctx.state.phase_statuses = [PhaseStatus.COMPLETED, PhaseStatus.PENDING, PhaseStatus.NOT_STARTED]
+        _bind_private(stub, VaspG0W0GroundUpWorkChain,
+                       'get_status_current_phase', 'set_status_current_phase')
         recorded = {}
-        stub._prepare_inputs_DFT = lambda restart_folder, calc_type: recorded.update(
-            restart_folder=restart_folder, calc_type=calc_type)
 
-        phase.build_inputs(stub)
+        def spy_prepare_inputs_DFT(restart_folder, calc_type):
+            recorded.update(restart_folder=restart_folder, calc_type=calc_type)
+            return 'INPUTS_SENTINEL'
+
+        stub._prepare_inputs_DFT = spy_prepare_inputs_DFT
+
+        VaspG0W0GroundUpWorkChain.prepare_step(stub)
 
         assert recorded == {'restart_folder': 'rf1', 'calc_type': '2DFTvo'}
+        assert stub.ctx.state.inputs_finalized == 'INPUTS_SENTINEL'
+        assert stub.ctx.state.phase_statuses[1] is PhaseStatus.PREPAREDINPUTS
 
     def test_validate_remote_has_required_files_reports_and_fails_on_none(self):
-        """The "throw error if neither is available" half of the design: get_restart_folder returning
-        None (no predecessor node AND no starting_RemoteData) already gets turned into a clean, reported
+        """The "throw error if nothing is available" half of the design: resolution returning None (no
+        predecessor node AND no permitted/available fallback) already gets turned into a clean, reported
         failure here - validate_step then returns the phase's documented missing-files exit code, no new
         error-handling code needed anywhere for this."""
         stub = type('Stub', (), {})()

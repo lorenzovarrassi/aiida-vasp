@@ -299,8 +299,9 @@ class VaspG0W0BasisExtrWorkChain(WorkChain):
             spec.output('ENMAX_array'                 , valid_type=ArrayData , help='array of cutoff fractions values used for the extrapolation')
             spec.output('pairs_nbands_encuts'         , valid_type=XyData    , help='nbands - cutoff (eV) pairs used in the extrapolation')
                         
-            spec.output('extrapolated',       valid_type=Dict , help='extrapolated gaps and QuasiParticle corrections.')
-            spec.output('extrapolated_bands', valid_type=Dict , help='extrapolated bands.')
+            spec.output('extrapolated',       valid_type=Dict , help='extrapolated gaps and QuasiParticle corrections.') 
+            spec.output('extrapolated_bands', valid_type=Dict , help='extrapolated bands.') 
+            spec.output('ns_maximum_num_calcgaps'     , valid_type=Dict , help='Dict with direct - indirect - Gamma gaps used for the extrapolation.')
             spec.output('ns_gaps_QPc'      , valid_type=Dict , help='Dict with the QP corrections (of the states associated to the direct - indirect - gamma gaps) used for the extrapolation.')
             spec.output('ns_gaps_G0W0'     , valid_type=Dict , help='Dict with the (direct - indirect - gamma) gaps used for the extrapolation.')
 
@@ -650,16 +651,9 @@ class VaspG0W0BasisExtrWorkChain(WorkChain):
         self.ctx.r2_threshold = float(self.inputs.ns_extrapolation.r2_threshold.value)
         str_log = ( f"\n  VaspG0W0BasisExtrWorkChain pk={self.node.pk} checking if an additional VaspDFTGWWorkChain is required"
                     f"\n  convergence test uses only G0W0 gaps (Dir/Ind/Gam); R² threshold = {self.ctx.r2_threshold}"            )
+    
 
-        #[2] Bail out of the while_ loop if any datapoint failed, instead of crashing while reading its
-        #    (non-existent) outputs below. elaborate_extrapolate_results (reached right after this while_
-        #    loop ends) already performs the proper is_finished_ok check and returns ONE_OR_MORE_GW_FAILED.
-        wc_keys_check = sorted(self.ctx.runningWC_DFT_G0W0)
-        if not all(self.ctx.runningWC_DFT_G0W0[i].is_finished_ok for i in wc_keys_check):
-            self.report(str_log + "  --> THUS: NO ADDITIONAL CALC. One or more G0W0 datapoints did not finish "
-                                   "successfully; deferring to elaborate_extrapolate_results to report the failure.\n")
-            return Bool(False)
-
+    
         #[3] extrapolate per spin channel ----
         extrap_gap_G0W0, extrap_qpc_QPc = {}, {},
         for sp in self.ctx.spin_labels:
@@ -797,7 +791,7 @@ class VaspG0W0BasisExtrWorkChain(WorkChain):
             extrap_qpc_QPc[sp]  = ns_gaps_qpc_sp_extr
         
         
-        extrapolated = Dict(dict={"gaps": extrap_gap_G0W0, "gaps_QPc": extrap_qpc_QPc, })
+        extrapolated = Dict(dict={"gaps": ns_gaps_G0W0_sp_extr, "gaps_QPc": ns_gaps_qpc_sp_extr, })
         extrapolated.store()
         self.out("extrapolated", extrapolated)
         # [5b] Custom final report

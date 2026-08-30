@@ -54,7 +54,8 @@ import pymatgen.core.structure as pcs  # noqa: E402
 
 from aiida_vasp.workchains.vMBPT.utils_helpers_setupworkchain import Helpers_setup_Workchain  # noqa: E402
 from aiida_vasp.workchains.vMBPT.workchain_atomic_G0W0 import VaspAtomicG0W0WorkChain  # noqa: E402
-from aiida_vasp.workchains.vMBPT.workchain_G0W0_groundup import PhaseStatus, VaspG0W0GroundUpWorkChain  # noqa: E402
+from aiida_vasp.workchains.vMBPT.workchain_G0W0_groundup import (  # noqa: E402
+    PhaseStatus, VaspG0W0GroundUpWorkChain, WorkflowTerminalState)
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 
@@ -198,7 +199,7 @@ def _bind_private(stub, cls, *names):
 class TestRestartFolderResolution:
     """Regression tests for VaspG0W0GroundUpWorkChain.__get_restart_remote_folder_for_current_phase() - the
     single point resolving "where does the active phase restart from", and the two declarative WorkflowPhase
-    fields driving it (predecessor_key / fallback_to_starting_RemoteData), which replaced the old
+    fields driving it (key_to_use_as_restartData / fallback_to_starting_RemoteData), which replaced the old
     per-phase get_restart_folder callable (itself the replacement for restart_folders/capture_outputs/
     seed_restart_if_skipped).
 
@@ -215,7 +216,10 @@ class TestRestartFolderResolution:
 
     @pytest.fixture
     def phases(self):
-        return VaspG0W0GroundUpWorkChain._build_phases(None)
+        """_build_phases() is instance-bound - it stores each phase's own bound `self._prepare_inputs_*`
+        method, resolved eagerly at build time - so it needs a stub carrying those attributes and can no
+        longer be called as `_build_phases(None)`."""
+        return self.make_stub(nodes=[[], [], []])._build_phases()
 
     @staticmethod
     def make_stub(nodes, starting_remote_data=None, phase_idx=0):
@@ -232,6 +236,14 @@ class TestRestartFolderResolution:
         if starting_remote_data is not None:
             stub.inputs.ns_reference.starting_RemoteData = starting_remote_data
         stub._build_phases = types.MethodType(VaspG0W0GroundUpWorkChain._build_phases, stub)
+        # _build_phases stores each phase's bound self._prepare_inputs_* method instead of taking `self`
+        # back as a callable parameter, and resolves them eagerly - so all three must exist on the stub for
+        # _build_phases() to run at all, even in the tests below that never invoke them. _build_inputs_DFT
+        # (the shared DFT input set both _prepare_inputs_DFT* delegate to) is bound alongside so that a stub
+        # whose builders ARE invoked stays self-consistent.
+        for builder in ('_prepare_inputs_DFTgr', '_prepare_inputs_DFTvo', '_prepare_inputs_G0W0',
+                        '_build_inputs_DFT'):
+            setattr(stub, builder, types.MethodType(getattr(VaspG0W0GroundUpWorkChain, builder), stub))
         _bind_private(stub, VaspG0W0GroundUpWorkChain, 'get_all_phases', 'get_current_phase',
                        'get_last_node_by_key', 'get_restart_remote_folder_for_current_phase')
         return stub
@@ -242,7 +254,7 @@ class TestRestartFolderResolution:
 
     def test_phase_dependencies_are_declared_as_data(self, phases):
         """The whole cross-phase dependency graph must be readable off the WorkflowPhase entries alone."""
-        assert [(p.key, p.predecessor_key, p.fallback_to_starting_RemoteData) for p in phases] == [
+        assert [(p.key, p.key_to_use_as_restartData, p.fallback_to_starting_RemoteData) for p in phases] == [
             ('1DFTgr', None, True),
             ('2DFTvo', '1DFTgr', True),
             ('3G0W0', '2DFTvo', False),
@@ -291,7 +303,7 @@ class TestRestartFolderResolution:
     def test_3G0W0_never_falls_back_to_starting_remotedata(self):
         """fallback_to_starting_RemoteData=False: a DFT ground-state folder has no WAVEDER, so substituting
         it would turn a clear "2DFTvo produced nothing" into a confusing downstream VASP failure. Resolving
-        to None instead is what makes validate_step report NO_STARTING_WAVECAR_WAVEDER_forG0W0."""
+        to None instead is what makes validate_step report ERROR_MISSING_RESTART_FILES."""
         for nodes in ([[], [], []], [[], [FakeVaspNode()], []]):
             stub = self.make_stub(nodes=nodes, starting_remote_data='external_sentinel', phase_idx=2)
 
@@ -299,7 +311,12 @@ class TestRestartFolderResolution:
 
     def test_prepare_step_hands_the_resolved_folder_to_build_inputs(self):
         """The engine wiring: build_inputs no longer looks its own restart folder up - prepare_step resolves
-        it once and passes it in. Verified by making _prepare_inputs_DFT a spy over the real prepare_step."""
+        it once and passes it in. Verified by spying on the per-phase builders over the real prepare_step.
+
+        Also pins the binding contract: prepare_step calls `phase.build_inputs(restart_folder)` with the
+        instance NOT passed back in (so each spy takes restart_folder alone, no `self`, no calc_type), and
+        picking the right builder is now _build_phases' job - phase_idx=1 must reach the '2DFTvo' one and
+        leave the '1DFTgr' one untouched."""
         node = FakeVaspNode(remote_folder='rf1', bands='bands1')
         stub = self.make_stub(nodes=[[node], [], []], phase_idx=1)
         stub.ctx.state.terminal = None
@@ -309,32 +326,116 @@ class TestRestartFolderResolution:
                        'get_status_current_phase', 'set_status_current_phase')
         recorded = {}
 
-        def spy_prepare_inputs_DFT(restart_folder, calc_type):
-            recorded.update(restart_folder=restart_folder, calc_type=calc_type)
-            return 'INPUTS_SENTINEL'
+        def make_spy(phase_key):
+            def spy(restart_folder):
+                recorded.update(builder=phase_key, restart_folder=restart_folder)
+                return 'INPUTS_SENTINEL'
+            return spy
 
-        stub._prepare_inputs_DFT = spy_prepare_inputs_DFT
+        stub._prepare_inputs_DFTgr = make_spy('1DFTgr')
+        stub._prepare_inputs_DFTvo = make_spy('2DFTvo')
 
         VaspG0W0GroundUpWorkChain.prepare_step(stub)
 
-        assert recorded == {'restart_folder': 'rf1', 'calc_type': '2DFTvo'}
+        assert recorded == {'builder': '2DFTvo', 'restart_folder': 'rf1'}
         assert stub.ctx.state.inputs_finalized == 'INPUTS_SENTINEL'
         assert stub.ctx.state.phase_statuses[1] is PhaseStatus.PREPAREDINPUTS
+
+    def test_check_skip_consults_the_zero_argument_skip_if(self):
+        """The other half of the binding contract: check_skip calls `phase.skip_if()` - a closure over the
+        instance built by _build_phases - with no instance argument. Drives the real check_skip with
+        run_1DFTgr=False / run_2DFTvo_3G0W0=True: '1DFTgr' must go SKIPPED and the loop must settle on
+        '2DFTvo' as PENDING (not terminal), which is exactly the skip path the integration tests below
+        cannot reach (both run with run_1DFTgr=True)."""
+        stub = self.make_stub(nodes=[[], [], []], phase_idx=0)
+        stub.ctx.state.terminal = None
+        stub.ctx.state.phase_statuses = [PhaseStatus.NOT_STARTED] * 3
+        stub.inputs.ns_option = AttributeDict()
+        stub.inputs.ns_option.run_1DFTgr = Bool(False)
+        stub.inputs.ns_option.run_2DFTvo_3G0W0 = Bool(True)
+        stub.inputs.ns_option.calculation_label = Str('skip-test')
+        stub.messages = []
+        stub.report = lambda msg: stub.messages.append(msg)
+        _bind_private(stub, VaspG0W0GroundUpWorkChain,
+                       'get_status_current_phase', 'set_status_current_phase')
+
+        VaspG0W0GroundUpWorkChain.check_skip(stub)
+
+        assert stub.ctx.state.phase_idx == 1
+        assert stub.ctx.state.phase_statuses == [PhaseStatus.SKIPPED, PhaseStatus.PENDING,
+                                                 PhaseStatus.NOT_STARTED]
+        assert stub.ctx.state.terminal is None
+        assert any('1DFTgr skipped' in msg for msg in stub.messages)
+
+    @staticmethod
+    def check_required_files(remote, required, label='2DFTvo restart'):
+        """Drive the real helper against a bare reporting stub; returns (missing_list, reported_messages)."""
+        stub = type('Stub', (), {})()
+        stub.messages = []
+        stub.report = lambda msg: stub.messages.append(msg)
+        missing = VaspG0W0GroundUpWorkChain._VaspG0W0GroundUpWorkChain__validate_remote_has_required_files(
+            stub, remote=remote, required=required, label=label)
+        return missing, stub.messages
 
     def test_validate_remote_has_required_files_reports_and_fails_on_none(self):
         """The "throw error if nothing is available" half of the design: resolution returning None (no
         predecessor node AND no permitted/available fallback) already gets turned into a clean, reported
-        failure here - validate_step then returns the phase's documented missing-files exit code, no new
-        error-handling code needed anywhere for this."""
-        stub = type('Stub', (), {})()
+        failure here - validate_step then returns the single generic missing-files exit code, no new
+        error-handling code needed anywhere for this.
+
+        The helper returns the MISSING names rather than a bool, because validate_step interpolates them
+        straight into the ERROR_MISSING_RESTART_FILES message - so "cannot even look at the folder" must
+        report everything required as missing."""
+        missing, messages = self.check_required_files(remote=None, required=['WAVECAR'])
+
+        assert missing == ['WAVECAR']
+        assert any('restart folder is None' in msg for msg in messages)
+
+    def test_validate_remote_has_required_files_reports_required_and_present_on_success(self):
+        """A passing check used to be entirely silent, which made "did it even look?" unanswerable from the
+        report log - so REQUIRED/PRESENT/MISSING is now reported before launching, on success too. The full
+        remote listing stays out of the log on success (a VASP run folder is large); it is dumped only when
+        something is actually missing, which is where one needs to see it."""
+        remote = type('FakeRemote', (), {'listdir': lambda self: ['WAVECAR', 'WAVEDER', 'CHGCAR']})()
+
+        missing, messages = self.check_required_files(remote, ['WAVECAR', 'WAVEDER'], label='3G0W0 restart')
+
+        assert missing == []
+        assert any("REQUIRED=['WAVECAR', 'WAVEDER'] PRESENT=['WAVECAR', 'WAVEDER'] MISSING=[]" in msg
+                   for msg in messages)
+        assert not any('full remote folder listing' in msg for msg in messages)
+
+    def test_validate_remote_has_required_files_dumps_listing_when_something_is_missing(self):
+        remote = type('FakeRemote', (), {'listdir': lambda self: ['WAVECAR', 'CHGCAR']})()
+
+        missing, messages = self.check_required_files(remote, ['WAVECAR', 'WAVEDER'], label='3G0W0 restart')
+
+        assert missing == ['WAVEDER']
+        assert any("PRESENT=['WAVECAR'] MISSING=['WAVEDER']" in msg for msg in messages)
+        assert any('full remote folder listing' in msg for msg in messages)
+
+    def test_validate_step_returns_one_exit_code_carrying_the_phase_and_missing_files(self):
+        """Phases no longer name their own exit code (the retired WorkflowPhase.missing_files_exit_code_name):
+        every failure of this check returns the single generic ERROR_MISSING_RESTART_FILES, with the phase key
+        and the actually-missing files interpolated into the message via ExitCode.format(). That is what keeps
+        the per-case detail on the persisted node.exit_message instead of only in the report log, and what lets
+        a subclass add a phase to _build_phases() without also declaring an exit code in define()."""
+        node = FakeVaspNode(remote_folder=type('FakeRemote', (), {'listdir': lambda self: ['WAVECAR']})())
+        stub = self.make_stub(nodes=[[], [node], []], phase_idx=2)  # '3G0W0' restarting from '2DFTvo'
+        stub.ctx.state.terminal = None
+        stub.ctx.state.phase_statuses = [PhaseStatus.SKIPPED, PhaseStatus.COMPLETED, PhaseStatus.PENDING]
         stub.messages = []
         stub.report = lambda msg: stub.messages.append(msg)
+        stub.exit_codes = VaspG0W0GroundUpWorkChain.spec().exit_codes
+        _bind_private(stub, VaspG0W0GroundUpWorkChain, 'get_status_current_phase',
+                       'set_status_current_phase', 'validate_remote_has_required_files')
 
-        ok = VaspG0W0GroundUpWorkChain._VaspG0W0GroundUpWorkChain__validate_remote_has_required_files(
-            stub, remote=None, required=['WAVECAR'], label='2DFTvo restart')
+        exit_code = VaspG0W0GroundUpWorkChain.validate_step(stub)
 
-        assert ok is False
-        assert any('restart folder is None' in msg for msg in stub.messages)
+        assert exit_code.status == stub.exit_codes.ERROR_MISSING_RESTART_FILES.status
+        assert '3G0W0' in exit_code.message and 'WAVEDER' in exit_code.message
+        assert stub.ctx.state.phase_statuses[2] is PhaseStatus.FAILED
+        assert stub.ctx.state.terminal is WorkflowTerminalState.FAILED
 
 
 # =============================================================================================

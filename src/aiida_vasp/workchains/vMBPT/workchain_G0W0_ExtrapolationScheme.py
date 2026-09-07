@@ -524,7 +524,7 @@ class VaspG0W0BasisExtrWorkChain(WorkChain):
         #       where output_array = AttributeDict() with keys "encut", "nbands"
         params_fit = get_EncutNbandFitParams_completeBasis_quadratic( kpoints=DFTgr_kpts , structure=DFTgr_cell , 
                                                                       FFT_NG_gridpoints=DFTgr_NGarray , POTCAR_ENMAX_max=POTCAR_ENMAX_max)
-        extrPoint_1 = get_closest_EncutNband_multiple( kpoints=DFTgr_kpts    , structure=DFTgr_cell , 
+        [extrPoint_1 , extrPoint_1_logger] = get_closest_EncutNband_multiple( kpoints=DFTgr_kpts    , structure=DFTgr_cell , 
                                                        FFT_NG_gridpoints=DFTgr_NGarray  , 
                                                        POTCAR_ENMAX_max=Float(POTCAR_ENMAX_max) , 
                                                        param_quad=params_fit , 
@@ -533,7 +533,7 @@ class VaspG0W0BasisExtrWorkChain(WorkChain):
                                                        input_type=Str("encut")      , 
                                                        flag_twoSidesRounding=False  , 
                                                        label_str_for_log=Str("1 extr.point" )
-                                                     )[0]
+                                                     )
 
         #[4][ 2nd,3nd,etc Extrapolation Point : NBANDS ]
         #Let's determine based on two constraint: minimum stride and MPI-multiple:
@@ -546,7 +546,15 @@ class VaspG0W0BasisExtrWorkChain(WorkChain):
         self.ctx.nbands_stride = math.ceil( self.ctx.minimum_nbands_stride / GW_nbands_divisor_for_extrapolation) * GW_nbands_divisor_for_extrapolation
 
         #Let's handle the case in which the user wants to override the standard value of nbands_stride and has thus passed a custom value
-        if ('nbands_stride' in self.inputs.ns_extrapolation ): self.ctx.nbands_stride = self.inputs.ns_extrapolation.nbands_stride.value
+        #A user-supplied stride must still respect the MPI constraint: NBANDS of the i-th extrapolation point is
+        #extrPoint_1['nbands'] + i*nbands_stride, so a stride that is not a multiple of GW_nbands_divisor_for_extrapolation
+        #makes VASP round NBANDS up in the GW step, and the WAVEDER is then discarded ("bands not compatible").
+        if ('nbands_stride' in self.inputs.ns_extrapolation ):
+            user_nbands_stride     = self.inputs.ns_extrapolation.nbands_stride.value
+            self.ctx.nbands_stride = math.ceil( user_nbands_stride / GW_nbands_divisor_for_extrapolation ) * GW_nbands_divisor_for_extrapolation
+            if self.ctx.nbands_stride != user_nbands_stride:
+                self.report(f"[determine_completeBasis_encutNband] user-supplied nbands_stride={user_nbands_stride} is not a multiple "
+                            f"of GW_nbands_divisor_for_extrapolation={GW_nbands_divisor_for_extrapolation}: raised to {self.ctx.nbands_stride}.")
 
         extrPoints_nbands_array = [extrPoint_1['nbands'] + i * self.ctx.nbands_stride for i in range(self.ctx.max_num_runnable_G0W0_calcs)]
         #[5][ 2nd,3nd,etc Extrapolation Point : ENCUT and OVERRIDE CASE]
@@ -566,7 +574,7 @@ class VaspG0W0BasisExtrWorkChain(WorkChain):
                                                                                                  FFT_NG_gridpoints=DFTgr_NGarray  , 
                                                                                                  POTCAR_ENMAX_max=Float(POTCAR_ENMAX_max) , 
                                                                                                  param_quad=params_fit , 
-                                                                                                 nbands_divisor_constraint=Int(self.ctx.nbands_stride) , 
+                                                                                                 nbands_divisor_constraint=Int(GW_nbands_divisor_for_dense if nb_idx == 0 else GW_nbands_divisor_for_extrapolation) , 
                                                                                                  starting_parameter_value=Float(nb) , input_type=Str("nbands"), 
                                                                                                  flag_twoSidesRounding=Bool(True)   ,
                                                                                                  label_str_for_log=Str(str(nb_idx)+" extr.point")  )
@@ -580,13 +588,24 @@ class VaspG0W0BasisExtrWorkChain(WorkChain):
                                                                                                  FFT_NG_gridpoints=DFTgr_NGarray  , 
                                                                                                  POTCAR_ENMAX_max=Float(POTCAR_ENMAX_max) , 
                                                                                                  param_quad=params_fit , 
-                                                                                                 nbands_divisor_constraint=Int(GW_nbands_divisor_for_extrapolation) , 
+                                                                                                 nbands_divisor_constraint=Int(GW_nbands_divisor_for_dense if ec_idx == 0 else GW_nbands_divisor_for_extrapolation) , 
                                                                                                  starting_parameter_value=Float(ec) , input_type=Str("encut") , 
                                                                                                  flag_twoSidesRounding= Bool(True)  ,
                                                                                                  label_str_for_log=Str(str(ec_idx)+" extr.point"  )  )
                 self.ctx.EncutNbands_completeBasis.append( extrPoints_dict_nbcutoff )
                 self.ctx.EncutNbands_completeBasis_logger = self.ctx.EncutNbands_completeBasis_logger + extrPoints_logger + "\n"
         
+
+        #[6] Safety net on the MPI/NBANDS constraint.
+        #The 1st extr.point is ALSO re-run on the dense MPI layout, all the others on the extrapolation one; if their NBANDS
+        #is not a multiple of the corresponding (#MPI-tasks)/KPAR, VASP silently rounds NBANDS up in the GW step and then
+        #refuses the WAVEDER of the DFTvo step ("WAVEDER not read: bands not compatible"). Fail here rather than hours later.
+        for _idx, _pt in enumerate(self.ctx.EncutNbands_completeBasis):
+            _divisor = GW_nbands_divisor_for_dense if _idx == 0 else GW_nbands_divisor_for_extrapolation
+            assert int(_pt["nbands"]) % _divisor == 0, (
+                f"extr.point {_idx}: NBANDS={_pt['nbands']} is not a multiple of {_divisor} "
+                f"(dense divisor={GW_nbands_divisor_for_dense}, extrapolation divisor={GW_nbands_divisor_for_extrapolation}, "
+                f"nbands_stride={self.ctx.nbands_stride}): VASP would round NBANDS up and discard the WAVEDER.")
 
         #Inputs handling - printing the input data if requested.
         final_str_log = (
@@ -607,6 +626,10 @@ class VaspG0W0BasisExtrWorkChain(WorkChain):
             +"\n  > constraint to extr.point > 1st - nbands_stride must > 5% of nbands of 1st extr.point"
             +"\n    minimum_nbands_stride : "+str(self.ctx.minimum_nbands_stride)
             +"\n  ↪	final nbands_stride   : "+str(self.ctx.nbands_stride)
+            +"\n[1.1 - 1st extr.point, as determined BEFORE the stride loop]-- --- --- --- --- --- --- --- --- --- --- --- --- --- --- "
+            +"\n  > extrPoint_1 (encut,nbands) : "+str(extrPoint_1)
+            +"\n  > full log :"
+            +"\n"+extrPoint_1_logger
             +"\n[2 - determining (encut,nbands) for all extr.points]-- - --- --- --- --- --- --- --- --- --- --- --- --- --- --- --- --- --- --- --- --- "    
             +"\n  > corrected encut-nbands couples : "
             +"\n    "+"\n    ".join([str(list_point) for list_point in self.ctx.EncutNbands_completeBasis.value])

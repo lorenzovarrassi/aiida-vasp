@@ -417,8 +417,16 @@ class VaspG0W0CompleteWorkChain(WorkChain):
                 
             #[7] Define the scheduler options: options_for_extrapolation and options_for the dense
             input_extr.ns_option.options_for_extrapolation =  self.inputs['ns_option']['options_for_extrapolation']
-            input_extr.ns_option.constraint_nbands_divisor = (self.inputs.ns_option.options_for_dense.get_dict()['resources']['num_machines'] *
-                                                              self.inputs.ns_option.options_for_dense.get_dict()['resources']['num_mpiprocs_per_machine'] )
+            #The NBANDS of the 1st extrapolation point is re-used for the dense G0W0 run (see prepare_run_DFT_G0W0_dense);
+            #in GW, VASP rounds NBANDS up to the nearest multiple of (#MPI-tasks)/KPAR, so the divisor to enforce is
+            #[total MPI tasks of the dense run] // KPAR, NOT the bare number of MPI tasks. Enforcing the bare number
+            #over-constrains NBANDS (wasted bands) and can make the divisor consistency assert in the extrapolation
+            #workchain fire spuriously when (extrapolation tasks)//KPAR does not divide the dense task count.
+            total_mpitasks_for_dense = (self.inputs.ns_option.options_for_dense.get_dict()['resources']['num_machines'] *
+                                        self.inputs.ns_option.options_for_dense.get_dict()['resources']['num_mpiprocs_per_machine'] )
+            kpar_for_dense = ( int(input_extr.ns_optimization['kpar'].value)
+                               if ('ns_optimization' in input_extr and 'kpar' in input_extr.ns_optimization) else 1 )
+            input_extr.ns_option.constraint_nbands_divisor = Int( max(1, total_mpitasks_for_dense // kpar_for_dense) )
             return input_extr
         
     def prepare_run_Extrapolation_BS(self):
@@ -508,20 +516,20 @@ class VaspG0W0CompleteWorkChain(WorkChain):
                 node_NV.store()
                 self.out("Correction_NormViolation", node_NV) 
           
-            def __copy_remote_to_local(self, remote_data, label):
-                import os
-                from aiida.common.folders import SandboxFolder
+            self._copy_remote_to_local( self.ctx.WC_G0W0[-1].outputs.RemoteData_DFT, "2.1-DFT"    )
+            self._copy_remote_to_local( self.ctx.WC_G0W0[-1].outputs.RemoteData_G0W0, "2.2-GW"    )
 
-                pid = str(self.pid)
-                foldername = f"{label}_id{pid}"
-                target = os.path.join(os.getcwd(), foldername)
-                os.makedirs(target, exist_ok=True)
+    def _copy_remote_to_local(self, remote_data, label):
+            """ Download a RemoteData folder (recursively) into '<label>_id<pid>' in the cwd. """
+            import os
 
-                with SandboxFolder() as sandbox:
-                    # copy *entire* remote folder into sandbox
-                    remote_data.getfile('.', sandbox.abspath)
-                    sandbox.copytree(target)
-            self.__copy_remote_to_local( self.ctx.WC_G0W0[-1].outputs.RemoteData_DFT, "2.1-DFT"    )
-            self.__copy_remote_to_local( self.ctx.WC_G0W0[-1].outputs.RemoteData_G0W0, "2.2-GW"    )
+            pid = str(self.pid)
+            foldername = f"{label}_id{pid}"
+            target = os.path.join(os.getcwd(), foldername)
+            os.makedirs(target, exist_ok=True)
+
+            authinfo = remote_data.get_authinfo()
+            with authinfo.get_transport() as transport:
+                transport.gettree(remote_data.get_remote_path(), target)
                 
         

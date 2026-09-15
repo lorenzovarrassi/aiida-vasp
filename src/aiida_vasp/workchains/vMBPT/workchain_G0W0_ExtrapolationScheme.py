@@ -638,6 +638,29 @@ class VaspG0W0BasisExtrWorkChain(WorkChain):
 			+'\n[2 - determining (encut,nbands) -> determining corrected (encut,nbands)]--- --- --- --- --- --- --- --- --- --- --- --- --- --- --- --- ')
         self.report(final_str_log)
     
+    def _format_extrapolation_point_statuses(self, wc_keys):
+        """Return a compact status summary for the submitted extrapolation points."""
+        status_lines = []
+        for point_index in wc_keys:
+            workchain = self.ctx.runningWC_DFT_G0W0[point_index]
+            if workchain.is_finished_ok:
+                status_lines.append(
+                    f"    - point {point_index}: pk={workchain.pk}, finished OK"
+                )
+                continue
+
+            details = []
+            if workchain.exit_status is not None:
+                details.append(f"exit_status={workchain.exit_status}")
+            if workchain.exit_message:
+                details.append(f"exit_message={workchain.exit_message!r}")
+            detail_text = f" ({'; '.join(details)})" if details else ""
+            status_lines.append(
+                f"    - point {point_index}: pk={workchain.pk}, FAILED{detail_text}"
+            )
+
+        return "\n".join(status_lines)
+
     def are_r2_under_threshold(self):
         """ Decide whether to run an additional GW datapoint based on the quality of the gap extrapolation.
         Data sources (required per datapoint WorkChainNode)
@@ -671,17 +694,31 @@ class VaspG0W0BasisExtrWorkChain(WorkChain):
         
         #[1] Input handling
         self.ctx.r2_threshold = float(self.inputs.ns_extrapolation.r2_threshold.value)
-        str_log = ( f"\n  VaspG0W0BasisExtrWorkChain pk={self.node.pk} checking if an additional VaspDFTGWWorkChain is required"
-                    f"\n  convergence test uses only G0W0 gaps (Dir/Ind/Gam); R² threshold = {self.ctx.r2_threshold}"            )
+        str_log = (
+            f"\n  VaspG0W0BasisExtrWorkChain pk={self.node.pk} checking if an additional "
+            "VaspDFTGWWorkChain is required"
+        )
 
         #[2] Bail out of the while_ loop if any datapoint failed, instead of crashing while reading its
         #    (non-existent) outputs below. elaborate_extrapolate_results (reached right after this while_
         #    loop ends) already performs the proper is_finished_ok check and returns ONE_OR_MORE_GW_FAILED.
         wc_keys_check = sorted(self.ctx.runningWC_DFT_G0W0)
         if not all(self.ctx.runningWC_DFT_G0W0[i].is_finished_ok for i in wc_keys_check):
-            self.report(str_log + "  --> THUS: NO ADDITIONAL CALC. One or more G0W0 datapoints did not finish "
-                                   "successfully; deferring to elaborate_extrapolate_results to report the failure.\n")
+            self.report(
+                str_log
+                + "\n  --> R² convergence was NOT evaluated: one or more required extrapolation points failed."
+                + "\n  Submitted point status:"
+                + "\n"
+                + self._format_extrapolation_point_statuses(wc_keys_check)
+                + "\n  No additional extrapolation calculation will be submitted."
+                + "\n  The workflow will now exit with ONE_OR_MORE_GW_FAILED.\n"
+            )
             return Bool(False)
+
+        str_log += (
+            "\n  convergence test uses only G0W0 gaps (Dir/Ind/Gam); "
+            f"R² threshold = {self.ctx.r2_threshold}"
+        )
 
         #[3] extrapolate per spin channel ----
         extrap_gap_G0W0, extrap_qpc_QPc = {}, {},
@@ -774,6 +811,15 @@ class VaspG0W0BasisExtrWorkChain(WorkChain):
                    + "\n > [2] ar_encutInput   : " + str(ar_encutInput)         )
     
         if not all(ar_isFinishedOk):
+            self.report(
+                "\n  [Basis extrapolation failed: cannot elaborate results]"
+                + str_log
+                + "\n > Submitted point status:"
+                + "\n"
+                + self._format_extrapolation_point_statuses(wc_keys)
+                + "\n > R² extrapolation results were not generated."
+                + "\n > Returning exit code ONE_OR_MORE_GW_FAILED.\n"
+            )
             return self.exit_codes.ONE_OR_MORE_GW_FAILED
     
         #[3] bookkeeping output : Save encut/nbands pairs
